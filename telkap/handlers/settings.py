@@ -23,6 +23,7 @@ from telkap.keyboards import (
 )
 from telkap.models import Rule, Task
 from telkap.plans import FEAT_WATERMARK
+from telkap.services import cache
 from telkap.services.defaults import merged_settings
 from telkap.services.subscription import active_plan_for
 from telkap.texts import (
@@ -85,6 +86,7 @@ async def _save_settings(task_id: int, cfg: dict) -> None:
         # فقط کلیدهای شناخته‌شده ذخیره می‌شوند
         task.settings = dict(cfg)
         await db.commit()
+    cache.invalidate_task(task_id)
 
 
 async def _render(call: CallbackQuery, panel: str, task_id: int) -> None:
@@ -125,6 +127,8 @@ FLAG_PANEL = {
     "block_with_links": "filters",
     "block_with_buttons": "filters",
     "skip_duplicates": "filters",
+    "skip_bots": "filters",
+    "skip_replies": "filters",
     "caption_only": "media",
     "watermark_enabled": "wm",
     "sync_edits": "send",
@@ -154,6 +158,23 @@ async def cb_hours(call: CallbackQuery) -> None:
     await _save_settings(task_id, cfg)
     await call.answer()
     await _render(call, "time", task_id)
+
+
+@router.callback_query(F.data.startswith("adsens:"))
+async def cb_ad_sensitivity(call: CallbackQuery) -> None:
+    """چرخش بین سه سطح حساسیت فیلتر تبلیغات."""
+    task_id = int(call.data.split(":")[1])
+    task = await _owned_task(call.from_user.id, task_id)
+    if task is None:
+        await call.answer("دسترسی ندارید", show_alert=True)
+        return
+    order = ["low", "medium", "high"]
+    cfg = merged_settings(task.settings)
+    current = cfg.get("ad_sensitivity", "medium")
+    cfg["ad_sensitivity"] = order[(order.index(current) + 1) % len(order)] if current in order else "medium"
+    await _save_settings(task_id, cfg)
+    await call.answer()
+    await _render(call, "filters", task_id)
 
 
 @router.callback_query(F.data.startswith("flag:"))
@@ -393,6 +414,7 @@ async def _add_rule(
     async with get_session() as db:
         db.add(Rule(task_id=task_id, kind=kind, pattern=pattern, replacement=replacement))
         await db.commit()
+    cache.invalidate_task(task_id)
     await state.clear()
     rules = await _rules_of(task_id, kind)
     await message.answer(
@@ -413,6 +435,7 @@ async def cb_rule_delete(call: CallbackQuery) -> None:
         if rule and rule.task_id == task_id:
             await db.delete(rule)
             await db.commit()
+    cache.invalidate_task(task_id)
     await call.answer("حذف شد")
     rules = await _rules_of(task_id, kind)
     try:

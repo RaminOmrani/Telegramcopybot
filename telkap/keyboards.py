@@ -89,6 +89,10 @@ def task_menu(task: Task, *, backfill_running: bool = False) -> InlineKeyboardMa
         InlineKeyboardButton(text="📤 کانال‌های مقصد", callback_data=f"dest:list:{task.id}"),
         InlineKeyboardButton(text="📈 آمار", callback_data=f"task:stats:{task.id}"),
     )
+    kb.row(
+        InlineKeyboardButton(text="🧪 تست تنظیمات", callback_data=f"task:test:{task.id}"),
+        InlineKeyboardButton(text="📋 کپی تنظیمات", callback_data=f"clone:pick:{task.id}"),
+    )
     if backfill_running:
         kb.row(
             InlineKeyboardButton(text="⏹ توقف کپی گذشته", callback_data=f"hist:cancel:{task.id}")
@@ -132,8 +136,19 @@ def filters_menu(task_id: int, cfg: dict) -> InlineKeyboardMarkup:
         ("رد کردن پست‌های دارای لینک", "block_with_links"),
         ("رد کردن پست‌های دکمه‌دار", "block_with_buttons"),
         ("جلوگیری از پست تکراری", "skip_duplicates"),
+        ("رد کردن پیام ربات‌ها (گروه)", "skip_bots"),
+        ("رد کردن پیام‌های پاسخ (گروه)", "skip_replies"),
     ]:
         kb.row(_flag(label, bool(cfg.get(key)), f"flag:{key}:{task_id}"))
+    if cfg.get("block_ads"):
+        labels = {"low": "کم", "medium": "متوسط", "high": "زیاد"}
+        current = cfg.get("ad_sensitivity", "medium")
+        kb.row(
+            InlineKeyboardButton(
+                text=f"🎚 حساسیت فیلتر تبلیغات: {labels.get(current, 'متوسط')}",
+                callback_data=f"adsens:{task_id}",
+            )
+        )
     kb.row(
         InlineKeyboardButton(text="🚫 کلمات ممنوعه", callback_data=f"rule:block:{task_id}"),
         InlineKeyboardButton(text="✅ کلمات مجاز", callback_data=f"rule:allow:{task_id}"),

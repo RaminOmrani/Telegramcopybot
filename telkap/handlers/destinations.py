@@ -12,6 +12,7 @@ from telkap.db import get_session, log_activity
 from telkap.handlers.common import Flow
 from telkap.keyboards import destinations_menu
 from telkap.models import Destination, Task
+from telkap.services import cache
 from telkap.services.userbot import manager
 from telkap.texts import NO_LOGIN, fa_num
 
@@ -133,6 +134,7 @@ async def got_dest(message: Message, state: FSMContext) -> None:
             )
         )
         await db.commit()
+    cache.invalidate_task(task_id)
 
     await state.clear()
     await notice.edit_text(f"✅ کانال <b>{title}</b> به مقصدها اضافه شد.")
@@ -158,6 +160,7 @@ async def cb_toggle(call: CallbackQuery) -> None:
         dest.enabled = not dest.enabled
         enabled = dest.enabled
         await db.commit()
+    cache.invalidate_task(task.id)
     await call.answer("فعال شد" if enabled else "خاموش شد")
     await _render(call.message, task, edit=True)
 
@@ -174,5 +177,6 @@ async def cb_delete(call: CallbackQuery) -> None:
         if dest is not None and dest.task_id == task.id:
             await db.delete(dest)
             await db.commit()
+    cache.invalidate_task(task.id)
     await call.answer("حذف شد")
     await _render(call.message, task, edit=True)

@@ -59,6 +59,9 @@ async def grant(
         db.add(sub)
         await db.commit()
         await db.refresh(sub)
+    from telkap.services import cache
+
+    cache.invalidate_user(user_id)
     await log_activity(
         user_id=user_id,
         event="subscription",

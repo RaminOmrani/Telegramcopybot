@@ -23,6 +23,7 @@ from telkap.keyboards import (
 )
 from telkap.models import DailyStat, Task, User
 from telkap.plans import FEAT_PRIVATE
+from telkap.services import cache
 from telkap.services.copier import today_key
 from telkap.services.defaults import merged_settings
 from telkap.services.subscription import active_plan_for
@@ -220,12 +221,12 @@ async def got_source(message: Message, state: FSMContext) -> None:
         await message.answer(NO_LOGIN)
         return
 
-    notice = await message.answer("⏳ در حال بررسی کانال مبدا…")
+    notice = await message.answer("⏳ در حال بررسی مبدا…")
     entity = await manager.resolve_entity(client, ref)
     if entity is None:
         await notice.edit_text(
-            "⚠️ این کانال پیدا نشد یا اکانت شما به آن دسترسی ندارد.\n"
-            "اگر کانال خصوصی است، ابتدا با اکانت خود عضو شوید و دوباره تلاش کنید."
+            "⚠️ این کانال یا گروه پیدا نشد یا اکانت شما به آن دسترسی ندارد.\n"
+            "اگر خصوصی است، ابتدا با اکانت خود عضو شوید و دوباره تلاش کنید."
         )
         return
 
@@ -241,7 +242,7 @@ async def got_source(message: Message, state: FSMContext) -> None:
 
     title = getattr(entity, "title", None) or ref
     await state.update_data(source_ref=ref, source_title=title)
-    await notice.edit_text(f"✅ کانال مبدا: <b>{title}</b>")
+    await notice.edit_text(f"✅ مبدا: <b>{title}</b>")
     await state.set_state(Flow.task_dest)
     await message.answer(ASK_DEST)
 
@@ -257,17 +258,17 @@ async def got_dest(message: Message, state: FSMContext) -> None:
         await message.answer(NO_LOGIN)
         return
 
-    notice = await message.answer("⏳ در حال بررسی کانال مقصد…")
+    notice = await message.answer("⏳ در حال بررسی مقصد…")
     entity = await manager.resolve_entity(client, ref)
     if entity is None:
         await notice.edit_text(
-            "⚠️ کانال مقصد پیدا نشد. مطمئن شوید اکانت شما عضو آن است و آیدی درست است."
+            "⚠️ مقصد پیدا نشد. مطمئن شوید اکانت شما عضو آن است و آیدی درست است."
         )
         return
 
     title = getattr(entity, "title", None) or ref
     await state.update_data(dest_ref=ref, dest_title=title)
-    await notice.edit_text(f"✅ کانال مقصد: <b>{title}</b>")
+    await notice.edit_text(f"✅ مقصد: <b>{title}</b>")
     await state.set_state(Flow.task_title)
     await message.answer(ASK_TITLE)
 
@@ -333,6 +334,7 @@ async def cb_toggle(call: CallbackQuery) -> None:
             task.last_error = None
         enabled = task.enabled
         await db.commit()
+    cache.invalidate_task(task_id)
     await manager.reload_user(call.from_user.id)
     await call.answer("فعال شد" if enabled else "متوقف شد")
     await show_task(call.message, task_id, edit=True)
@@ -376,6 +378,7 @@ async def delete_task_confirmed(
         title = task.title
         await db.delete(task)
         await db.commit()
+    cache.invalidate_task(task_id)
     await manager.reload_user(user_id)
     await log_activity(user_id=user_id, event="task_delete", detail=title)
     await message.answer(f"🗑 کار «{title}» حذف شد.", reply_markup=main_menu())

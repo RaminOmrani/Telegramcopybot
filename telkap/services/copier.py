@@ -28,12 +28,11 @@ from telethon.tl.types import (
 
 from telkap.config import get_settings
 from telkap.db import get_session, log_activity
-from telkap.models import DailyStat, Destination, MessageMap, RetryItem, Rule, Task, utcnow
+from telkap.models import DailyStat, Destination, MessageMap, RetryItem, Task, utcnow
 from telkap.plans import FEAT_WATERMARK
-from telkap.services.defaults import merged_settings
+from telkap.services import cache
 from telkap.services.filters import MessageFacts, content_hash, should_copy
 from telkap.services.ratelimit import RateLimiter, hourly_quota
-from telkap.services.subscription import active_plan_for
 from telkap.services.transform import apply_transforms
 from telkap.services.watermark import add_text_watermark
 
@@ -131,6 +130,12 @@ def within_active_hours(cfg: dict[str, Any], hour: int | None = None) -> bool:
     return now >= start or now < end
 
 
+def sender_is_bot(message) -> bool:
+    """آیا فرستنده‌ی پیام ربات است؟ در کانال‌ها معمولاً فرستنده‌ای نیست."""
+    sender = getattr(message, "sender", None)
+    return bool(getattr(sender, "bot", False))
+
+
 def build_facts(message) -> MessageFacts:
     return MessageFacts(
         text=message.message or "",
@@ -138,6 +143,8 @@ def build_facts(message) -> MessageFacts:
         is_forwarded=getattr(message, "fwd_from", None) is not None,
         has_buttons=getattr(message, "reply_markup", None) is not None,
         size_bytes=media_size(message),
+        from_bot=sender_is_bot(message),
+        is_reply=getattr(message, "reply_to", None) is not None,
     )
 
 
@@ -198,24 +205,16 @@ class Copier:
 
     async def process(self, user_id: int, task_id: int, messages: Sequence) -> bool:
         """یک پیام یا آلبوم را برای یک کار پردازش و به همه‌ی مقصدها ارسال می‌کند."""
-        async with get_session() as db:
-            task = await db.get(Task, task_id)
-            if task is None or not task.enabled:
-                return False
-            rules = list(
-                (await db.execute(select(Rule).where(Rule.task_id == task_id))).scalars()
-            )
-            cfg = merged_settings(task.settings)
-            task_title = task.title or str(task_id)
-            targets: list = [task.dest_id or task.dest_ref]
-            extra = await db.execute(
-                select(Destination).where(
-                    Destination.task_id == task_id, Destination.enabled.is_(True)
-                )
-            )
-            targets.extend(dest.chat_id or dest.ref for dest in extra.scalars())
-            src_ids = [m.id for m in messages]
-            src_chat_id = task.source_id
+        snapshot = await cache.get_task(task_id)
+        if snapshot is None or not snapshot.enabled:
+            return False
+
+        cfg = snapshot.cfg
+        rules = snapshot.rules
+        task_title = snapshot.title
+        targets = list(snapshot.targets)
+        src_ids = [m.id for m in messages]
+        src_chat_id = snapshot.source_id
 
         if not within_active_hours(cfg):
             await self._bump(task_id, user_id, skipped=True)
@@ -224,7 +223,7 @@ class Copier:
             )
             return False
 
-        plan = await active_plan_for(user_id)
+        plan = await cache.get_plan(user_id)
         if plan is None:
             log.info("کاربر %s اشتراک فعال ندارد؛ کار %s متوقف شد", user_id, task_id)
             await self._pause_task(task_id, "اشتراک منقضی شده است")
@@ -463,16 +462,13 @@ class Copier:
 
     # --------------------------------------------------------- همگام‌سازی
     async def _sync_edit(self, user_id: int, task_id: int, message) -> None:
+        snapshot = await cache.get_task(task_id)
+        if snapshot is None or not snapshot.enabled:
+            return
+        cfg, rules = snapshot.cfg, snapshot.rules
+        if not cfg.get("sync_edits"):
+            return
         async with get_session() as db:
-            task = await db.get(Task, task_id)
-            if task is None or not task.enabled:
-                return
-            cfg = merged_settings(task.settings)
-            if not cfg.get("sync_edits"):
-                return
-            rules = list(
-                (await db.execute(select(Rule).where(Rule.task_id == task_id))).scalars()
-            )
             rows = await db.execute(
                 select(MessageMap).where(
                     MessageMap.task_id == task_id, MessageMap.src_msg_id == message.id
@@ -502,13 +498,12 @@ class Copier:
         )
 
     async def _sync_delete(self, user_id: int, task_id: int, deleted_ids: Iterable[int]) -> None:
+        snapshot = await cache.get_task(task_id)
+        if snapshot is None:
+            return
+        if not snapshot.cfg.get("sync_deletes"):
+            return
         async with get_session() as db:
-            task = await db.get(Task, task_id)
-            if task is None:
-                return
-            cfg = merged_settings(task.settings)
-            if not cfg.get("sync_deletes"):
-                return
             rows = await db.execute(
                 select(MessageMap).where(
                     MessageMap.task_id == task_id, MessageMap.src_msg_id.in_(list(deleted_ids))
@@ -625,6 +620,7 @@ class Copier:
                 if str(dest.chat_id or dest.ref) == str(target):
                     dest.enabled = False
             await db.commit()
+        cache.invalidate_task(task_id)
         await log_activity(
             task_id=task_id,
             event="dest_disabled",
@@ -701,5 +697,6 @@ class Copier:
             user_id = task.user_id
             await db.commit()
         hourly_quota.forget(task_id)
+        cache.invalidate_task(task_id)
         await self.manager.reload_user(user_id)
         await log_activity(task_id=task_id, event="pause", detail=reason, level="warning")

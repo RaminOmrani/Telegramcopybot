@@ -5,9 +5,11 @@ from telkap.handlers import (
     account,
     admin,
     billing,
+    clone,
     destinations,
     forward,
     history,
+    preview,
     settings,
     start,
     tasks,
@@ -21,6 +23,8 @@ def build_router() -> Router:
     root.include_router(account.router)
     root.include_router(tasks.router)
     root.include_router(destinations.router)
+    root.include_router(preview.router)
+    root.include_router(clone.router)
     root.include_router(settings.router)
     root.include_router(history.router)
     root.include_router(billing.router)

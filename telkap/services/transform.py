@@ -48,13 +48,58 @@ _SIGNATURE_LINE_RE = re.compile(
     """
 )
 
-# عبارت‌های رایج تبلیغاتی برای فیلتر هوشمند
-AD_KEYWORDS: tuple[str, ...] = (
-    "تبلیغات", "تبليغات", "جهت تبلیغ", "سفارش تبلیغ", "رزرو تبلیغ",
-    "تعرفه تبلیغات", "ادمین تبلیغات", "پذیرش تبلیغ", "برای تبلیغ",
-    "ثبت سفارش", "خرید اشتراک", "لینک خرید", "کد تخفیف",
-    "ads", "advertise", "advertising", "sponsored", "promo code",
+# --------------------------------------------------------------------------
+# تشخیص پیام تبلیغاتی
+#
+# روش امتیازدهی است نه یادگیری ماشین: هر نشانه امتیازی دارد و اگر جمعِ
+# امتیازها از آستانه‌ی حساسیت رد شود، پست تبلیغاتی شمرده می‌شود. نشانه‌های
+# قوی‌تر (مثل «جهت تبلیغات») امتیاز بیشتری می‌گیرند تا یک واژه‌ی معمولی
+# به‌تنهایی باعث رد شدن پست نشود.
+# --------------------------------------------------------------------------
+
+# نشانه‌های قطعی تبلیغ (امتیاز ۳)
+AD_STRONG: tuple[str, ...] = (
+    "جهت تبلیغ", "برای تبلیغ", "سفارش تبلیغ", "رزرو تبلیغ", "پذیرش تبلیغ",
+    "تعرفه تبلیغات", "ادمین تبلیغات", "تبلیغات بنری", "تبادل و تبلیغ",
+    "advertise here", "for ads", "sponsored post", "paid promotion",
 )
+
+# نشانه‌های تجاری (امتیاز ۲)
+AD_COMMERCIAL: tuple[str, ...] = (
+    "ثبت سفارش", "کد تخفیف", "لینک خرید", "خرید اشتراک", "همین حالا سفارش",
+    "ارسال رایگان", "تخفیف ویژه", "فروش ویژه", "قیمت استثنایی", "شرایط اقساط",
+    "مشاوره رایگان", "ظرفیت محدود", "فرصت محدود", "همکاری در فروش",
+    "promo code", "discount code", "limited offer", "buy now", "order now",
+)
+
+# نشانه‌های ضعیف (امتیاز ۱) — به‌تنهایی کافی نیستند
+AD_WEAK: tuple[str, ...] = (
+    "تبلیغات", "تبليغات", "تخفیف", "قیمت", "خرید", "فروش", "سفارش",
+    "دایرکت", "پیوی", "واتساپ", "اینستاگرام",
+    "ads", "advertising", "sponsored", "promo",
+)
+
+# سازگاری با نسخه‌ی قبل
+AD_KEYWORDS: tuple[str, ...] = AD_STRONG + AD_COMMERCIAL
+
+# ارقام فارسی و عربی به لاتین، پیش از تطبیق الگوهای عددی.
+# بدون این کار «۰۹۱۲…» با الگوی شماره تماس مطابقت نمی‌کند و در کانال‌های
+# فارسی عملاً هیچ شماره‌ای تشخیص داده نمی‌شد.
+DIGIT_MAP = str.maketrans("۰۱۲۳۴۵۶۷۸۹٠١٢٣٤٥٦٧٨٩", "01234567890123456789")
+
+
+def normalize_digits(text: str) -> str:
+    return (text or "").translate(DIGIT_MAP)
+
+
+# شماره تماس ایران، و شماره کارت بانکی ۱۶ رقمی
+PHONE_RE = re.compile(r"(?:\+?98|0)9\d{9}\b")
+CARD_RE = re.compile(r"\b(?:\d{4}[\s-]?){3}\d{4}\b")
+PRICE_RE = re.compile(r"\d{1,3}(?:[,،]\d{3})+\s*(?:تومان|ریال|هزار|میلیون)")
+
+# آستانه‌ی امتیاز برای هر سطح حساسیت.
+# نشانه‌ی قطعی به‌تنهایی امتیاز ۵ می‌گیرد تا در همه‌ی سطوح گرفته شود.
+AD_THRESHOLDS = {"low": 5, "medium": 4, "high": 3}
 
 
 @dataclass(slots=True)
@@ -147,13 +192,75 @@ def apply_transforms(
     return text
 
 
-def looks_like_ad(text: str) -> bool:
-    """تشخیص ساده و محافظه‌کارانه‌ی پیام تبلیغاتی."""
+def ad_score(text: str) -> tuple[int, list[str]]:
+    """امتیاز تبلیغاتی بودن متن، به‌همراه فهرست نشانه‌های پیداشده.
+
+    برگرداندن دلایل باعث می‌شود کاربر در «تست تنظیمات» و لاگ ببیند
+    چرا پستی تبلیغاتی تشخیص داده شده است.
+    """
     if not text:
-        return False
+        return 0, []
+
     lowered = text.lower()
-    hits = sum(1 for kw in AD_KEYWORDS if kw in lowered)
-    if hits >= 2:
-        return True
-    # یک کلیدواژه‌ی تبلیغاتی همراه با لینک یا آیدی
-    return hits >= 1 and bool(URL_RE.search(text) or MENTION_RE.search(text))
+    # الگوهای عددی روی نسخه‌ی یکسان‌شده اجرا می‌شوند
+    digits = normalize_digits(text)
+    score = 0
+    reasons: list[str] = []
+
+    for keyword in AD_STRONG:
+        if keyword in lowered:
+            score += 5  # نشانه‌ی قطعی، به‌تنهایی از همه‌ی آستانه‌ها رد می‌شود
+            reasons.append(f"«{keyword}»")
+            break
+
+    commercial = [kw for kw in AD_COMMERCIAL if kw in lowered]
+    if commercial:
+        score += 2 * min(len(commercial), 2)
+        reasons.append("، ".join(f"«{kw}»" for kw in commercial[:2]))
+
+    weak = [kw for kw in AD_WEAK if kw in lowered]
+    if weak:
+        score += min(len(weak), 3)
+        reasons.append("، ".join(f"«{kw}»" for kw in weak[:3]))
+
+    if PHONE_RE.search(digits):
+        score += 2
+        reasons.append("شماره تماس")
+    if CARD_RE.search(digits):
+        score += 4  # شماره کارت در یک پست خبری تقریباً همیشه یعنی تبلیغ
+        reasons.append("شماره کارت")
+    if PRICE_RE.search(digits):
+        score += 2
+        reasons.append("قیمت")
+
+    links = len(URL_RE.findall(text))
+    if links >= 2:
+        score += 2
+        reasons.append(f"{links} لینک")
+    elif links == 1:
+        score += 1
+
+    mentions = len(MENTION_RE.findall(text))
+    if mentions >= 2:
+        score += 1
+        reasons.append(f"{mentions} آیدی")
+
+    return score, reasons
+
+
+def looks_like_ad(text: str, sensitivity: str = "medium") -> bool:
+    """آیا این متن تبلیغاتی است؟
+
+    `sensitivity`: low (فقط تبلیغ‌های آشکار) | medium | high (سخت‌گیرانه)
+    """
+    threshold = AD_THRESHOLDS.get(sensitivity, AD_THRESHOLDS["medium"])
+    score, _ = ad_score(text)
+    return score >= threshold
+
+
+def ad_reason(text: str) -> str:
+    """توضیح خوانا از اینکه چرا متن تبلیغاتی شمرده شد."""
+    score, reasons = ad_score(text)
+    if not reasons:
+        return f"امتیاز {score}"
+    return f"امتیاز {score} — {'، '.join(reasons)}"

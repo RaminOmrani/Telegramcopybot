@@ -54,12 +54,17 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
     # --- فیلترها ---
     "block_ads": False,         # فیلتر هوشمند پیام‌های تبلیغاتی
+    "ad_sensitivity": "medium",  # low | medium | high
     "block_forwarded": False,   # پست‌هایی که خودشان فوروارد هستند کپی نشوند
     "block_with_links": False,  # هر پستی که لینک دارد رد شود
     "block_with_buttons": False,
     "min_length": 0,
     "max_length": 0,            # 0 = نامحدود
     "skip_duplicates": True,
+
+    # --- مخصوص گروه‌ها ---
+    "skip_bots": False,        # پیام‌های ربات‌ها کپی نشوند
+    "skip_replies": False,     # پیام‌های پاسخ (reply) کپی نشوند
 
     # --- همگام‌سازی ---
     "sync_edits": True,

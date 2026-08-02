@@ -38,6 +38,7 @@ class Flow(StatesGroup):
 
     receipt = State()
     dest_add = State()
+    import_settings = State()
 
     pin_set = State()
     pin_verify = State()
