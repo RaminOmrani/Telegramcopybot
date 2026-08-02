@@ -13,6 +13,7 @@ from sqlalchemy import select
 
 from telkap.config import get_settings
 from telkap.db import get_session, log_activity
+from telkap.handlers.common import Flow
 from telkap.keyboards import (
     BTN_FORWARD,
     forward_menu,
@@ -21,7 +22,6 @@ from telkap.keyboards import (
     main_menu,
 )
 from telkap.models import ForwardProfile
-from telkap.handlers.common import Flow
 from telkap.services.defaults import merged_settings
 from telkap.services.subscription import active_plan_for
 from telkap.services.transform import apply_transforms

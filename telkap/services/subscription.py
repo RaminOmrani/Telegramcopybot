@@ -1,7 +1,7 @@
 """مدیریت اشتراک کاربران."""
 from __future__ import annotations
 
-from datetime import timedelta
+from datetime import UTC, timedelta
 
 from sqlalchemy import select
 
@@ -45,9 +45,8 @@ async def grant(
     current = await active_subscription(user_id)
     start = current.expires_at if current else utcnow()
     if start.tzinfo is None:
-        from datetime import timezone
 
-        start = start.replace(tzinfo=timezone.utc)
+        start = start.replace(tzinfo=UTC)
     async with get_session() as db:
         sub = Subscription(
             user_id=user_id,
@@ -88,8 +87,7 @@ async def remaining_days(user_id: int) -> int:
         return 0
     expires = sub.expires_at
     if expires.tzinfo is None:
-        from datetime import timezone
 
-        expires = expires.replace(tzinfo=timezone.utc)
+        expires = expires.replace(tzinfo=UTC)
     delta = expires - utcnow()
     return max(0, delta.days + (1 if delta.seconds else 0))

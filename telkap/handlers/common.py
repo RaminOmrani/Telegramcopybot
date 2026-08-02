@@ -5,7 +5,8 @@ import hashlib
 import hmac
 
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, TelegramObject, User as TgUser
+from aiogram.types import Message, TelegramObject
+from aiogram.types import User as TgUser
 
 from telkap.config import get_settings
 from telkap.db import get_session

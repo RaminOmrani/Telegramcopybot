@@ -9,6 +9,8 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 
 from telkap.db import get_session
+from telkap.handlers.common import Flow, parse_int
+from telkap.handlers.tasks import show_task
 from telkap.keyboards import (
     clean_menu,
     filters_menu,
@@ -20,8 +22,6 @@ from telkap.keyboards import (
     watermark_menu,
 )
 from telkap.models import Rule, Task
-from telkap.handlers.common import Flow, parse_int
-from telkap.handlers.tasks import show_task
 from telkap.plans import FEAT_WATERMARK
 from telkap.services.defaults import merged_settings
 from telkap.services.subscription import active_plan_for

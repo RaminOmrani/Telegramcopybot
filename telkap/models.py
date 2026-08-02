@@ -1,17 +1,17 @@
 """مدل‌های دیتابیس."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
     Index,
     Integer,
-    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -20,7 +20,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class Base(DeclarativeBase):
@@ -48,8 +48,8 @@ class User(Base):
     is_banned: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
-    tasks: Mapped[list["Task"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-    subscriptions: Mapped[list["Subscription"]] = relationship(
+    tasks: Mapped[list[Task]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    subscriptions: Mapped[list[Subscription]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
 
@@ -75,7 +75,7 @@ class Subscription(Base):
         now = now or utcnow()
         expires = self.expires_at
         if expires.tzinfo is None:
-            expires = expires.replace(tzinfo=timezone.utc)
+            expires = expires.replace(tzinfo=UTC)
         return expires > now
 
 
@@ -108,10 +108,10 @@ class Task(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     user: Mapped[User] = relationship(back_populates="tasks")
-    rules: Mapped[list["Rule"]] = relationship(
+    rules: Mapped[list[Rule]] = relationship(
         back_populates="task", cascade="all, delete-orphan", lazy="selectin"
     )
-    destinations: Mapped[list["Destination"]] = relationship(
+    destinations: Mapped[list[Destination]] = relationship(
         back_populates="task", cascade="all, delete-orphan", lazy="selectin"
     )
 
@@ -181,6 +181,8 @@ class MessageMap(Base):
     __tablename__ = "message_map"
     __table_args__ = (
         UniqueConstraint("task_id", "src_msg_id", "dest_chat", name="uq_message_map_task_src_dest"),
+        # تشخیص تکراری بودن به ازای هر پست اجرا می‌شود؛ بدون ایندکس، جدول پیمایش می‌شد
+        Index("ix_message_map_dedupe", "task_id", "content_hash"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

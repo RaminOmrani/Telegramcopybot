@@ -10,7 +10,7 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from telkap.models import Task
-from telkap.plans import PURCHASABLE, POPULAR_CODE
+from telkap.plans import POPULAR_CODE, PURCHASABLE
 from telkap.services.defaults import MEDIA_KINDS
 from telkap.services.watermark import POSITIONS
 from telkap.texts import fa_num, on_off

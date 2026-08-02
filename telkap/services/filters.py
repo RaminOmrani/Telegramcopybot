@@ -2,8 +2,9 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 from telkap.services.transform import URL_RE, RuleLike, looks_like_ad
 

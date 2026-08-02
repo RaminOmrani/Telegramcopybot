@@ -208,6 +208,24 @@ cp .env.example .env
 python -m telkap.main
 ```
 
+### اجرای دائمی روی سرور
+
+اجرای ساده با بستن ترمینال قطع می‌شود. برای اینکه ربات ۲۴ ساعته بالا بماند و
+بعد از ری‌استارت سرور خودکار روشن شود:
+
+```bash
+sudo cp deploy/telkap.service /etc/systemd/system/
+sudo nano /etc/systemd/system/telkap.service   # مسیر و نام کاربر را اصلاح کنید
+sudo systemctl daemon-reload
+sudo systemctl enable --now telkap
+
+sudo journalctl -u telkap -f                   # دیدن لاگ زنده
+```
+
+سرویس طوری تنظیم شده که اگر ربات به هر دلیلی متوقف شود، ۱۰ ثانیه بعد
+دوباره بالا بیاید. یا از `docker compose up -d` استفاده کنید که همین رفتار
+را دارد.
+
 ---
 
 ## نحوه استفاده

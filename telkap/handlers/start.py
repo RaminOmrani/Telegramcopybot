@@ -8,9 +8,9 @@ from aiogram.types import Message
 from sqlalchemy import select
 
 from telkap.db import get_session
+from telkap.handlers.common import get_or_create_user
 from telkap.keyboards import BTN_HELP, BTN_LOGS, main_menu
 from telkap.models import ActivityLog
-from telkap.handlers.common import get_or_create_user
 from telkap.services.userbot import manager
 from telkap.texts import CANCELLED, HELP, START, fa_num
 

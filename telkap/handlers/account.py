@@ -9,8 +9,6 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from telkap.db import get_session
-from telkap.keyboards import BTN_ACCOUNT, account_menu, main_menu
-from telkap.models import User
 from telkap.handlers.common import (
     Flow,
     check_pin,
@@ -18,6 +16,8 @@ from telkap.handlers.common import (
     get_or_create_user,
     hash_pin,
 )
+from telkap.keyboards import BTN_ACCOUNT, account_menu, main_menu
+from telkap.models import User
 from telkap.services.subscription import active_plan_for, remaining_days
 from telkap.services.userbot import LoginError, manager
 from telkap.texts import (

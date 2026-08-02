@@ -68,7 +68,8 @@ def test_remove_hashtags_keeps_words():
 
 
 def test_remove_mentions():
-    out = apply_transforms("سلام @somechannel بدرود", cfg(remove_mentions=True, remove_source_signature=False))
+    settings = cfg(remove_mentions=True, remove_source_signature=False)
+    out = apply_transforms("سلام @somechannel بدرود", settings)
     assert "@somechannel" not in out
 
 

@@ -1,0 +1,38 @@
+# سرویس systemd برای اجرای دائمی ربات روی سرور لینوکس
+#
+# نصب:
+#   sudo cp deploy/telkap.service /etc/systemd/system/
+#   sudo nano /etc/systemd/system/telkap.service    # مسیرها و کاربر را اصلاح کنید
+#   sudo systemctl daemon-reload
+#   sudo systemctl enable --now telkap
+#
+# دیدن لاگ زنده:
+#   sudo journalctl -u telkap -f
+
+[Unit]
+Description=ربات کپی محتوای تلگرام
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+User=telkap
+Group=telkap
+WorkingDirectory=/opt/telkap
+Environment=PYTHONUNBUFFERED=1
+EnvironmentFile=/opt/telkap/.env
+ExecStart=/opt/telkap/.venv/bin/python -m telkap.main
+
+# اگر ربات به هر دلیلی متوقف شد، دوباره بالا بیاید
+Restart=always
+RestartSec=10
+
+# سخت‌گیری امنیتی: فایل .env و دیتابیس شامل سشن کاربران است
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=strict
+ProtectHome=true
+ReadWritePaths=/opt/telkap/data
+
+[Install]
+WantedBy=multi-user.target

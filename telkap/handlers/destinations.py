@@ -9,9 +9,9 @@ from aiogram.types import CallbackQuery, Message
 from sqlalchemy import func, select
 
 from telkap.db import get_session, log_activity
+from telkap.handlers.common import Flow
 from telkap.keyboards import destinations_menu
 from telkap.models import Destination, Task
-from telkap.handlers.common import Flow
 from telkap.services.userbot import manager
 from telkap.texts import NO_LOGIN, fa_num
 

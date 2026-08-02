@@ -2,9 +2,9 @@
 from __future__ import annotations
 
 import logging
+from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
-from typing import AsyncIterator
 
 from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
@@ -50,6 +50,11 @@ def _prepare_schema(conn) -> bool:
 
 
 def _finish_schema(conn, migrated: bool) -> None:
+    # ایندکس‌هایی که روی جدول‌های از پیش موجود ساخته نمی‌شوند
+    conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_message_map_dedupe "
+        "ON message_map (task_id, content_hash)"
+    )
     if not migrated:
         return
     conn.exec_driver_sql(

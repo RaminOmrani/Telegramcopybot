@@ -11,6 +11,8 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import func, select
 
 from telkap.db import get_session, log_activity
+from telkap.handlers import history as history_handlers
+from telkap.handlers.common import Flow, get_or_create_user
 from telkap.keyboards import (
     BTN_NEW_TASK,
     BTN_TASKS,
@@ -20,7 +22,6 @@ from telkap.keyboards import (
     tasks_list,
 )
 from telkap.models import DailyStat, Task, User
-from telkap.handlers.common import Flow, get_or_create_user
 from telkap.plans import FEAT_PRIVATE
 from telkap.services.copier import today_key
 from telkap.services.defaults import merged_settings
@@ -37,15 +38,6 @@ from telkap.texts import (
 
 log = logging.getLogger(__name__)
 router = Router(name="tasks")
-
-# توسط main.py مقداردهی می‌شود تا وضعیت backfill در منو نمایش داده شود
-history_copier = None
-
-
-def bind_history(copier) -> None:
-    global history_copier
-    history_copier = copier
-
 
 async def _load_tasks(user_id: int) -> list[Task]:
     async with get_session() as db:
@@ -84,7 +76,8 @@ async def show_task(target: Message, task_id: int, *, edit: bool = False) -> Non
     if task is None:
         await target.answer("این کار دیگر وجود ندارد.")
         return
-    running = bool(history_copier and history_copier.is_running(task.user_id))
+    copier = history_handlers.history_copier
+    running = bool(copier and copier.is_running(task.user_id))
     text = await task_detail_text(task)
     markup = task_menu(task, backfill_running=running)
     if edit:

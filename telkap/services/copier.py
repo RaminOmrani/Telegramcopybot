@@ -3,9 +3,10 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from collections.abc import Iterable, Sequence
 from datetime import timedelta
 from pathlib import Path
-from typing import Any, Iterable, Sequence
+from typing import Any
 
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
@@ -28,13 +29,13 @@ from telethon.tl.types import (
 from telkap.config import get_settings
 from telkap.db import get_session, log_activity
 from telkap.models import DailyStat, Destination, MessageMap, RetryItem, Rule, Task, utcnow
+from telkap.plans import FEAT_WATERMARK
 from telkap.services.defaults import merged_settings
 from telkap.services.filters import MessageFacts, content_hash, should_copy
 from telkap.services.ratelimit import RateLimiter, hourly_quota
 from telkap.services.subscription import active_plan_for
 from telkap.services.transform import apply_transforms
 from telkap.services.watermark import add_text_watermark
-from telkap.plans import FEAT_WATERMARK
 
 log = logging.getLogger(__name__)
 
@@ -147,7 +148,6 @@ class Copier:
         self.manager = manager
         self.notifier = notifier  # callable(user_id, text) برای هشدار به کاربر
         self.limiter = RateLimiter(get_settings().rate_per_minute)
-        self._album_guard: set[tuple[int, int]] = set()
 
     # ------------------------------------------------------------- هندلرها
     def make_new_message_handler(self, user_id: int):

@@ -14,10 +14,10 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from telkap.config import get_settings
-from telkap.keyboards import BTN_PLANS, plans_menu
 from telkap.handlers.common import Flow, get_or_create_user
+from telkap.keyboards import BTN_PLANS, plans_menu
 from telkap.models import PaymentRequest
-from telkap.plans import PURCHASABLE, POPULAR_CODE, get_plan
+from telkap.plans import POPULAR_CODE, PURCHASABLE, get_plan
 from telkap.services import payments
 from telkap.services.subscription import active_subscription, remaining_days
 from telkap.texts import fa_num

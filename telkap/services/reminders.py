@@ -3,7 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
-from datetime import timezone
+from datetime import UTC
 
 from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
@@ -21,7 +21,7 @@ THRESHOLDS = (3, 1)
 
 
 def _aware(value):
-    return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    return value if value.tzinfo else value.replace(tzinfo=UTC)
 
 
 async def _already_sent(user_id: int, kind: str, sub_id: int) -> bool:

@@ -15,7 +15,6 @@ from telkap.config import get_settings
 from telkap.db import close_db, get_session, init_db
 from telkap.handlers import build_router
 from telkap.handlers import history as history_handlers
-from telkap.handlers import tasks as task_handlers
 from telkap.middlewares import BanMiddleware, ErrorLogMiddleware, ForceJoinMiddleware
 from telkap.models import Task
 from telkap.services import backup, reminders
@@ -104,7 +103,6 @@ async def main() -> None:
     manager.bind_copier(copier)
     history_copier = HistoryCopier(manager, copier, notifier=notify)
     history_handlers.bind(history_copier)
-    task_handlers.bind_history(history_copier)
 
     retry_worker = RetryWorker(manager, copier, notifier=notify)
 

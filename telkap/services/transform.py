@@ -6,8 +6,9 @@
 from __future__ import annotations
 
 import re
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
 URL_RE = re.compile(
     r"""(?xi)
@@ -62,7 +63,7 @@ class TransformResult:
     changed: bool
 
 
-def _apply_replacements(text: str, rules: Iterable["RuleLike"]) -> str:
+def _apply_replacements(text: str, rules: Iterable[RuleLike]) -> str:
     for rule in rules:
         if not rule.enabled or not rule.pattern:
             continue
