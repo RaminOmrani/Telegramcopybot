@@ -6,7 +6,8 @@ import logging
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import func, select
 
 from telkap.db import get_session, log_activity
@@ -18,9 +19,10 @@ from telkap.keyboards import (
     task_menu,
     tasks_list,
 )
-from telkap.models import Task, User
+from telkap.models import DailyStat, Task, User
 from telkap.handlers.common import Flow, get_or_create_user
 from telkap.plans import FEAT_PRIVATE
+from telkap.services.copier import today_key
 from telkap.services.defaults import merged_settings
 from telkap.services.subscription import active_plan_for
 from telkap.services.userbot import manager
@@ -127,6 +129,47 @@ async def cb_open(call: CallbackQuery) -> None:
     task_id = int(call.data.split(":")[2])
     await call.answer()
     await show_task(call.message, task_id, edit=True)
+
+
+@router.callback_query(F.data.startswith("task:stats:"))
+async def cb_stats(call: CallbackQuery) -> None:
+    """آمار ۷ روز گذشته‌ی یک کار."""
+    task_id = int(call.data.split(":")[2])
+    async with get_session() as db:
+        task = await db.get(Task, task_id)
+        if task is None or task.user_id != call.from_user.id:
+            await call.answer("دسترسی ندارید", show_alert=True)
+            return
+        rows = await db.execute(
+            select(DailyStat)
+            .where(DailyStat.task_id == task_id)
+            .order_by(DailyStat.day.desc())
+            .limit(7)
+        )
+        stats = list(rows.scalars())
+
+    await call.answer()
+    lines = [f"📈 <b>آمار «{task.title or task.source_ref}»</b>\n"]
+    if not stats:
+        lines.append("هنوز آماری ثبت نشده است.")
+    else:
+        today = today_key()
+        for stat in stats:
+            label = "امروز" if stat.day == today else fa_num(stat.day)
+            parts = [f"✅ {fa_num(stat.copied)}"]
+            if stat.skipped:
+                parts.append(f"⏭ {fa_num(stat.skipped)}")
+            if stat.failed:
+                parts.append(f"⚠️ {fa_num(stat.failed)}")
+            lines.append(f"<code>{label}</code> — {' | '.join(parts)}")
+        lines.append("\n✅ کپی‌شده | ⏭ رد‌شده | ⚠️ ناموفق")
+
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"task:open:{task_id}"))
+    try:
+        await call.message.edit_text("\n".join(lines), reply_markup=kb.as_markup())
+    except Exception:
+        await call.message.answer("\n".join(lines), reply_markup=kb.as_markup())
 
 
 # ------------------------------------------------------------- ساخت کار

@@ -38,11 +38,11 @@ class FakeClient:
         self._next_id += 1
         return self._next_id
 
-    async def send_message(self, target, text, link_preview=True):
+    async def send_message(self, target, text, link_preview=True, buttons=None):
         self.sent.append(SentRecord(target, text, "text"))
         return FakeSent(self._new_id())
 
-    async def send_file(self, target, files, caption=None):
+    async def send_file(self, target, files, caption=None, buttons=None):
         self.sent.append(SentRecord(target, caption or "", "file"))
         count = len(files) if isinstance(files, list) else 1
         return [FakeSent(self._new_id()) for _ in range(count)]

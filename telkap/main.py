@@ -16,10 +16,12 @@ from telkap.db import close_db, get_session, init_db
 from telkap.handlers import build_router
 from telkap.handlers import history as history_handlers
 from telkap.handlers import tasks as task_handlers
-from telkap.middlewares import BanMiddleware, ErrorLogMiddleware
+from telkap.middlewares import BanMiddleware, ErrorLogMiddleware, ForceJoinMiddleware
 from telkap.models import Task
+from telkap.services import backup, reminders
 from telkap.services.copier import Copier
 from telkap.services.history import HistoryCopier
+from telkap.services.retry import RetryWorker
 from telkap.services.subscription import active_plan_for
 from telkap.services.userbot import manager
 
@@ -104,15 +106,23 @@ async def main() -> None:
     history_handlers.bind(history_copier)
     task_handlers.bind_history(history_copier)
 
+    retry_worker = RetryWorker(manager, copier, notifier=notify)
+
     dispatcher = Dispatcher(storage=MemoryStorage())
-    dispatcher.message.middleware(ErrorLogMiddleware())
-    dispatcher.callback_query.middleware(ErrorLogMiddleware())
-    dispatcher.message.middleware(BanMiddleware())
-    dispatcher.callback_query.middleware(BanMiddleware())
+    for observer in (dispatcher.message, dispatcher.callback_query):
+        observer.middleware(ErrorLogMiddleware())
+        observer.middleware(BanMiddleware())
+        observer.middleware(ForceJoinMiddleware())
     dispatcher.include_router(build_router())
 
     await manager.restore_all()
-    watchdog = asyncio.create_task(subscription_watchdog(notify))
+
+    background = [
+        asyncio.create_task(subscription_watchdog(notify), name="subscriptions"),
+        asyncio.create_task(retry_worker.run_forever(), name="retry"),
+        asyncio.create_task(reminders.run_forever(notify), name="reminders"),
+        asyncio.create_task(backup.run_forever(), name="backup"),
+    ]
 
     me = await bot.get_me()
     log.info("ربات @%s آماده است", me.username)
@@ -121,8 +131,9 @@ async def main() -> None:
         await bot.delete_webhook(drop_pending_updates=True)
         await dispatcher.start_polling(bot)
     finally:
-        watchdog.cancel()
-        await asyncio.gather(watchdog, return_exceptions=True)
+        for task in background:
+            task.cancel()
+        await asyncio.gather(*background, return_exceptions=True)
         await manager.shutdown()
         await bot.session.close()
         await close_db()

@@ -83,6 +83,11 @@ def task_menu(task: Task, *, backfill_running: bool = False) -> InlineKeyboardMa
     )
     kb.row(
         InlineKeyboardButton(text="⚙️ ارسال و ترافیک", callback_data=f"set:send:{task.id}"),
+        InlineKeyboardButton(text="🕐 زمان‌بندی", callback_data=f"set:time:{task.id}"),
+    )
+    kb.row(
+        InlineKeyboardButton(text="📤 کانال‌های مقصد", callback_data=f"dest:list:{task.id}"),
+        InlineKeyboardButton(text="📈 آمار", callback_data=f"task:stats:{task.id}"),
     )
     if backfill_running:
         kb.row(
@@ -234,6 +239,43 @@ def send_menu(task_id: int, cfg: dict) -> InlineKeyboardMarkup:
     )
     kb.row(_flag("همگام‌سازی ویرایش‌ها", bool(cfg.get("sync_edits")), f"flag:sync_edits:{task_id}"))
     kb.row(_flag("همگام‌سازی حذف‌ها", bool(cfg.get("sync_deletes")), f"flag:sync_deletes:{task_id}"))
+    kb.row(_flag("کپی دکمه‌های شیشه‌ای", bool(cfg.get("copy_buttons")), f"flag:copy_buttons:{task_id}"))
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"task:open:{task_id}"))
+    return kb.as_markup()
+
+
+def time_menu(task_id: int, cfg: dict) -> InlineKeyboardMarkup:
+    start = int(cfg.get("active_from_hour") or 0)
+    end = int(cfg.get("active_to_hour") or 0)
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        InlineKeyboardButton(text="➖", callback_data=f"hour:from:-1:{task_id}"),
+        InlineKeyboardButton(text=f"شروع: {fa_num(start)}:۰۰", callback_data="noop"),
+        InlineKeyboardButton(text="➕", callback_data=f"hour:from:1:{task_id}"),
+    )
+    kb.row(
+        InlineKeyboardButton(text="➖", callback_data=f"hour:to:-1:{task_id}"),
+        InlineKeyboardButton(text=f"پایان: {fa_num(end)}:۰۰", callback_data="noop"),
+        InlineKeyboardButton(text="➕", callback_data=f"hour:to:1:{task_id}"),
+    )
+    kb.row(InlineKeyboardButton(text="🔄 ۲۴ ساعته", callback_data=f"hour:reset:0:{task_id}"))
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"task:open:{task_id}"))
+    return kb.as_markup()
+
+
+def destinations_menu(task_id: int, primary: str, extras: list) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text=f"⭐️ {primary[:40]} (اصلی)", callback_data="noop"))
+    for dest in extras:
+        mark = "🟢" if dest.enabled else "🔴"
+        kb.row(
+            InlineKeyboardButton(
+                text=f"{mark} {(dest.title or dest.ref)[:32]}",
+                callback_data=f"dest:toggle:{dest.id}:{task_id}",
+            ),
+            InlineKeyboardButton(text="🗑", callback_data=f"dest:del:{dest.id}:{task_id}"),
+        )
+    kb.row(InlineKeyboardButton(text="➕ افزودن مقصد", callback_data=f"dest:add:{task_id}"))
     kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"task:open:{task_id}"))
     return kb.as_markup()
 

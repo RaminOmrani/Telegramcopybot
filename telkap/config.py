@@ -31,6 +31,11 @@ class Settings:
     rate_per_minute: int = 20
     download_dir: Path = BASE_DIR / "data" / "downloads"
     log_level: str = "INFO"
+    # اختلاف ساعت محلی با UTC، برای زمان‌بندی کارها (ایران = 3.5)
+    timezone_offset: float = 3.5
+    card_number: str = ""
+    card_holder: str = ""
+    backup_hours: int = 12
 
     def is_admin(self, user_id: int) -> bool:
         return user_id in self.admin_ids
@@ -62,6 +67,10 @@ def load_settings() -> Settings:
         rate_per_minute=int(os.getenv("RATE_PER_MINUTE", "20")),
         download_dir=download_dir,
         log_level=os.getenv("LOG_LEVEL", "INFO").upper(),
+        timezone_offset=float(os.getenv("TIMEZONE_OFFSET", "3.5")),
+        card_number=os.getenv("CARD_NUMBER", "").strip(),
+        card_holder=os.getenv("CARD_HOLDER", "").strip(),
+        backup_hours=int(os.getenv("BACKUP_HOURS", "12")),
     )
 
 

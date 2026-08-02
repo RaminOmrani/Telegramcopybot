@@ -35,6 +35,9 @@ class Flow(StatesGroup):
     fwd_dest = State()
     fwd_value = State()
 
+    receipt = State()
+    dest_add = State()
+
     pin_set = State()
     pin_verify = State()
 

@@ -3,25 +3,31 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from datetime import timedelta
 from pathlib import Path
 from typing import Any, Iterable, Sequence
 
 from sqlalchemy import delete, select
+from sqlalchemy.exc import IntegrityError
 from telethon.errors import ChatWriteForbiddenError, FloodWaitError, MessageIdInvalidError
+from telethon.tl.custom import Button
 from telethon.tl.types import (
     DocumentAttributeAnimated,
     DocumentAttributeAudio,
     DocumentAttributeSticker,
     DocumentAttributeVideo,
+    InputMediaPoll,
+    KeyboardButtonUrl,
     MessageMediaDocument,
     MessageMediaPhoto,
     MessageMediaPoll,
     MessageMediaWebPage,
+    Poll,
 )
 
 from telkap.config import get_settings
 from telkap.db import get_session, log_activity
-from telkap.models import MessageMap, Rule, Task, utcnow
+from telkap.models import DailyStat, Destination, MessageMap, RetryItem, Rule, Task, utcnow
 from telkap.services.defaults import merged_settings
 from telkap.services.filters import MessageFacts, content_hash, should_copy
 from telkap.services.ratelimit import RateLimiter, hourly_quota
@@ -31,6 +37,21 @@ from telkap.services.watermark import add_text_watermark
 from telkap.plans import FEAT_WATERMARK
 
 log = logging.getLogger(__name__)
+
+# فاصله‌ی تلاش‌های مجدد بر حسب ثانیه (۱ دقیقه، ۵ دقیقه، ۱۵ دقیقه، ۱ ساعت)
+RETRY_BACKOFF = (60, 300, 900, 3600)
+
+
+def today_key(offset_hours: float | None = None) -> str:
+    """کلید روز جاری به وقت محلی، برای جدول آمار روزانه."""
+    if offset_hours is None:
+        offset_hours = get_settings().timezone_offset
+    return (utcnow() + timedelta(hours=offset_hours)).strftime("%Y-%m-%d")
+
+
+def _as_target(dest_chat: str):
+    """رشته‌ی ذخیره‌شده‌ی مقصد را به آیدی عددی یا یوزرنیم برمی‌گرداند."""
+    return int(dest_chat) if dest_chat.lstrip("-").isdigit() else dest_chat
 
 
 def classify_media(message) -> str:
@@ -62,6 +83,51 @@ def classify_media(message) -> str:
 def media_size(message) -> int:
     doc = getattr(getattr(message, "media", None), "document", None)
     return int(getattr(doc, "size", 0) or 0)
+
+
+def extract_buttons(message) -> list[list[Button]] | None:
+    """دکمه‌های لینک‌دار پست را برای بازسازی در مقصد بیرون می‌کشد.
+
+    فقط دکمه‌های URL قابل کپی‌اند؛ دکمه‌های callback به ربات مبدا وصل‌اند
+    و در کانال دیگری کار نمی‌کنند، پس نادیده گرفته می‌شوند.
+    """
+    markup = getattr(message, "reply_markup", None)
+    if markup is None:
+        return None
+    rows: list[list[Button]] = []
+    for row in getattr(markup, "rows", []) or []:
+        built = [
+            Button.url(btn.text, btn.url)
+            for btn in getattr(row, "buttons", []) or []
+            if isinstance(btn, KeyboardButtonUrl)
+        ]
+        if built:
+            rows.append(built)
+    return rows or None
+
+
+def local_hour(offset_hours: float | None = None) -> int:
+    """ساعت جاری به وقت محلیِ تنظیم‌شده."""
+    if offset_hours is None:
+        offset_hours = get_settings().timezone_offset
+    shifted = utcnow() + timedelta(hours=offset_hours)
+    return shifted.hour
+
+
+def within_active_hours(cfg: dict[str, Any], hour: int | None = None) -> bool:
+    """آیا الان در بازه‌ی ساعتی فعال این کار هستیم؟
+
+    شروع و پایان برابر یعنی ۲۴ ساعته. بازه می‌تواند از نیمه‌شب رد شود
+    (مثلاً ۲۲ تا ۶).
+    """
+    start = int(cfg.get("active_from_hour") or 0)
+    end = int(cfg.get("active_to_hour") or 0)
+    if start == end:
+        return True
+    now = local_hour() if hour is None else hour
+    if start < end:
+        return start <= now < end
+    return now >= start or now < end
 
 
 def build_facts(message) -> MessageFacts:
@@ -131,7 +197,7 @@ class Copier:
                 await self._record_error(task_id, str(exc))
 
     async def process(self, user_id: int, task_id: int, messages: Sequence) -> bool:
-        """یک پیام یا آلبوم را برای یک کار پردازش و ارسال می‌کند."""
+        """یک پیام یا آلبوم را برای یک کار پردازش و به همه‌ی مقصدها ارسال می‌کند."""
         async with get_session() as db:
             task = await db.get(Task, task_id)
             if task is None or not task.enabled:
@@ -140,8 +206,23 @@ class Copier:
                 (await db.execute(select(Rule).where(Rule.task_id == task_id))).scalars()
             )
             cfg = merged_settings(task.settings)
-            dest_ref, dest_id = task.dest_ref, task.dest_id
+            task_title = task.title or str(task_id)
+            targets: list = [task.dest_id or task.dest_ref]
+            extra = await db.execute(
+                select(Destination).where(
+                    Destination.task_id == task_id, Destination.enabled.is_(True)
+                )
+            )
+            targets.extend(dest.chat_id or dest.ref for dest in extra.scalars())
             src_ids = [m.id for m in messages]
+            src_chat_id = task.source_id
+
+        if not within_active_hours(cfg):
+            await self._bump(task_id, user_id, skipped=True)
+            await log_activity(
+                user_id=user_id, task_id=task_id, event="skip", detail="خارج از ساعت فعال کار"
+            )
+            return False
 
         plan = await active_plan_for(user_id)
         if plan is None:
@@ -166,14 +247,14 @@ class Copier:
 
         decision = should_copy(facts, cfg, rules)
         if not decision.allowed:
-            await self._bump(task_id, skipped=True)
+            await self._bump(task_id, user_id, skipped=True)
             await log_activity(
                 user_id=user_id, task_id=task_id, event="skip", detail=decision.reason
             )
             return False
 
         if not hourly_quota.allow(task_id, int(cfg.get("max_per_hour") or 0)):
-            await self._bump(task_id, skipped=True)
+            await self._bump(task_id, user_id, skipped=True)
             await log_activity(
                 user_id=user_id, task_id=task_id, event="skip", detail="سقف ساعتی پر شده است"
             )
@@ -181,7 +262,7 @@ class Copier:
 
         digest = content_hash(facts)
         if cfg.get("skip_duplicates") and await self._is_duplicate(task_id, digest):
-            await self._bump(task_id, skipped=True)
+            await self._bump(task_id, user_id, skipped=True)
             await log_activity(
                 user_id=user_id, task_id=task_id, event="skip", detail="پست تکراری"
             )
@@ -197,28 +278,44 @@ class Copier:
         if delay > 0:
             await asyncio.sleep(min(delay, 3600))
 
-        target = dest_id or dest_ref
-        await self.limiter.acquire(str(target))
-
         allow_watermark = plan.has(FEAT_WATERMARK)
-        try:
-            sent = await self._send(
-                client, target, messages, text, cfg, allow_watermark=allow_watermark
-            )
-        except ChatWriteForbiddenError:
-            await self._pause_task(task_id, "دسترسی ارسال به کانال مقصد وجود ندارد")
-            if self.notifier:
-                await self.notifier(
-                    user_id,
-                    f"⚠️ کار «{task.title or task_id}» متوقف شد: "
-                    "اکانت شما اجازه‌ی ارسال در کانال مقصد را ندارد.",
-                )
-            return False
+        any_sent = False
 
-        if sent:
-            await self._remember(task_id, src_ids, sent, digest)
-            await self._bump(task_id, skipped=False)
-        return bool(sent)
+        for target in targets:
+            await self.limiter.acquire(str(target))
+            try:
+                sent = await self._send(
+                    client, target, messages, text, cfg, allow_watermark=allow_watermark
+                )
+            except ChatWriteForbiddenError:
+                # فقط اگر مقصد اصلی مشکل دارد کار را متوقف می‌کنیم
+                if target == targets[0]:
+                    await self._pause_task(task_id, "دسترسی ارسال به کانال مقصد وجود ندارد")
+                    if self.notifier:
+                        await self.notifier(
+                            user_id,
+                            f"⚠️ کار «{task_title}» متوقف شد: "
+                            "اکانت شما اجازه‌ی ارسال در کانال مقصد را ندارد.",
+                        )
+                    return False
+                await self._disable_destination(task_id, target)
+                continue
+            except FloodWaitError:
+                raise
+            except Exception as exc:
+                log.exception("ارسال به مقصد %s ناموفق بود؛ در صف تلاش مجدد", target)
+                await self._enqueue_retry(
+                    task_id, user_id, src_chat_id, src_ids, str(target), str(exc)
+                )
+                continue
+
+            if sent:
+                any_sent = True
+                await self._remember(task_id, src_ids, sent, digest, str(target))
+
+        if any_sent:
+            await self._bump(task_id, user_id, skipped=False)
+        return any_sent
 
     async def _send(
         self,
@@ -238,11 +335,19 @@ class Copier:
             return [m.id for m in result if m]
 
         media_kind = classify_media(messages[0])
+        buttons = extract_buttons(messages[0]) if cfg.get("copy_buttons") else None
 
-        if cfg.get("caption_only") or media_kind in {"text", "poll"}:
+        # نظرسنجی محتوای متنی ندارد؛ باید به‌صورت نظرسنجی تازه ساخته شود
+        if media_kind == "poll" and not cfg.get("caption_only"):
+            sent = await self._send_poll(client, target, messages[0])
+            return [sent] if sent else []
+
+        if cfg.get("caption_only") or media_kind == "text":
             if not text.strip():
                 return []
-            sent = await client.send_message(target, text, link_preview=False)
+            sent = await client.send_message(
+                target, text, link_preview=False, buttons=buttons
+            )
             return [sent.id]
 
         watermarking = (
@@ -255,7 +360,9 @@ class Copier:
         if watermarking:
             files = await self._watermarked_files(client, messages, cfg)
             try:
-                sent = await client.send_file(target, files, caption=text or None)
+                sent = await client.send_file(
+                    target, files, caption=text or None, buttons=buttons
+                )
             finally:
                 for path in files:
                     Path(path).unlink(missing_ok=True)
@@ -264,10 +371,14 @@ class Copier:
             if not payload:
                 if not text.strip():
                     return []
-                sent = await client.send_message(target, text, link_preview=False)
+                sent = await client.send_message(
+                    target, text, link_preview=False, buttons=buttons
+                )
                 return [sent.id]
             try:
-                sent = await client.send_file(target, payload, caption=text or None)
+                sent = await client.send_file(
+                    target, payload, caption=text or None, buttons=buttons
+                )
             except (FloodWaitError, ChatWriteForbiddenError):
                 raise  # این دو را لایه‌ی بالاتر مدیریت می‌کند
             except Exception:
@@ -276,13 +387,42 @@ class Copier:
                 log.info("ارسال مستقیم رسانه ناموفق بود؛ دانلود و آپلود مجدد")
                 files = await self._download_all(client, messages)
                 try:
-                    sent = await client.send_file(target, files, caption=text or None)
+                    sent = await client.send_file(
+                        target, files, caption=text or None, buttons=buttons
+                    )
                 finally:
                     for path in files:
                         Path(path).unlink(missing_ok=True)
 
         sent = sent if isinstance(sent, list) else [sent]
         return [m.id for m in sent if m]
+
+    async def _send_poll(self, client, target, message) -> int | None:
+        """نظرسنجی را به‌صورت یک نظرسنجی تازه در مقصد می‌سازد.
+
+        تلگرام اجازه‌ی «کپی» نظرسنجی را نمی‌دهد، فقط ساخت دوباره‌ی آن را.
+        """
+        poll = getattr(message.media, "poll", None)
+        if poll is None:
+            return None
+        try:
+            # سؤال و گزینه‌ها عیناً بازاستفاده می‌شوند تا با تغییر قالب
+            # متن در نسخه‌های مختلف تلگرام سازگار بماند
+            new_poll = InputMediaPoll(
+                poll=Poll(
+                    id=0,
+                    question=poll.question,
+                    answers=list(poll.answers),
+                    multiple_choice=bool(getattr(poll, "multiple_choice", False)),
+                    public_voters=bool(getattr(poll, "public_voters", False)),
+                    quiz=bool(getattr(poll, "quiz", False)),
+                )
+            )
+            sent = await client.send_file(target, new_poll)
+            return sent.id
+        except Exception:
+            log.exception("ساخت دوباره‌ی نظرسنجی ناموفق بود")
+            return None
 
     async def _download_all(self, client, messages: Sequence) -> list[str]:
         out_dir = get_settings().download_dir
@@ -333,27 +473,33 @@ class Copier:
             rules = list(
                 (await db.execute(select(Rule).where(Rule.task_id == task_id))).scalars()
             )
-            row = await db.execute(
+            rows = await db.execute(
                 select(MessageMap).where(
                     MessageMap.task_id == task_id, MessageMap.src_msg_id == message.id
                 )
             )
-            mapping = row.scalar_one_or_none()
-            target = task.dest_id or task.dest_ref
-        if mapping is None:
+            mappings = list(rows.scalars())
+        if not mappings:
             return
 
         client = await self.manager.ensure_client(user_id)
         if client is None:
             return
         text = apply_transforms(message.message or "", cfg, rules)
-        try:
-            await client.edit_message(target, mapping.dst_msg_id, text)
-            await log_activity(user_id=user_id, task_id=task_id, event="edit", detail=f"#{message.id}")
-        except (MessageIdInvalidError, ValueError):
-            log.debug("ویرایش پیام %s ممکن نبود", mapping.dst_msg_id)
-        except FloodWaitError as exc:
-            await asyncio.sleep(min(exc.seconds, 300))
+        for mapping in mappings:
+            try:
+                await client.edit_message(
+                    _as_target(mapping.dest_chat), mapping.dst_msg_id, text
+                )
+            except (MessageIdInvalidError, ValueError):
+                log.debug("ویرایش پیام %s ممکن نبود", mapping.dst_msg_id)
+            except FloodWaitError as exc:
+                await asyncio.sleep(min(exc.seconds, 300))
+            except Exception:
+                log.debug("ویرایش در مقصد %s ناموفق بود", mapping.dest_chat, exc_info=True)
+        await log_activity(
+            user_id=user_id, task_id=task_id, event="edit", detail=f"#{message.id}"
+        )
 
     async def _sync_delete(self, user_id: int, task_id: int, deleted_ids: Iterable[int]) -> None:
         async with get_session() as db:
@@ -369,20 +515,25 @@ class Copier:
                 )
             )
             mappings = list(rows.scalars())
-            target = task.dest_id or task.dest_ref
 
         if not mappings:
             return
         client = await self.manager.ensure_client(user_id)
         if client is None:
             return
-        try:
-            await client.delete_messages(target, [m.dst_msg_id for m in mappings])
-            await log_activity(
-                user_id=user_id, task_id=task_id, event="delete", detail=f"{len(mappings)} پیام"
-            )
-        except Exception:
-            log.debug("حذف پیام‌های مقصد ناموفق بود", exc_info=True)
+
+        by_dest: dict[str, list[int]] = {}
+        for mapping in mappings:
+            by_dest.setdefault(mapping.dest_chat, []).append(mapping.dst_msg_id)
+
+        for dest_chat, msg_ids in by_dest.items():
+            try:
+                await client.delete_messages(_as_target(dest_chat), msg_ids)
+            except Exception:
+                log.debug("حذف در مقصد %s ناموفق بود", dest_chat, exc_info=True)
+        await log_activity(
+            user_id=user_id, task_id=task_id, event="delete", detail=f"{len(mappings)} پیام"
+        )
 
     # -------------------------------------------------------------- کمکی
     async def _is_duplicate(self, task_id: int, digest: str) -> bool:
@@ -395,7 +546,12 @@ class Copier:
             return row.scalar_one_or_none() is not None
 
     async def _remember(
-        self, task_id: int, src_ids: Sequence[int], dst_ids: Sequence[int], digest: str
+        self,
+        task_id: int,
+        src_ids: Sequence[int],
+        dst_ids: Sequence[int],
+        digest: str,
+        dest_chat: str,
     ) -> None:
         if not src_ids or not dst_ids:
             return
@@ -404,7 +560,9 @@ class Copier:
                 dst_id = dst_ids[index] if index < len(dst_ids) else dst_ids[0]
                 existing = await db.execute(
                     select(MessageMap).where(
-                        MessageMap.task_id == task_id, MessageMap.src_msg_id == src_id
+                        MessageMap.task_id == task_id,
+                        MessageMap.src_msg_id == src_id,
+                        MessageMap.dest_chat == dest_chat,
                     )
                 )
                 if existing.scalar_one_or_none() is not None:
@@ -414,11 +572,65 @@ class Copier:
                         task_id=task_id,
                         src_msg_id=src_id,
                         dst_msg_id=dst_id,
+                        dest_chat=dest_chat,
                         content_hash=digest if index == 0 else None,
                     )
                 )
             await db.commit()
         await self._trim_history(task_id)
+
+    async def _enqueue_retry(
+        self,
+        task_id: int,
+        user_id: int,
+        src_chat_id: int | None,
+        src_ids: Sequence[int],
+        dest_chat: str,
+        error: str,
+    ) -> None:
+        """پستی که ارسالش شکست خورد را در صف تلاش مجدد می‌گذارد."""
+        if src_chat_id is None or not src_ids:
+            # بدون نشانی مبدا نمی‌توان پیام را دوباره خواند
+            await self._record_error(task_id, error)
+            return
+        async with get_session() as db:
+            db.add(
+                RetryItem(
+                    task_id=task_id,
+                    user_id=user_id,
+                    src_chat_id=src_chat_id,
+                    src_msg_ids=",".join(str(i) for i in src_ids),
+                    dest_chat=dest_chat,
+                    next_try_at=utcnow() + timedelta(seconds=RETRY_BACKOFF[0]),
+                    last_error=error[:400],
+                )
+            )
+            await db.commit()
+        await self._bump_daily(task_id, user_id, field="failed")
+        await log_activity(
+            user_id=user_id,
+            task_id=task_id,
+            event="retry_queued",
+            detail=f"{dest_chat}: {error}"[:600],
+            level="warning",
+        )
+
+    async def _disable_destination(self, task_id: int, target) -> None:
+        """مقصد اضافی‌ای که اجازه‌ی ارسال ندارد را خاموش می‌کند."""
+        async with get_session() as db:
+            rows = await db.execute(
+                select(Destination).where(Destination.task_id == task_id)
+            )
+            for dest in rows.scalars():
+                if str(dest.chat_id or dest.ref) == str(target):
+                    dest.enabled = False
+            await db.commit()
+        await log_activity(
+            task_id=task_id,
+            event="dest_disabled",
+            detail=f"مقصد {target} به‌دلیل نبود دسترسی خاموش شد",
+            level="warning",
+        )
 
     async def _trim_history(self, task_id: int, keep: int = 3000) -> None:
         """جدول نگاشت را کوتاه نگه می‌دارد تا بی‌نهایت رشد نکند."""
@@ -434,7 +646,7 @@ class Copier:
                 await db.execute(delete(MessageMap).where(MessageMap.id.in_(stale)))
                 await db.commit()
 
-    async def _bump(self, task_id: int, *, skipped: bool) -> None:
+    async def _bump(self, task_id: int, user_id: int, *, skipped: bool) -> None:
         async with get_session() as db:
             task = await db.get(Task, task_id)
             if task is None:
@@ -446,6 +658,29 @@ class Copier:
                 task.last_copy_at = utcnow()
                 task.last_error = None
             await db.commit()
+        await self._bump_daily(task_id, user_id, field="skipped" if skipped else "copied")
+
+    async def _bump_daily(self, task_id: int, user_id: int, *, field: str) -> None:
+        """شمارنده‌ی آمار امروز را یک واحد بالا می‌برد."""
+        day = today_key()
+        async with get_session() as db:
+            row = await db.execute(
+                select(DailyStat).where(DailyStat.task_id == task_id, DailyStat.day == day)
+            )
+            stat = row.scalar_one_or_none()
+            if stat is None:
+                # مقادیر صفر صریح لازم است: پیش‌فرض ستون تازه هنگام flush
+                # اعمال می‌شود و تا آن لحظه None است
+                stat = DailyStat(
+                    task_id=task_id, user_id=user_id, day=day, copied=0, skipped=0, failed=0
+                )
+                db.add(stat)
+            setattr(stat, field, (getattr(stat, field) or 0) + 1)
+            try:
+                await db.commit()
+            except IntegrityError:
+                # همزمانی دو کپی روی یک کار؛ دفعه‌ی بعد ثبت می‌شود
+                await db.rollback()
 
     async def _record_error(self, task_id: int, detail: str) -> None:
         async with get_session() as db:

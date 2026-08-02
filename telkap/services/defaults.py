@@ -64,6 +64,15 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     # --- همگام‌سازی ---
     "sync_edits": True,
     "sync_deletes": False,
+
+    # --- زمان‌بندی ---
+    # ساعت فعال بودن کار (به وقت محلی تعیین‌شده در TIMEZONE_OFFSET).
+    # اگر شروع و پایان برابر باشند، یعنی ۲۴ ساعته.
+    "active_from_hour": 0,
+    "active_to_hour": 0,
+
+    # --- دکمه‌های شیشه‌ای ---
+    "copy_buttons": False,   # دکمه‌های زیر پست هم کپی شوند
 }
 
 

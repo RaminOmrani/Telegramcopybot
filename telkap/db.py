@@ -6,6 +6,7 @@ from contextlib import asynccontextmanager
 from pathlib import Path
 from typing import AsyncIterator
 
+from sqlalchemy import inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from telkap.config import BASE_DIR, get_settings
@@ -27,6 +28,38 @@ def _ensure_sqlite_dir(url: str) -> None:
     path.parent.mkdir(parents=True, exist_ok=True)
 
 
+def _table_columns(conn, table: str) -> set[str]:
+    inspector = inspect(conn)
+    if table not in inspector.get_table_names():
+        return set()
+    return {col["name"] for col in inspector.get_columns(table)}
+
+
+def _prepare_schema(conn) -> bool:
+    """مهاجرت‌های لازم پیش از create_all.
+
+    خروجی True یعنی داده‌ی جدول قدیمی message_map باید بعداً منتقل شود.
+    """
+    columns = _table_columns(conn, "message_map")
+    if columns and "dest_chat" not in columns:
+        # ستون و قید یکتای جدید لازم است؛ در SQLite با ساخت دوباره‌ی جدول
+        log.info("مهاجرت جدول message_map برای پشتیبانی از چند مقصد…")
+        conn.exec_driver_sql("ALTER TABLE message_map RENAME TO message_map_legacy")
+        return True
+    return False
+
+
+def _finish_schema(conn, migrated: bool) -> None:
+    if not migrated:
+        return
+    conn.exec_driver_sql(
+        "INSERT INTO message_map (task_id, src_msg_id, dst_msg_id, dest_chat, content_hash, created_at) "
+        "SELECT task_id, src_msg_id, dst_msg_id, '', content_hash, created_at FROM message_map_legacy"
+    )
+    conn.exec_driver_sql("DROP TABLE message_map_legacy")
+    log.info("مهاجرت message_map انجام شد")
+
+
 async def init_db() -> None:
     global _engine, _session_factory
     url = get_settings().database_url
@@ -34,7 +67,9 @@ async def init_db() -> None:
     _engine = create_async_engine(url, echo=False, pool_pre_ping=True)
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
     async with _engine.begin() as conn:
+        migrated = await conn.run_sync(_prepare_schema)
         await conn.run_sync(Base.metadata.create_all)
+        await conn.run_sync(_finish_schema, migrated)
     log.info("دیتابیس آماده شد: %s", url)
 
 

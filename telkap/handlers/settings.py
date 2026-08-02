@@ -16,6 +16,7 @@ from telkap.keyboards import (
     rules_menu,
     send_menu,
     text_menu,
+    time_menu,
     watermark_menu,
 )
 from telkap.models import Rule, Task
@@ -50,6 +51,11 @@ PANELS = {
     "text": ("✍️ <b>هدر، فوتر و امضا</b>\nمتن‌های ثابت پست‌ها:", text_menu),
     "wm": ("💧 <b>واترمارک تصاویر</b>\nروی عکس‌های ارسالی درج می‌شود:", watermark_menu),
     "send": ("⚙️ <b>ارسال و ترافیک</b>\nشیوه و سرعت انتشار:", send_menu),
+    "time": (
+        "🕐 <b>زمان‌بندی</b>\nفقط در این بازه کپی انجام می‌شود.\n"
+        "اگر شروع و پایان برابر باشند، کار ۲۴ ساعته است:",
+        time_menu,
+    ),
 }
 
 # متن پرسش و اعتبارسنجی برای هر تنظیم متنی/عددی
@@ -123,7 +129,31 @@ FLAG_PANEL = {
     "watermark_enabled": "wm",
     "sync_edits": "send",
     "sync_deletes": "send",
+    "copy_buttons": "send",
 }
+
+
+@router.callback_query(F.data.startswith("hour:"))
+async def cb_hours(call: CallbackQuery) -> None:
+    """تنظیم بازه‌ی ساعتی فعال بودن کار."""
+    _, field, raw_step, raw_id = call.data.split(":")
+    task_id = int(raw_id)
+    task = await _owned_task(call.from_user.id, task_id)
+    if task is None:
+        await call.answer("دسترسی ندارید", show_alert=True)
+        return
+
+    cfg = merged_settings(task.settings)
+    if field == "reset":
+        cfg["active_from_hour"] = 0
+        cfg["active_to_hour"] = 0
+    else:
+        key = "active_from_hour" if field == "from" else "active_to_hour"
+        cfg[key] = (int(cfg.get(key) or 0) + int(raw_step)) % 24
+
+    await _save_settings(task_id, cfg)
+    await call.answer()
+    await _render(call, "time", task_id)
 
 
 @router.callback_query(F.data.startswith("flag:"))
