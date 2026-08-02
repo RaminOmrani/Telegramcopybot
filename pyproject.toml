@@ -1,0 +1,21 @@
+[project]
+name = "telkap-copy-bot"
+version = "1.0.0"
+description = "ربات تلگرام کپی خودکار محتوا از کانال‌ها"
+requires-python = ">=3.11"
+
+[project.scripts]
+telkap = "telkap.main:run"
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+asyncio_mode = "strict"
+filterwarnings = ["ignore::DeprecationWarning"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py311"
+
+[tool.ruff.lint]
+select = ["E", "F", "W", "I", "UP", "B"]
+ignore = ["B008"]

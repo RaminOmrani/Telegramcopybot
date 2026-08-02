@@ -1,0 +1,14 @@
+services:
+  bot:
+    build: .
+    container_name: telkap-bot
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # دیتابیس و سشن‌ها باید بین ری‌استارت‌ها باقی بمانند
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
