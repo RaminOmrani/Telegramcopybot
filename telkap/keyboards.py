@@ -283,14 +283,23 @@ def destinations_menu(task_id: int, primary: str, extras: list) -> InlineKeyboar
     kb.row(InlineKeyboardButton(text=f"⭐️ {primary[:40]} (اصلی)", callback_data="noop"))
     for dest in extras:
         mark = "🟢" if dest.enabled else "🔴"
+        has_own = "✍️" if (dest.overrides or {}) else "➕"
         kb.row(
             InlineKeyboardButton(
-                text=f"{mark} {(dest.title or dest.ref)[:32]}",
+                text=f"{mark} {(dest.title or dest.ref)[:28]}",
                 callback_data=f"dest:toggle:{dest.id}:{task_id}",
+            ),
+            InlineKeyboardButton(
+                text=has_own, callback_data=f"dest:sig:{dest.id}:{task_id}"
             ),
             InlineKeyboardButton(text="🗑", callback_data=f"dest:del:{dest.id}:{task_id}"),
         )
     kb.row(InlineKeyboardButton(text="➕ افزودن مقصد", callback_data=f"dest:add:{task_id}"))
+    kb.row(
+        InlineKeyboardButton(
+            text="✍️ = امضای اختصاصی دارد | ➕ = تعیین امضا", callback_data="noop"
+        )
+    )
     kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"task:open:{task_id}"))
     return kb.as_markup()
 

@@ -49,7 +49,27 @@ def _prepare_schema(conn) -> bool:
     return False
 
 
+def _add_missing_columns(conn) -> None:
+    """ستون‌هایی که بعداً اضافه شده‌اند را به جدول‌های موجود می‌افزاید.
+
+    create_all فقط جدول نبوده را می‌سازد و ستون جدید را به جدول موجود
+    اضافه نمی‌کند.
+    """
+    additions = {
+        "destinations": [("overrides", "JSON DEFAULT '{}'")],
+    }
+    for table, columns in additions.items():
+        existing = _table_columns(conn, table)
+        if not existing:
+            continue  # جدول تازه ساخته می‌شود و ستون را دارد
+        for name, spec in columns:
+            if name not in existing:
+                log.info("افزودن ستون %s.%s", table, name)
+                conn.exec_driver_sql(f"ALTER TABLE {table} ADD COLUMN {name} {spec}")
+
+
 def _finish_schema(conn, migrated: bool) -> None:
+    _add_missing_columns(conn)
     # ایندکس‌هایی که روی جدول‌های از پیش موجود ساخته نمی‌شوند
     conn.exec_driver_sql(
         "CREATE INDEX IF NOT EXISTS ix_message_map_dedupe "

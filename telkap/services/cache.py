@@ -37,6 +37,18 @@ class RuleSnapshot:
 
 
 @dataclass(slots=True)
+class TargetSpec:
+    """یک مقصد به‌همراه تنظیمات اختصاصی‌اش."""
+
+    target: str | int
+    overrides: dict[str, Any] = field(default_factory=dict)
+
+    @property
+    def key(self) -> str:
+        return str(self.target)
+
+
+@dataclass(slots=True)
 class TaskSnapshot:
     """همه‌ی چیزی که موتور کپی برای پردازش یک پست لازم دارد."""
 
@@ -46,7 +58,7 @@ class TaskSnapshot:
     enabled: bool
     source_id: int | None
     source_ref: str
-    targets: list[str | int]
+    targets: list[TargetSpec]
     cfg: dict[str, Any]
     rules: list[RuleSnapshot] = field(default_factory=list)
 
@@ -71,8 +83,12 @@ async def get_task(task_id: int) -> TaskSnapshot | None:
                 Destination.task_id == task_id, Destination.enabled.is_(True)
             )
         )
-        targets: list[str | int] = [task.dest_id or task.dest_ref]
-        targets.extend(dest.chat_id or dest.ref for dest in extra.scalars())
+        # مقصد اصلی تنظیمات اختصاصی ندارد؛ همان تنظیمات کار را می‌گیرد
+        targets: list[TargetSpec] = [TargetSpec(task.dest_id or task.dest_ref)]
+        targets.extend(
+            TargetSpec(dest.chat_id or dest.ref, dict(dest.overrides or {}))
+            for dest in extra.scalars()
+        )
 
         snapshot = TaskSnapshot(
             id=task.id,

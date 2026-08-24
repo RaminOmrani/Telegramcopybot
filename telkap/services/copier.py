@@ -286,21 +286,30 @@ class Copier:
         allow_watermark = plan.has(FEAT_WATERMARK)
         any_sent = False
 
-        for target in targets:
+        for spec in targets:
+            target = spec.target
+            # مقصدی که امضا یا فوتر اختصاصی دارد، متنش جدا ساخته می‌شود
+            if spec.overrides:
+                dest_cfg = {**cfg, **spec.overrides}
+                dest_text = apply_transforms(facts.text, dest_cfg, rules)
+                dest_entities = remap_entities(facts.text, dest_text, src_entities)
+            else:
+                dest_cfg, dest_text, dest_entities = cfg, text, entities
+
             await self.limiter.acquire(str(target))
             try:
                 sent = await self._send(
                     client,
                     target,
                     messages,
-                    text,
-                    cfg,
+                    dest_text,
+                    dest_cfg,
                     allow_watermark=allow_watermark,
-                    entities=entities,
+                    entities=dest_entities,
                 )
             except ChatWriteForbiddenError:
                 # فقط اگر مقصد اصلی مشکل دارد کار را متوقف می‌کنیم
-                if target == targets[0]:
+                if spec is targets[0]:
                     await self._pause_task(task_id, "دسترسی ارسال به کانال مقصد وجود ندارد")
                     if self.notifier:
                         await self.notifier(

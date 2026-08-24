@@ -38,6 +38,7 @@ class Flow(StatesGroup):
 
     receipt = State()
     dest_add = State()
+    dest_override = State()
     import_settings = State()
 
     pin_set = State()
@@ -45,6 +46,9 @@ class Flow(StatesGroup):
 
     admin_grant = State()
     admin_broadcast = State()
+    admin_user_find = State()
+    admin_days = State()
+    admin_dm = State()
 
 
 async def get_or_create_user(tg_user: TgUser) -> User:

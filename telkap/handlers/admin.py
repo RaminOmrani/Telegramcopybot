@@ -33,6 +33,7 @@ def _is_admin(user_id: int) -> bool:
 def admin_menu(pending: int = 0) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     badge = f" ({fa_num(pending)})" if pending else ""
+    kb.row(InlineKeyboardButton(text="👥 مدیریت کاربران", callback_data="adm:users"))
     kb.row(InlineKeyboardButton(text=f"🧾 رسیدهای در انتظار{badge}", callback_data="adm:pay"))
     kb.row(
         InlineKeyboardButton(text="📊 آمار", callback_data="adm:stats"),
@@ -327,6 +328,8 @@ async def cb_ban_help(call: CallbackQuery) -> None:
     await call.answer()
     await call.message.edit_text(
         "🚫 <b>مسدودسازی</b>\n\n"
+        "ساده‌ترین راه: «👥 مدیریت کاربران» → انتخاب کاربر → دکمه‌ی مسدود کردن.\n\n"
+        "معادل دستوری:\n"
         "<code>/ban 123456789</code> — مسدود کردن\n"
         "<code>/unban 123456789</code> — آزاد کردن\n\n"
         "با مسدود شدن، کارهای کپی کاربر هم متوقف می‌شوند.",

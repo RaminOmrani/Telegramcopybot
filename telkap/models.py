@@ -167,6 +167,9 @@ class Destination(Base):
     ref: Mapped[str] = mapped_column(String(128))
     title: Mapped[str] = mapped_column(String(160), default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # تنظیمات اختصاصی این مقصد که روی تنظیمات کار سوار می‌شود؛
+    # مثلاً امضا یا فوتر متفاوت برای هر کانال
+    overrides: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     task: Mapped[Task] = relationship(back_populates="destinations")

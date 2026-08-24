@@ -5,7 +5,8 @@ import logging
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import func, select
 
 from telkap.db import get_session, log_activity
@@ -180,3 +181,139 @@ async def cb_delete(call: CallbackQuery) -> None:
     cache.invalidate_task(task.id)
     await call.answer("حذف شد")
     await _render(call.message, task, edit=True)
+
+
+# ------------------------------------------------- امضای اختصاصی هر مقصد
+SIG_FIELDS = {
+    "footer": "🔻 فوتر",
+    "signature": "🖋 امضای جایگزین",
+    "header": "🔝 هدر",
+}
+
+
+def _sig_menu(dest: Destination, task_id: int) -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    overrides = dest.overrides or {}
+    for key, label in SIG_FIELDS.items():
+        mark = "✅" if overrides.get(key) else "▫️"
+        kb.row(
+            InlineKeyboardButton(
+                text=f"{mark} {label}", callback_data=f"dsig:set:{key}:{dest.id}:{task_id}"
+            )
+        )
+    if overrides:
+        kb.row(
+            InlineKeyboardButton(
+                text="♻️ برگرداندن به تنظیمات کار",
+                callback_data=f"dsig:clear:x:{dest.id}:{task_id}",
+            )
+        )
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"dest:list:{task_id}"))
+    return kb
+
+
+def _sig_text(dest: Destination) -> str:
+    overrides = dest.overrides or {}
+    lines = [
+        f"✍️ <b>متن اختصاصی «{dest.title or dest.ref}»</b>\n",
+        "این مقادیر فقط برای همین کانال اعمال می‌شوند و جای تنظیمات کار را می‌گیرند.",
+        "بقیه‌ی تنظیمات (فیلترها، جایگزینی‌ها، واترمارک) از خود کار می‌آید.\n",
+    ]
+    for key, label in SIG_FIELDS.items():
+        value = overrides.get(key)
+        lines.append(f"{label}: {('<code>' + value + '</code>') if value else '— از تنظیمات کار —'}")
+    return "\n".join(lines)
+
+
+async def _render_sig(target: Message, dest_id: int, task_id: int) -> None:
+    async with get_session() as db:
+        dest = await db.get(Destination, dest_id)
+    if dest is None or dest.task_id != task_id:
+        await target.answer("این مقصد پیدا نشد.")
+        return
+    markup = _sig_menu(dest, task_id).as_markup()
+    try:
+        await target.edit_text(_sig_text(dest), reply_markup=markup)
+    except Exception:
+        await target.answer(_sig_text(dest), reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("dest:sig:"))
+async def cb_sig(call: CallbackQuery) -> None:
+    _, _, raw_dest, raw_task = call.data.split(":")
+    task = await _owned(call.from_user.id, int(raw_task))
+    if task is None:
+        await call.answer("دسترسی ندارید", show_alert=True)
+        return
+    await call.answer()
+    await _render_sig(call.message, int(raw_dest), task.id)
+
+
+@router.callback_query(F.data.startswith("dsig:"))
+async def cb_sig_action(call: CallbackQuery, state: FSMContext) -> None:
+    _, action, key, raw_dest, raw_task = call.data.split(":")
+    task_id, dest_id = int(raw_task), int(raw_dest)
+    task = await _owned(call.from_user.id, task_id)
+    if task is None:
+        await call.answer("دسترسی ندارید", show_alert=True)
+        return
+
+    if action == "clear":
+        async with get_session() as db:
+            dest = await db.get(Destination, dest_id)
+            if dest is not None and dest.task_id == task_id:
+                dest.overrides = {}
+                await db.commit()
+        cache.invalidate_task(task_id)
+        await call.answer("پاک شد")
+        await _render_sig(call.message, dest_id, task_id)
+        return
+
+    if key not in SIG_FIELDS:
+        await call.answer()
+        return
+    await call.answer()
+    await state.set_state(Flow.dest_override)
+    await state.update_data(dest_id=dest_id, task_id=task_id, field=key)
+    await call.message.answer(
+        f"{SIG_FIELDS[key]} اختصاصی این کانال را بفرستید.\n"
+        "برای برگشت به تنظیمات کار، یک نقطه <code>.</code> بفرستید.\n\n"
+        "انصراف: /cancel"
+    )
+
+
+@router.message(Flow.dest_override)
+async def got_override(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    task_id, dest_id = int(data.get("task_id", 0)), int(data.get("dest_id", 0))
+    field = data.get("field")
+    if await _owned(message.from_user.id, task_id) is None or field not in SIG_FIELDS:
+        await state.clear()
+        await message.answer("این مقصد پیدا نشد.")
+        return
+
+    raw = (message.text or "").strip()
+    async with get_session() as db:
+        dest = await db.get(Destination, dest_id)
+        if dest is None or dest.task_id != task_id:
+            await state.clear()
+            await message.answer("این مقصد پیدا نشد.")
+            return
+        overrides = dict(dest.overrides or {})
+        if raw == ".":
+            overrides.pop(field, None)
+        else:
+            overrides[field] = raw[:1000]
+        dest.overrides = overrides
+        await db.commit()
+        await db.refresh(dest)
+
+    cache.invalidate_task(task_id)
+    await state.clear()
+    await log_activity(
+        user_id=message.from_user.id,
+        task_id=task_id,
+        event="dest_override",
+        detail=f"{dest.ref}: {field}",
+    )
+    await message.answer(_sig_text(dest), reply_markup=_sig_menu(dest, task_id).as_markup())

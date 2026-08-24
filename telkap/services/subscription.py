@@ -94,3 +94,64 @@ async def remaining_days(user_id: int) -> int:
         expires = expires.replace(tzinfo=UTC)
     delta = expires - utcnow()
     return max(0, delta.days + (1 if delta.seconds else 0))
+
+
+async def adjust_days(user_id: int, days: int, *, admin_id: int | None = None):
+    """روز به اشتراک فعال اضافه یا از آن کم می‌کند.
+
+    عدد منفی یعنی کم کردن. اگر اشتراک فعالی نباشد، None برمی‌گردد —
+    در آن حالت ادمین باید اول یک پلن بدهد تا سطح دسترسی مشخص شود.
+    """
+    sub = await active_subscription(user_id)
+    if sub is None:
+        return None
+
+    async with get_session() as db:
+        row = await db.get(Subscription, sub.id)
+        if row is None:
+            return None
+        expires = row.expires_at
+        if expires.tzinfo is None:
+            expires = expires.replace(tzinfo=UTC)
+        new_expiry = expires + timedelta(days=days)
+        # کم کردن بیش از حد، اشتراک را همین حالا تمام می‌کند
+        row.expires_at = max(new_expiry, utcnow())
+        await db.commit()
+        await db.refresh(row)
+
+    from telkap.services import cache
+
+    cache.invalidate_user(user_id)
+    await log_activity(
+        user_id=user_id,
+        event="subscription_adjust",
+        detail=f"{days:+d} روز توسط ادمین {admin_id or '—'}",
+    )
+    return row
+
+
+async def revoke(user_id: int, *, admin_id: int | None = None) -> int:
+    """همه‌ی اشتراک‌های فعال کاربر را همین حالا تمام می‌کند."""
+    now = utcnow()
+    async with get_session() as db:
+        rows = await db.execute(
+            select(Subscription).where(
+                Subscription.user_id == user_id, Subscription.expires_at > now
+            )
+        )
+        subs = list(rows.scalars())
+        for sub in subs:
+            sub.expires_at = now
+        await db.commit()
+
+    from telkap.services import cache
+
+    cache.invalidate_user(user_id)
+    if subs:
+        await log_activity(
+            user_id=user_id,
+            event="subscription_revoke",
+            detail=f"{len(subs)} اشتراک توسط ادمین {admin_id or '—'} لغو شد",
+            level="warning",
+        )
+    return len(subs)
