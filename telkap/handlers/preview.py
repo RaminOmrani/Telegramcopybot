@@ -125,7 +125,8 @@ async def cb_test(call: CallbackQuery) -> None:
         if result.strip() != (facts.text or "").strip():
             blocks.append("\n<i>↑ متن طبق تنظیمات شما تغییر کرده است</i>")
             blocks.append(
-                "<i>⚠️ چون متن تغییر کرده، فرمت‌ها و ایموجی پریمیوم حفظ نمی‌شوند</i>"
+                "<i>ℹ️ فرمت‌ها و ایموجی پریمیوم حفظ می‌شوند؛ فقط آن‌هایی که "
+                "دقیقاً روی متنِ تغییریافته بوده‌اند حذف می‌گردند.</i>"
             )
 
     kb = InlineKeyboardBuilder()

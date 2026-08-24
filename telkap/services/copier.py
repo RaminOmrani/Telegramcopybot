@@ -10,7 +10,12 @@ from typing import Any
 
 from sqlalchemy import delete, select
 from sqlalchemy.exc import IntegrityError
-from telethon.errors import ChatWriteForbiddenError, FloodWaitError, MessageIdInvalidError
+from telethon.errors import (
+    ChatWriteForbiddenError,
+    FloodWaitError,
+    MessageIdInvalidError,
+    PremiumAccountRequiredError,
+)
 from telethon.tl.custom import Button
 from telethon.tl.types import (
     DocumentAttributeAnimated,
@@ -33,7 +38,7 @@ from telkap.plans import FEAT_WATERMARK
 from telkap.services import cache
 from telkap.services.filters import MessageFacts, content_hash, should_copy
 from telkap.services.ratelimit import RateLimiter, hourly_quota
-from telkap.services.transform import apply_transforms, remap_entities
+from telkap.services.transform import apply_transforms, drop_custom_emoji, remap_entities
 from telkap.services.watermark import add_text_watermark
 
 log = logging.getLogger(__name__)
@@ -155,6 +160,8 @@ class Copier:
         self.manager = manager
         self.notifier = notifier  # callable(user_id, text) برای هشدار به کاربر
         self.limiter = RateLimiter(get_settings().rate_per_minute)
+        # کارهایی که هشدار «اکانت پریمیوم نیست» برایشان رفته؛ تا تکرار نشود
+        self._premium_warned: set[int] = set()
 
     # ------------------------------------------------------------- هندلرها
     def make_new_message_handler(self, user_id: int):
@@ -298,15 +305,31 @@ class Copier:
 
             await self.limiter.acquire(str(target))
             try:
-                sent = await self._send(
-                    client,
-                    target,
-                    messages,
-                    dest_text,
-                    dest_cfg,
-                    allow_watermark=allow_watermark,
-                    entities=dest_entities,
-                )
+                try:
+                    sent = await self._send(
+                        client,
+                        target,
+                        messages,
+                        dest_text,
+                        dest_cfg,
+                        allow_watermark=allow_watermark,
+                        entities=dest_entities,
+                    )
+                except PremiumAccountRequiredError:
+                    # اکانت پریمیوم نیست؛ همان پیام بدون ایموجی پریمیوم می‌رود
+                    plain = drop_custom_emoji(dest_entities)
+                    if plain is None:
+                        raise
+                    await self._warn_no_premium(user_id, task_id)
+                    sent = await self._send(
+                        client,
+                        target,
+                        messages,
+                        dest_text,
+                        dest_cfg,
+                        allow_watermark=allow_watermark,
+                        entities=plain or None,
+                    )
             except ChatWriteForbiddenError:
                 # فقط اگر مقصد اصلی مشکل دارد کار را متوقف می‌کنیم
                 if spec is targets[0]:
@@ -738,6 +761,27 @@ class Copier:
             task.last_error = detail[:400]
             await db.commit()
         await log_activity(task_id=task_id, event="error", detail=detail, level="error")
+
+    async def _warn_no_premium(self, user_id: int, task_id: int) -> None:
+        """یک بار به کاربر می‌گوید چرا ایموجی پریمیوم ساده شده است."""
+        if task_id in self._premium_warned:
+            return
+        self._premium_warned.add(task_id)
+        await log_activity(
+            user_id=user_id,
+            task_id=task_id,
+            event="premium_required",
+            detail="ارسال ایموجی پریمیوم رد شد؛ پیام بدون آن‌ها فرستاده شد",
+            level="warning",
+        )
+        if self.notifier:
+            await self.notifier(
+                user_id,
+                "ℹ️ پست‌های این کانال ایموجی پریمیوم دارند، ولی تلگرام ارسالشان را "
+                "با این اکانت قبول نکرد و پیام بدون آن‌ها فرستاده شد.\n\n"
+                "برای حفظ ایموجی‌های پریمیوم، اکانتی که در «👤 حساب کاربری» به ربات "
+                "وصل کرده‌اید باید خودش تلگرام پریمیوم داشته باشد.",
+            )
 
     async def _pause_task(self, task_id: int, reason: str) -> None:
         async with get_session() as db:

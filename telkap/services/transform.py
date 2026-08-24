@@ -7,8 +7,10 @@ from __future__ import annotations
 
 import copy
 import re
+from bisect import bisect_left
 from collections.abc import Iterable
 from dataclasses import dataclass
+from difflib import SequenceMatcher
 from typing import Any
 
 URL_RE = re.compile(
@@ -259,33 +261,113 @@ def utf16_len(text: str) -> int:
     return len(text.encode("utf-16-le")) // 2
 
 
+def _utf16_offsets(text: str) -> list[int]:
+    """آفست UTF-16 هر نویسه، به‌علاوه‌ی طول کل در انتها.
+
+    خروجی طولش len(text) + 1 است، پس offsets[i] یعنی آفست شروع نویسه‌ی i
+    و offsets[len(text)] یعنی طول کل متن.
+    """
+    offsets = [0] * (len(text) + 1)
+    position = 0
+    for index, char in enumerate(text):
+        offsets[index] = position
+        position += 2 if ord(char) > 0xFFFF else 1
+    offsets[len(text)] = position
+    return offsets
+
+
+def _char_index(offsets: list[int], utf16_offset: int) -> int | None:
+    """آفست UTF-16 را به شماره‌ی نویسه‌ی پایتون برمی‌گرداند.
+
+    اگر آفست وسط یک جفت جانشین (ایموجی) بیفتد None برمی‌گردد؛ چنین
+    entity ای معتبر نیست و باید کنار گذاشته شود.
+    """
+    index = bisect_left(offsets, utf16_offset)
+    if index >= len(offsets) or offsets[index] != utf16_offset:
+        return None
+    return index
+
+
 def remap_entities(original: str, result: str, entities):
     """entity های متن اصلی را با متن تغییریافته هماهنگ می‌کند.
 
-    فقط وقتی می‌شود مطمئن بود که متن اصلی دست‌نخورده داخل نتیجه باشد —
-    یعنی تنها هدر یا فوتر اضافه شده. در این حالت آفست‌ها به اندازه‌ی
-    متن اضافه‌شده‌ی ابتدایی جابه‌جا می‌شوند.
+    entity ها همان چیزی هستند که بولد، ایتالیک، لینک، اسپویلر و
+    **ایموجی پریمیوم** را می‌سازند. اگر همراه متن نروند، ایموجی پریمیوم
+    به نویسه‌ی جایگزین ساده‌اش تبدیل می‌شود و بقیه‌ی فرمت‌ها از بین می‌روند.
 
-    اگر متن از وسط عوض شده باشد (جایگزینی کلمه، حذف لینک و…) آفست‌ها
-    دیگر معتبر نیستند و None برمی‌گردد تا فرمت غلط اعمال نشود.
+    دو مسیر دارد:
+
+    ۱. اگر متن اصلی دست‌نخورده داخل نتیجه باشد (فقط هدر یا فوتر اضافه شده)،
+       همه‌ی آفست‌ها به یک اندازه جابه‌جا می‌شوند.
+    ۲. اگر متن از وسط عوض شده باشد (جایگزینی کلمه، حذف لینک، حذف امضای
+       مبدا)، بخش‌های دست‌نخورده با difflib پیدا می‌شوند و هر entity که
+       کاملاً داخل یکی از آن‌ها باشد به جای تازه‌اش منتقل می‌گردد. فقط
+       entity هایی حذف می‌شوند که خودشان روی متنِ تغییریافته افتاده‌اند.
+
+    آفست‌ها بر حسب واحد UTF-16 حساب می‌شوند، همان‌طور که تلگرام می‌شمارد.
     """
     if not entities or not original:
         return None
 
     index = result.find(original)
-    if index < 0:
-        return None  # متن از وسط تغییر کرده است
+    if index >= 0:
+        shift = utf16_len(result[:index])
+        if shift == 0:
+            return list(entities)
+        shifted = []
+        for entity in entities:
+            clone = copy.copy(entity)
+            clone.offset = entity.offset + shift
+            shifted.append(clone)
+        return shifted
 
-    shift = utf16_len(result[:index])
-    if shift == 0:
-        return list(entities)
+    # متن از وسط تغییر کرده؛ بخش‌های مشترک را پیدا می‌کنیم
+    src_offsets = _utf16_offsets(original)
+    dst_offsets = _utf16_offsets(result)
+    blocks = [
+        block
+        for block in SequenceMatcher(None, original, result, autojunk=False).get_matching_blocks()
+        if block.size
+    ]
+    if not blocks:
+        return None
 
-    shifted = []
+    mapped = []
     for entity in entities:
-        clone = copy.copy(entity)
-        clone.offset = entity.offset + shift
-        shifted.append(clone)
-    return shifted
+        length = getattr(entity, "length", 0) or 0
+        if length <= 0:
+            continue
+        start = _char_index(src_offsets, entity.offset)
+        end = _char_index(src_offsets, entity.offset + length)
+        if start is None or end is None:
+            continue
+        for block in blocks:
+            if block.a <= start and end <= block.a + block.size:
+                new_start = block.b + (start - block.a)
+                new_end = block.b + (end - block.a)
+                clone = copy.copy(entity)
+                clone.offset = dst_offsets[new_start]
+                clone.length = dst_offsets[new_end] - dst_offsets[new_start]
+                mapped.append(clone)
+                break
+    return mapped or None
+
+
+def drop_custom_emoji(entities):
+    """ایموجی‌های پریمیوم را از فهرست entity ها بیرون می‌کشد.
+
+    ارسال ایموجی پریمیوم فقط با اکانت پریمیوم ممکن است؛ اگر تلگرام
+    ارسال را رد کند، همان پیام بدون این entity ها دوباره فرستاده می‌شود
+    تا دست‌کم بولد و لینک و بقیه‌ی فرمت‌ها از دست نروند.
+
+    مقایسه با نام کلاس انجام می‌شود تا این ماژول به Telethon وابسته نشود.
+    """
+    if not entities:
+        return None
+    kept = [e for e in entities if type(e).__name__ != "MessageEntityCustomEmoji"]
+    if len(kept) == len(entities):
+        return None  # ایموجی پریمیومی نبود، چیزی تغییر نمی‌کند
+    return kept or []
 
 
 def looks_like_ad(text: str, sensitivity: str = "medium") -> bool:
