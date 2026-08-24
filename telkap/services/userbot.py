@@ -68,7 +68,7 @@ class UserbotManager:
     # ------------------------------------------------------------------ ورود
     def _new_client(self, session: str = "") -> TelegramClient:
         cfg = get_settings()
-        return TelegramClient(
+        client = TelegramClient(
             StringSession(session),
             cfg.api_id,
             cfg.api_hash,
@@ -79,6 +79,10 @@ class UserbotManager:
             connection_retries=5,
             retry_delay=2,
         )
+        # فرمت‌ها را خودمان با entity می‌فرستیم؛ اگر Telethon متن را دوباره
+        # به‌عنوان markdown تفسیر کند، نویسه‌هایی مثل * و _ متن را خراب می‌کنند
+        client.parse_mode = None
+        return client
 
     async def start_login(self, user_id: int, phone: str) -> None:
         """کد ورود را به شماره‌ی کاربر ارسال می‌کند."""

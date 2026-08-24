@@ -5,6 +5,7 @@
 """
 from __future__ import annotations
 
+import copy
 import re
 from collections.abc import Iterable
 from dataclasses import dataclass
@@ -246,6 +247,45 @@ def ad_score(text: str) -> tuple[int, list[str]]:
         reasons.append(f"{mentions} آیدی")
 
     return score, reasons
+
+
+def utf16_len(text: str) -> int:
+    """طول متن بر حسب واحدهای UTF-16.
+
+    تلگرام آفست entity ها را با این واحد می‌شمارد، نه با نویسه‌ی پایتون.
+    ایموجی‌ها (از جمله ایموجی پریمیوم) بیرون از BMP هستند و دو واحد
+    می‌گیرند؛ اگر با len() پایتون حساب کنیم، فرمت‌ها جابه‌جا می‌شوند.
+    """
+    return len(text.encode("utf-16-le")) // 2
+
+
+def remap_entities(original: str, result: str, entities):
+    """entity های متن اصلی را با متن تغییریافته هماهنگ می‌کند.
+
+    فقط وقتی می‌شود مطمئن بود که متن اصلی دست‌نخورده داخل نتیجه باشد —
+    یعنی تنها هدر یا فوتر اضافه شده. در این حالت آفست‌ها به اندازه‌ی
+    متن اضافه‌شده‌ی ابتدایی جابه‌جا می‌شوند.
+
+    اگر متن از وسط عوض شده باشد (جایگزینی کلمه، حذف لینک و…) آفست‌ها
+    دیگر معتبر نیستند و None برمی‌گردد تا فرمت غلط اعمال نشود.
+    """
+    if not entities or not original:
+        return None
+
+    index = result.find(original)
+    if index < 0:
+        return None  # متن از وسط تغییر کرده است
+
+    shift = utf16_len(result[:index])
+    if shift == 0:
+        return list(entities)
+
+    shifted = []
+    for entity in entities:
+        clone = copy.copy(entity)
+        clone.offset = entity.offset + shift
+        shifted.append(clone)
+    return shifted
 
 
 def looks_like_ad(text: str, sensitivity: str = "medium") -> bool:

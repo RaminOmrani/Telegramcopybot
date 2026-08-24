@@ -33,7 +33,7 @@ from telkap.plans import FEAT_WATERMARK
 from telkap.services import cache
 from telkap.services.filters import MessageFacts, content_hash, should_copy
 from telkap.services.ratelimit import RateLimiter, hourly_quota
-from telkap.services.transform import apply_transforms
+from telkap.services.transform import apply_transforms, remap_entities
 from telkap.services.watermark import add_text_watermark
 
 log = logging.getLogger(__name__)
@@ -237,12 +237,15 @@ class Copier:
 
         primary = messages[0]
         facts = build_facts(primary)
+        text_source = primary
         # در آلبوم، متن معمولاً روی یکی از آیتم‌ها است
         if not facts.text:
             for msg in messages:
                 if msg.message:
                     facts.text = msg.message
+                    text_source = msg
                     break
+        src_entities = getattr(text_source, "entities", None)
 
         decision = should_copy(facts, cfg, rules)
         if not decision.allowed:
@@ -273,6 +276,9 @@ class Copier:
             return False
 
         text = apply_transforms(facts.text, cfg, rules)
+        # فرمت‌ها و ایموجی پریمیوم فقط وقتی حفظ می‌شوند که متن اصلی
+        # دست‌نخورده مانده باشد؛ در غیر این صورت آفست‌ها معتبر نیستند
+        entities = remap_entities(facts.text, text, src_entities)
         delay = int(cfg.get("delay_seconds") or 0)
         if delay > 0:
             await asyncio.sleep(min(delay, 3600))
@@ -284,7 +290,13 @@ class Copier:
             await self.limiter.acquire(str(target))
             try:
                 sent = await self._send(
-                    client, target, messages, text, cfg, allow_watermark=allow_watermark
+                    client,
+                    target,
+                    messages,
+                    text,
+                    cfg,
+                    allow_watermark=allow_watermark,
+                    entities=entities,
                 )
             except ChatWriteForbiddenError:
                 # فقط اگر مقصد اصلی مشکل دارد کار را متوقف می‌کنیم
@@ -325,6 +337,7 @@ class Copier:
         cfg: dict[str, Any],
         *,
         allow_watermark: bool,
+        entities=None,
     ) -> list[int]:
         """ارسال واقعی به مقصد؛ آیدی پیام‌های ارسالی را برمی‌گرداند."""
         # حالت فوروارد ساده: برچسب «فورواردشده از» حفظ می‌شود
@@ -345,7 +358,11 @@ class Copier:
             if not text.strip():
                 return []
             sent = await client.send_message(
-                target, text, link_preview=False, buttons=buttons
+                target,
+                text,
+                link_preview=False,
+                buttons=buttons,
+                formatting_entities=entities,
             )
             return [sent.id]
 
@@ -360,7 +377,11 @@ class Copier:
             files = await self._watermarked_files(client, messages, cfg)
             try:
                 sent = await client.send_file(
-                    target, files, caption=text or None, buttons=buttons
+                    target,
+                    files,
+                    caption=text or None,
+                    buttons=buttons,
+                    formatting_entities=entities,
                 )
             finally:
                 for path in files:
@@ -371,12 +392,23 @@ class Copier:
                 if not text.strip():
                     return []
                 sent = await client.send_message(
-                    target, text, link_preview=False, buttons=buttons
+                    target,
+                    text,
+                    link_preview=False,
+                    buttons=buttons,
+                    formatting_entities=entities,
                 )
                 return [sent.id]
+            # تک‌رسانه را تکی بفرست؛ لیست یعنی آلبوم و برای یک آیتم لازم نیست
+            if len(payload) == 1:
+                payload = payload[0]
             try:
                 sent = await client.send_file(
-                    target, payload, caption=text or None, buttons=buttons
+                    target,
+                    payload,
+                    caption=text or None,
+                    buttons=buttons,
+                    formatting_entities=entities,
                 )
             except (FloodWaitError, ChatWriteForbiddenError):
                 raise  # این دو را لایه‌ی بالاتر مدیریت می‌کند
@@ -385,9 +417,15 @@ class Copier:
                 # در این حالت فایل دانلود و دوباره آپلود می‌شود.
                 log.info("ارسال مستقیم رسانه ناموفق بود؛ دانلود و آپلود مجدد")
                 files = await self._download_all(client, messages)
+                if len(files) == 1:
+                    files = files[0]
                 try:
                     sent = await client.send_file(
-                        target, files, caption=text or None, buttons=buttons
+                        target,
+                        files,
+                        caption=text or None,
+                        buttons=buttons,
+                        formatting_entities=entities,
                     )
                 finally:
                     for path in files:
@@ -481,11 +519,16 @@ class Copier:
         client = await self.manager.ensure_client(user_id)
         if client is None:
             return
-        text = apply_transforms(message.message or "", cfg, rules)
+        original = message.message or ""
+        text = apply_transforms(original, cfg, rules)
+        entities = remap_entities(original, text, getattr(message, "entities", None))
         for mapping in mappings:
             try:
                 await client.edit_message(
-                    _as_target(mapping.dest_chat), mapping.dst_msg_id, text
+                    _as_target(mapping.dest_chat),
+                    mapping.dst_msg_id,
+                    text,
+                    formatting_entities=entities,
                 )
             except (MessageIdInvalidError, ValueError):
                 log.debug("ویرایش پیام %s ممکن نبود", mapping.dst_msg_id)

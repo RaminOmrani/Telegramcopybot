@@ -82,7 +82,11 @@ async def cb_test(call: CallbackQuery) -> None:
         return
 
     cfg, rules = snapshot.cfg, snapshot.rules
-    blocks = [f"🧪 <b>تست «{html.escape(snapshot.title)}»</b>"]
+    blocks = [
+        f"🧪 <b>تست «{html.escape(snapshot.title)}»</b>",
+        "<i>این فقط پیش‌نمایش متن است؛ رسانه‌ها اینجا نمایش داده نمی‌شوند "
+        "ولی در کپی واقعی ارسال می‌گردند.</i>",
+    ]
 
     if not within_active_hours(cfg):
         start = fa_num(int(cfg.get("active_from_hour") or 0))
@@ -106,10 +110,23 @@ async def cb_test(call: CallbackQuery) -> None:
 
         result = apply_transforms(facts.text, cfg, rules)
         blocks.append("\n✅ <b>کپی می‌شود</b>")
+
+        media_kind = classify_media(message)
+        if media_kind not in {"text", "poll"}:
+            if cfg.get("caption_only"):
+                blocks.append(f"\n📎 {kind} این پست ارسال <b>نمی‌شود</b> (گزینه‌ی «فقط متن» روشن است)")
+            else:
+                blocks.append(f"\n📎 {kind} همراه متن ارسال می‌شود")
+        elif media_kind == "poll":
+            blocks.append("\n📊 نظرسنجی در کانال شما بازسازی می‌شود")
+
         blocks.append(f"\n<b>متن نهایی در کانال شما:</b>\n{_clip(result, 400)}")
 
         if result.strip() != (facts.text or "").strip():
             blocks.append("\n<i>↑ متن طبق تنظیمات شما تغییر کرده است</i>")
+            blocks.append(
+                "<i>⚠️ چون متن تغییر کرده، فرمت‌ها و ایموجی پریمیوم حفظ نمی‌شوند</i>"
+            )
 
     kb = InlineKeyboardBuilder()
     kb.row(InlineKeyboardButton(text="🔄 تست دوباره", callback_data=f"task:test:{task_id}"))

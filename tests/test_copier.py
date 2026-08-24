@@ -15,6 +15,7 @@ class FakeMessage:
     fwd_from: object | None = None
     reply_markup: object | None = None
     grouped_id: int | None = None
+    entities: list | None = None
 
 
 @dataclass
@@ -22,6 +23,8 @@ class SentRecord:
     target: object
     text: str
     kind: str
+    entities: object = None
+    payload: object = None
 
 
 @dataclass
@@ -38,12 +41,18 @@ class FakeClient:
         self._next_id += 1
         return self._next_id
 
-    async def send_message(self, target, text, link_preview=True, buttons=None):
-        self.sent.append(SentRecord(target, text, "text"))
+    async def send_message(
+        self, target, text, link_preview=True, buttons=None, formatting_entities=None
+    ):
+        self.sent.append(SentRecord(target, text, "text", formatting_entities))
         return FakeSent(self._new_id())
 
-    async def send_file(self, target, files, caption=None, buttons=None):
-        self.sent.append(SentRecord(target, caption or "", "file"))
+    async def send_file(
+        self, target, files, caption=None, buttons=None, formatting_entities=None
+    ):
+        self.sent.append(
+            SentRecord(target, caption or "", "file", formatting_entities, files)
+        )
         count = len(files) if isinstance(files, list) else 1
         return [FakeSent(self._new_id()) for _ in range(count)]
 
