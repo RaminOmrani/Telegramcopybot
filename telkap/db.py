@@ -6,7 +6,7 @@ from collections.abc import AsyncIterator
 from contextlib import asynccontextmanager
 from pathlib import Path
 
-from sqlalchemy import inspect
+from sqlalchemy import event, inspect
 from sqlalchemy.ext.asyncio import AsyncSession, async_sessionmaker, create_async_engine
 
 from telkap.config import BASE_DIR, get_settings
@@ -26,6 +26,29 @@ def _ensure_sqlite_dir(url: str) -> None:
     if not path.is_absolute():
         path = BASE_DIR / path
     path.parent.mkdir(parents=True, exist_ok=True)
+
+
+def _tune_sqlite(engine) -> None:
+    """تنظیم‌های SQLite برای کار با چند ده کاربر همزمان.
+
+    - WAL: خواندن و نوشتن همدیگر را قفل نمی‌کنند. بدون آن، با بالا رفتن
+      تعداد کاربران خطای «database is locked» می‌گیریم.
+    - busy_timeout: به‌جای خطای فوری، تا ۵ ثانیه منتظر آزاد شدن قفل می‌ماند.
+    - synchronous=NORMAL: با WAL امن است و نوشتن را چند برابر سریع‌تر می‌کند.
+    - foreign_keys: SQLite این را پیش‌فرض خاموش می‌گذارد، یعنی ON DELETE
+      CASCADE مدل‌ها اجرا نمی‌شد و ردیف‌های یتیم باقی می‌ماندند.
+    """
+
+    @event.listens_for(engine.sync_engine, "connect")
+    def _on_connect(dbapi_connection, _record):  # pragma: no cover - وابسته به درایور
+        cursor = dbapi_connection.cursor()
+        try:
+            cursor.execute("PRAGMA journal_mode=WAL")
+            cursor.execute("PRAGMA synchronous=NORMAL")
+            cursor.execute("PRAGMA busy_timeout=5000")
+            cursor.execute("PRAGMA foreign_keys=ON")
+        finally:
+            cursor.close()
 
 
 def _table_columns(conn, table: str) -> set[str]:
@@ -90,6 +113,8 @@ async def init_db() -> None:
     url = get_settings().database_url
     _ensure_sqlite_dir(url)
     _engine = create_async_engine(url, echo=False, pool_pre_ping=True)
+    if url.startswith("sqlite"):
+        _tune_sqlite(_engine)
     _session_factory = async_sessionmaker(_engine, expire_on_commit=False)
     async with _engine.begin() as conn:
         migrated = await conn.run_sync(_prepare_schema)

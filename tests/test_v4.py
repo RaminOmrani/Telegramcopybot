@@ -169,3 +169,82 @@ async def test_revoke_stops_copying(tmp_path, monkeypatch):
         assert len(client.sent) == 1
     finally:
         await db_module.close_db()
+
+
+# ------------------------------------------------ نگهداری دیتابیس در مقیاس
+@pytest.mark.asyncio
+async def test_prune_activity_log_keeps_recent_and_drops_old(tmp_path, monkeypatch):
+    db_module, _task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from datetime import timedelta
+
+        from sqlalchemy import func, select
+
+        from telkap.models import ActivityLog, utcnow
+        from telkap.services import maintenance
+
+        async with db_module.get_session() as session:
+            session.add(ActivityLog(user_id=7, event="new", detail="تازه"))
+            session.add(
+                ActivityLog(
+                    user_id=7,
+                    event="old",
+                    detail="کهنه",
+                    created_at=utcnow() - timedelta(days=40),
+                )
+            )
+            await session.commit()
+
+        removed = await maintenance.prune_activity_log(days=14)
+        assert removed == 1
+
+        async with db_module.get_session() as session:
+            # ردیف «subscription» را خود _setup هنگام دادن پلن ساخته است
+            rows = await session.execute(select(ActivityLog.event))
+            events = set(rows.scalars())
+            assert "new" in events
+            assert "old" not in events
+            leftover = await session.scalar(
+                select(func.count(ActivityLog.id)).where(ActivityLog.event == "old")
+            )
+            assert leftover == 0
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_prune_activity_log_disabled_with_zero(tmp_path, monkeypatch):
+    db_module, _task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from datetime import timedelta
+
+        from telkap.models import ActivityLog, utcnow
+        from telkap.services import maintenance
+
+        async with db_module.get_session() as session:
+            session.add(
+                ActivityLog(
+                    user_id=7, event="old", created_at=utcnow() - timedelta(days=400)
+                )
+            )
+            await session.commit()
+
+        assert await maintenance.prune_activity_log(days=0) == 0
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_sqlite_runs_in_wal_mode(tmp_path, monkeypatch):
+    """WAL لازم است تا با چند ده کاربر خطای «database is locked» نگیریم."""
+    db_module, _task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from sqlalchemy import text
+
+        async with db_module.get_session() as session:
+            mode = await session.scalar(text("PRAGMA journal_mode"))
+            assert str(mode).lower() == "wal"
+            fk = await session.scalar(text("PRAGMA foreign_keys"))
+            assert int(fk) == 1
+    finally:
+        await db_module.close_db()

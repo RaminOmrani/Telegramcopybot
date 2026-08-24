@@ -36,6 +36,8 @@ class Settings:
     card_number: str = ""
     card_holder: str = ""
     backup_hours: int = 12
+    # چند روز لاگ فعالیت نگه داشته شود (۰ = برای همیشه)
+    log_retention_days: int = 14
     # پروکسی برای شبکه‌هایی که تلگرام مسدود است، مثل socks5://127.0.0.1:10808
     proxy_url: str = ""
 
@@ -73,6 +75,7 @@ def load_settings() -> Settings:
         card_number=os.getenv("CARD_NUMBER", "").strip(),
         card_holder=os.getenv("CARD_HOLDER", "").strip(),
         backup_hours=int(os.getenv("BACKUP_HOURS", "12")),
+        log_retention_days=int(os.getenv("LOG_RETENTION_DAYS", "14")),
         proxy_url=os.getenv("PROXY_URL", "").strip(),
     )
 
