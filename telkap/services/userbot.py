@@ -25,6 +25,7 @@ from telethon.sessions import StringSession
 from telethon.tl.functions.messages import CheckChatInviteRequest
 from telethon.utils import get_peer_id
 
+from telkap import proxy
 from telkap.config import get_settings
 from telkap.crypto import decrypt, encrypt
 from telkap.db import get_session, log_activity
@@ -74,6 +75,9 @@ class UserbotManager:
             device_model="Copy Bot",
             system_version="1.0",
             app_version="1.0",
+            proxy=proxy.for_telethon(cfg.proxy_url),
+            connection_retries=5,
+            retry_delay=2,
         )
 
     async def start_login(self, user_id: int, phone: str) -> None:

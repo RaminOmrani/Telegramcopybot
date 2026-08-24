@@ -7,10 +7,13 @@ import sys
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramNetworkError
 from aiogram.fsm.storage.memory import MemoryStorage
 from sqlalchemy import select
 
+from telkap import proxy
 from telkap.config import get_settings
 from telkap.db import close_db, get_session, init_db
 from telkap.handlers import build_router
@@ -93,8 +96,24 @@ async def main() -> None:
     await init_db()
     cfg.download_dir.mkdir(parents=True, exist_ok=True)
 
+    session = None
+    if cfg.proxy_url:
+        try:
+            session = AiohttpSession(proxy=proxy.for_aiogram(cfg.proxy_url))
+            log.info("پروکسی فعال است: %s", proxy.describe(cfg.proxy_url))
+        except proxy.ProxyError as exc:
+            log.error("PROXY_URL نامعتبر است: %s", exc)
+            return
+        except Exception:
+            log.exception(
+                "ساخت اتصال پروکسی ناموفق بود. برای پروکسی socks این را نصب کنید:\n"
+                "    pip install aiohttp-socks"
+            )
+            return
+
     bot = Bot(
         token=cfg.bot_token,
+        session=session,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     notify = make_notifier(bot)
@@ -122,7 +141,35 @@ async def main() -> None:
         asyncio.create_task(backup.run_forever(), name="backup"),
     ]
 
-    me = await bot.get_me()
+    try:
+        me = await bot.get_me()
+    except TelegramNetworkError as exc:
+        log.error(
+            "\n"
+            "──────────────────────────────────────────────\n"
+            "❌ اتصال به تلگرام برقرار نشد.\n"
+            "\n"
+            "این خطای کد نیست؛ یعنی شبکه‌ی شما به api.telegram.org راه نمی‌دهد.\n"
+            "\n"
+            "راه‌حل‌ها:\n"
+            "  ۱) VPN را در حالت TUN / Global روشن کنید و دوباره اجرا کنید\n"
+            "  ۲) یا در فایل .env پروکسی خود را بگذارید، مثلاً:\n"
+            "       PROXY_URL=socks5://127.0.0.1:10808\n"
+            "     (برای پروکسی socks این را هم نصب کنید: pip install aiohttp-socks)\n"
+            "\n"
+            "پروکسی فعلی: %s\n"
+            "جزئیات فنی: %s\n"
+            "──────────────────────────────────────────────",
+            proxy.describe(cfg.proxy_url),
+            exc,
+        )
+        for task in background:
+            task.cancel()
+        await asyncio.gather(*background, return_exceptions=True)
+        await bot.session.close()
+        await close_db()
+        return
+
     log.info("ربات @%s آماده است", me.username)
 
     try:
