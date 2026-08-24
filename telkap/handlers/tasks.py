@@ -12,6 +12,7 @@ from sqlalchemy import func, select
 
 from telkap.db import get_session, log_activity
 from telkap.handlers import history as history_handlers
+from telkap.handlers.chatpicker import picker_button
 from telkap.handlers.common import Flow, get_or_create_user
 from telkap.keyboards import (
     BTN_NEW_TASK,
@@ -27,11 +28,12 @@ from telkap.services import cache
 from telkap.services.copier import today_key
 from telkap.services.defaults import merged_settings
 from telkap.services.subscription import active_plan_for
-from telkap.services.userbot import manager
+from telkap.services.userbot import LoginError, manager
 from telkap.texts import (
     ASK_DEST,
     ASK_SOURCE,
     ASK_TITLE,
+    NO_LOGIN,
     NO_SUBSCRIPTION,
     fa_num,
     on_off,
@@ -183,8 +185,6 @@ async def _start_new_task(message: Message, state: FSMContext, user_id: int) -> 
     async with get_session() as db:
         user = await db.get(User, user_id)
     if user is None or not user.is_logged_in:
-        from telkap.texts import NO_LOGIN
-
         await message.answer(NO_LOGIN)
         return
 
@@ -203,36 +203,44 @@ async def _start_new_task(message: Message, state: FSMContext, user_id: int) -> 
         return
 
     await state.set_state(Flow.task_source)
-    await message.answer(ASK_SOURCE)
+    await message.answer(ASK_SOURCE, reply_markup=picker_button("source").as_markup())
 
 
-@router.message(Flow.task_source)
-async def got_source(message: Message, state: FSMContext) -> None:
-    ref = (message.text or "").strip()
-    if not ref:
-        await message.answer("⚠️ آیدی یا لینک کانال را بفرستید.")
-        return
+async def _lookup(target: Message, user_id: int, ref: str, busy: str):
+    """چت را پیدا می‌کند. خروجی (entity، پیام وضعیت) یا (None، پیام وضعیت).
 
-    client = await manager.ensure_client(message.from_user.id)
+    خطای «باید اول عضو شوید» را می‌گیرد تا به‌جای پیام عمومی خطا،
+    دلیل واقعی به کاربر نشان داده شود.
+    """
+    client = await manager.ensure_client(user_id)
     if client is None:
-        await state.clear()
-        from telkap.texts import NO_LOGIN
+        await target.answer(NO_LOGIN)
+        return None, None
 
-        await message.answer(NO_LOGIN)
-        return
+    notice = await target.answer(busy)
+    try:
+        entity = await manager.resolve_entity(client, ref)
+    except LoginError as exc:
+        await notice.edit_text(f"⚠️ {exc}")
+        return None, notice
+    return entity, notice
 
-    notice = await message.answer("⏳ در حال بررسی مبدا…")
-    entity = await manager.resolve_entity(client, ref)
+
+async def accept_source(target: Message, state: FSMContext, user_id: int, ref: str) -> None:
+    """مبدا را بررسی و ثبت می‌کند — چه دستی وارد شده باشد چه از لیست."""
+    entity, notice = await _lookup(target, user_id, ref, "⏳ در حال بررسی مبدا…")
     if entity is None:
-        await notice.edit_text(
-            "⚠️ این کانال یا گروه پیدا نشد یا اکانت شما به آن دسترسی ندارد.\n"
-            "اگر خصوصی است، ابتدا با اکانت خود عضو شوید و دوباره تلاش کنید."
-        )
+        if notice is not None and "⚠️" not in (notice.text or ""):
+            await notice.edit_text(
+                "⚠️ این کانال یا گروه پیدا نشد یا اکانت شما به آن دسترسی ندارد.\n\n"
+                "اگر <b>خصوصی</b> است، با همان شماره‌ای که در ربات وارد شده‌اید عضو آن شوید، "
+                "سپس دکمه‌ی «📋 انتخاب از لیست چت‌های من» را بزنید."
+            )
         return
 
     is_private = not getattr(entity, "username", None)
     if is_private:
-        plan = await active_plan_for(message.from_user.id)
+        plan = await active_plan_for(user_id)
         if plan and not plan.has(FEAT_PRIVATE):
             await notice.edit_text(
                 "⚠️ کپی از کانال‌های خصوصی در پلن فعلی شما فعال نیست.\n"
@@ -241,36 +249,45 @@ async def got_source(message: Message, state: FSMContext) -> None:
             return
 
     title = getattr(entity, "title", None) or ref
+    lock = "🔒 خصوصی" if is_private else "🌐 عمومی"
     await state.update_data(source_ref=ref, source_title=title)
-    await notice.edit_text(f"✅ مبدا: <b>{title}</b>")
+    await notice.edit_text(f"✅ مبدا: <b>{title}</b> ({lock})")
     await state.set_state(Flow.task_dest)
-    await message.answer(ASK_DEST)
+    await target.answer(ASK_DEST, reply_markup=picker_button("dest").as_markup())
 
 
-@router.message(Flow.task_dest)
-async def got_dest(message: Message, state: FSMContext) -> None:
-    ref = (message.text or "").strip()
-    client = await manager.ensure_client(message.from_user.id)
-    if client is None:
-        await state.clear()
-        from telkap.texts import NO_LOGIN
-
-        await message.answer(NO_LOGIN)
-        return
-
-    notice = await message.answer("⏳ در حال بررسی مقصد…")
-    entity = await manager.resolve_entity(client, ref)
+async def accept_dest(target: Message, state: FSMContext, user_id: int, ref: str) -> None:
+    entity, notice = await _lookup(target, user_id, ref, "⏳ در حال بررسی مقصد…")
     if entity is None:
-        await notice.edit_text(
-            "⚠️ مقصد پیدا نشد. مطمئن شوید اکانت شما عضو آن است و آیدی درست است."
-        )
+        if notice is not None and "⚠️" not in (notice.text or ""):
+            await notice.edit_text(
+                "⚠️ مقصد پیدا نشد. مطمئن شوید اکانت شما عضو آن است و اجازه‌ی ارسال دارد."
+            )
         return
 
     title = getattr(entity, "title", None) or ref
     await state.update_data(dest_ref=ref, dest_title=title)
     await notice.edit_text(f"✅ مقصد: <b>{title}</b>")
     await state.set_state(Flow.task_title)
-    await message.answer(ASK_TITLE)
+    await target.answer(ASK_TITLE)
+
+
+@router.message(Flow.task_source)
+async def got_source(message: Message, state: FSMContext) -> None:
+    ref = (message.text or "").strip()
+    if not ref:
+        await message.answer("⚠️ آیدی یا لینک کانال را بفرستید.")
+        return
+    await accept_source(message, state, message.from_user.id, ref)
+
+
+@router.message(Flow.task_dest)
+async def got_dest(message: Message, state: FSMContext) -> None:
+    ref = (message.text or "").strip()
+    if not ref:
+        await message.answer("⚠️ آیدی یا لینک کانال را بفرستید.")
+        return
+    await accept_dest(message, state, message.from_user.id, ref)
 
 
 @router.message(Flow.task_title)
