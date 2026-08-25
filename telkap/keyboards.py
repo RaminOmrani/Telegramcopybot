@@ -29,6 +29,7 @@ BTN_ACCOUNT = "👤 حساب کاربری"
 BTN_PLANS = "💳 خرید اشتراک"
 BTN_LOGS = "🧾 گزارش فعالیت"
 BTN_HELP = "📚 راهنما"
+BTN_SUPPORT = "🛟 پشتیبانی"
 
 
 def main_menu() -> ReplyKeyboardMarkup:
@@ -37,7 +38,7 @@ def main_menu() -> ReplyKeyboardMarkup:
             [KeyboardButton(text=BTN_NEW_TASK), KeyboardButton(text=BTN_TASKS)],
             [KeyboardButton(text=BTN_FORWARD), KeyboardButton(text=BTN_ACCOUNT)],
             [KeyboardButton(text=BTN_PLANS), KeyboardButton(text=BTN_LOGS)],
-            [KeyboardButton(text=BTN_HELP)],
+            [KeyboardButton(text=BTN_HELP), KeyboardButton(text=BTN_SUPPORT)],
         ],
         resize_keyboard=True,
         input_field_placeholder="یک گزینه را انتخاب کنید…",

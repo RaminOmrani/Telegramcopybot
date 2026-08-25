@@ -16,7 +16,7 @@ from telkap.db import get_session
 from telkap.handlers.common import Flow, parse_int
 from telkap.models import DailyStat, PaymentRequest, RetryItem, Subscription, Task, User, utcnow
 from telkap.plans import PLANS, toman
-from telkap.services import backup, payments
+from telkap.services import backup, payments, support
 from telkap.services.copier import today_key
 from telkap.services.subscription import grant
 from telkap.services.userbot import manager
@@ -30,10 +30,16 @@ def _is_admin(user_id: int) -> bool:
     return get_settings().is_admin(user_id)
 
 
-def admin_menu(pending: int = 0) -> InlineKeyboardBuilder:
+def admin_menu(pending: int = 0, tickets: int = 0) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     badge = f" ({fa_num(pending)})" if pending else ""
     kb.row(InlineKeyboardButton(text="👥 مدیریت کاربران", callback_data="adm:users"))
+    ticket_badge = f" ({fa_num(tickets)})" if tickets else ""
+    kb.row(
+        InlineKeyboardButton(
+            text=f"🛟 تیکت‌های پشتیبانی{ticket_badge}", callback_data="adm:tickets"
+        )
+    )
     kb.row(InlineKeyboardButton(text="📢 عضویت اجباری", callback_data="adm:join"))
     kb.row(InlineKeyboardButton(text=f"🧾 رسیدهای در انتظار{badge}", callback_data="adm:pay"))
     kb.row(
@@ -56,9 +62,10 @@ async def cmd_admin(message: Message) -> None:
     if not _is_admin(message.from_user.id):
         return
     pending = await payments.pending_count()
+    tickets = await support.waiting_count()
     await message.answer(
         "🛠 <b>پنل مدیریت</b>\n\nیک بخش را انتخاب کنید:",
-        reply_markup=admin_menu(pending).as_markup(),
+        reply_markup=admin_menu(pending, tickets).as_markup(),
     )
 
 
@@ -68,10 +75,11 @@ async def cb_home(call: CallbackQuery) -> None:
         await call.answer("دسترسی ندارید", show_alert=True)
         return
     pending = await payments.pending_count()
+    tickets = await support.waiting_count()
     await call.answer()
     await call.message.edit_text(
         "🛠 <b>پنل مدیریت</b>\n\nیک بخش را انتخاب کنید:",
-        reply_markup=admin_menu(pending).as_markup(),
+        reply_markup=admin_menu(pending, tickets).as_markup(),
     )
 
 

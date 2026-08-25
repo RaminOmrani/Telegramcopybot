@@ -14,40 +14,52 @@ def test_every_plan_is_self_consistent():
         assert plan.days > 0
         assert plan.max_tasks >= 1
         assert plan.max_destinations >= 1
-        assert plan.daily_messages > 0 or plan.daily_messages == UNLIMITED
+        assert plan.period_messages > 0 or plan.period_messages == UNLIMITED
         assert plan.extra_destinations == plan.max_destinations - 1
         # داشتن قابلیت و داشتن سهمیه باید با هم بخوانند
         for feature in (FEAT_WATERMARK, FEAT_HISTORY):
             assert plan.has(feature) == (plan.quota(feature) != 0), (
                 f"{plan.code}: {feature}"
             )
-    # طرح‌های قابل خرید باید قیمت داشته باشند و آزمایشی نباشند
     for plan in PURCHASABLE:
         assert plan.price_toman > 0
         assert plan.code != "trial"
 
 
-def test_plan_prices_and_quota_match_the_price_list():
-    from telkap.plans import CUSTOM, MONTH, TWO_WEEK, UNLIMITED, WEEK
+def test_plan_prices_match_the_price_list():
+    from telkap.plans import CUSTOM, MONTH, TWO_WEEK, WEEK
 
     assert (WEEK.price_toman, TWO_WEEK.price_toman) == (129_000, 229_000)
     assert (MONTH.price_toman, CUSTOM.price_toman) == (429_000, 890_000)
-    assert MONTH.daily_messages == 4_000
-    assert CUSTOM.daily_messages == UNLIMITED
-    assert CUSTOM.daily_label == "نامحدود"
+
+
+def test_message_quotas_are_per_period():
+    from telkap.plans import CUSTOM, MONTH, TRIAL, TWO_WEEK, UNLIMITED, WEEK
+
+    assert [p.period_messages for p in (TRIAL, WEEK, TWO_WEEK, MONTH)] == [
+        20, 200, 1_000, 2_000
+    ]
+    assert CUSTOM.period_messages == UNLIMITED
+    assert CUSTOM.messages_label == "نامحدود"
+    # نامحدود نمایش داده می‌شود ولی سقف مصرف منصفانه دارد
+    assert CUSTOM.fair_use_daily == 10_000
+    assert all(p.fair_use_daily == 0 for p in (TRIAL, WEEK, TWO_WEEK, MONTH))
 
 
 def test_watermark_and_history_quotas_match_the_price_list():
-    from telkap.plans import CUSTOM, MONTH, TRIAL, TWO_WEEK, UNLIMITED, WEEK
+    from telkap.plans import CUSTOM, MONTH, TRIAL, TWO_WEEK, WEEK
 
-    assert [p.watermark_daily for p in (WEEK, TWO_WEEK, MONTH)] == [10, 20, 50]
-    assert [p.history_daily for p in (TWO_WEEK, MONTH)] == [50, 100]
-    assert WEEK.history_daily == 0              # در این طرح نیست
-    assert (TRIAL.watermark_daily, TRIAL.history_daily) == (0, 0)
-    assert CUSTOM.watermark_daily == UNLIMITED
-    assert CUSTOM.history_daily == UNLIMITED
+    # واترمارک فقط از ۱۴ روزه به بعد
+    assert [p.watermark_quota for p in (TRIAL, WEEK, TWO_WEEK, MONTH, CUSTOM)] == [
+        0, 0, 10, 20, 50
+    ]
+    # کپی پیام گذشته فقط ۳۰ روزه و اختصاصی
+    assert [p.history_quota for p in (TRIAL, WEEK, TWO_WEEK, MONTH, CUSTOM)] == [
+        0, 0, 0, 50, 100
+    ]
+    assert CUSTOM.max_tasks == 50
     assert TRIAL.watermark_label == "ندارد"
-    assert MONTH.history_label == "۱۰۰"
+    assert CUSTOM.history_label == "۱۰۰"
 
 
 def test_higher_plans_are_never_worse():
@@ -58,9 +70,9 @@ def test_higher_plans_are_never_worse():
     for lower, higher in zip(ladder, ladder[1:], strict=False):
         assert higher.max_tasks >= lower.max_tasks
         assert higher.max_destinations >= lower.max_destinations
-        assert higher.daily_messages >= lower.daily_messages
-        assert higher.watermark_daily >= lower.watermark_daily
-        assert higher.history_daily >= lower.history_daily
+        assert higher.period_messages >= lower.period_messages
+        assert higher.watermark_quota >= lower.watermark_quota
+        assert higher.history_quota >= lower.history_quota
         assert lower.features <= higher.features
 
 
@@ -73,24 +85,33 @@ def test_credit_price_scales_with_quantity():
     assert credit_price("چیز نامعتبر", 10) == 0
 
 
-# --------------------------------------------------- سقف پیام روزانه
+def _async(value):
+    """یک coroutine ساده که همان مقدار را برمی‌گرداند."""
+    async def _wrapped():
+        return value
+
+    return _wrapped()
+
+
+def _use_plan(monkeypatch, plan, **overrides):
+    """طرح فعال کاربر ۷ را برای این تست عوض می‌کند (شناسه‌ی اشتراک ۱)."""
+    from dataclasses import replace
+
+    from telkap.services import cache
+
+    entry = cache.Entitlement(replace(plan, **overrides), 1)
+    monkeypatch.setattr(cache, "get_entitlement", lambda uid: _async(entry))
+
+
+# --------------------------------------------- سهمیه‌ی پیام کل دوره
 @pytest.mark.asyncio
-async def test_daily_quota_stops_copying_after_the_limit(tmp_path, monkeypatch):
+async def test_message_quota_stops_copying_after_the_period_limit(tmp_path, monkeypatch):
     db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
     try:
-        from telkap.services import cache
+        from telkap.plans import MONTH
         from telkap.services.copier import Copier
-        from telkap.services.ratelimit import daily_quota
 
-        daily_quota.forget(7)
-
-        # پلن کاربر را به یک سقف کوچک محدود می‌کنیم
-        plan = await cache.get_plan(7)
-        from dataclasses import replace
-
-        monkeypatch.setattr(
-            cache, "get_plan", lambda uid: _async(replace(plan, daily_messages=2))
-        )
+        _use_plan(monkeypatch, MONTH, period_messages=2)
 
         warnings: list[tuple[int, str]] = []
 
@@ -105,28 +126,72 @@ async def test_daily_quota_stops_copying_after_the_limit(tmp_path, monkeypatch):
         # سومی باید رد شود
         assert await copier.process(7, task_id, [FakeMessage(id=3, message="سه")]) is False
         assert len(client.sent) == 2
-        assert warnings and "سقف روزانه" in warnings[0][1]
+        assert warnings and "سهمیه" in warnings[0][1]
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_message_quota_does_not_reset_at_midnight(tmp_path, monkeypatch):
+    """سهمیه برای کل دوره است، پس با عوض شدن روز پر نمی‌شود."""
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.plans import FEAT_MESSAGES, MONTH
+        from telkap.services import entitlement
+        from telkap.services.copier import Copier
+
+        _use_plan(monkeypatch, MONTH, period_messages=2)
+        copier = Copier(FakeManager(FakeClient()))
+        await copier.process(7, task_id, [FakeMessage(id=1, message="یک")])
+        await copier.process(7, task_id, [FakeMessage(id=2, message="دو")])
+
+        # شمارنده روی اشتراک ثبت شده، نه روی روز
+        assert await entitlement.used(1, FEAT_MESSAGES) == 2
+        assert await entitlement.quota_left(1, FEAT_MESSAGES, MONTH) == MONTH.period_messages - 2
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_unlimited_plan_respects_fair_use_daily(tmp_path, monkeypatch):
+    """طرح اختصاصی «نامحدود» است ولی سقف مصرف منصفانه دارد."""
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.plans import CUSTOM
+        from telkap.services.copier import Copier
+        from telkap.services.ratelimit import daily_quota
+
+        daily_quota.forget(7)
+        _use_plan(monkeypatch, CUSTOM, fair_use_daily=2)
+
+        warnings: list[tuple[int, str]] = []
+
+        async def notifier(user_id, text):
+            warnings.append((user_id, text))
+
+        client = FakeClient()
+        copier = Copier(FakeManager(client), notifier=notifier)
+        assert await copier.process(7, task_id, [FakeMessage(id=1, message="یک")]) is True
+        assert await copier.process(7, task_id, [FakeMessage(id=2, message="دو")]) is True
+        assert await copier.process(7, task_id, [FakeMessage(id=3, message="سه")]) is False
+        assert len(client.sent) == 2
+        assert warnings and "منصفانه" in warnings[0][1]
     finally:
         daily_quota.forget(7)
         await db_module.close_db()
 
 
 @pytest.mark.asyncio
-async def test_unlimited_plan_has_no_daily_ceiling(tmp_path, monkeypatch):
+async def test_unlimited_plan_has_no_period_ceiling(tmp_path, monkeypatch):
     db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
     try:
-        from dataclasses import replace
-
-        from telkap.plans import UNLIMITED
-        from telkap.services import cache
+        from telkap.plans import CUSTOM, FEAT_MESSAGES
+        from telkap.services import entitlement
         from telkap.services.copier import Copier
         from telkap.services.ratelimit import daily_quota
 
         daily_quota.forget(7)
-        plan = await cache.get_plan(7)
-        monkeypatch.setattr(
-            cache, "get_plan", lambda uid: _async(replace(plan, daily_messages=UNLIMITED))
-        )
+        _use_plan(monkeypatch, CUSTOM)
 
         client = FakeClient()
         copier = Copier(FakeManager(client))
@@ -135,40 +200,11 @@ async def test_unlimited_plan_has_no_daily_ceiling(tmp_path, monkeypatch):
                 7, task_id, [FakeMessage(id=index + 1, message=f"پیام {index}")]
             ) is True
         assert len(client.sent) == 6
+        # برای طرح نامحدود اصلاً شمارنده‌ای نوشته نمی‌شود
+        assert await entitlement.used(1, FEAT_MESSAGES) == 0
     finally:
         daily_quota.forget(7)
         await db_module.close_db()
-
-
-def test_daily_quota_counter_rolls_over_at_midnight():
-    from telkap.services.ratelimit import DailyQuota
-
-    quota = DailyQuota()
-    assert quota.allow(1, "2026-01-01", limit=1) is True
-    assert quota.allow(1, "2026-01-01", limit=1) is False
-    # روز تازه، شمارنده از صفر
-    assert quota.allow(1, "2026-01-02", limit=1) is True
-
-
-def test_daily_quota_seed_survives_restart():
-    """پس از ری‌استارت، مصرف امروز از دیتابیس بازخوانی می‌شود."""
-    from telkap.services.ratelimit import DailyQuota
-
-    quota = DailyQuota()
-    assert quota.is_seeded(5, "2026-01-01") is False
-    quota.seed(5, "2026-01-01", used=9)
-    assert quota.is_seeded(5, "2026-01-01") is True
-    assert quota.remaining(5, "2026-01-01", limit=10) == 1
-    assert quota.allow(5, "2026-01-01", limit=10) is True
-    assert quota.allow(5, "2026-01-01", limit=10) is False
-
-
-def _async(value):
-    """یک coroutine ساده که همان مقدار را برمی‌گرداند."""
-    async def _wrapped():
-        return value
-
-    return _wrapped()
 
 
 # ------------------------------------------------------------- اعتبارها
@@ -240,6 +276,10 @@ async def test_plan_purchase_still_grants_subscription(tmp_path, monkeypatch):
         await db_module.close_db()
 
 
+# ------------------------------------------------------- واترمارک
+WM_SETTINGS = {"watermark_enabled": True, "watermark_text": "@me"}
+
+
 class PhotoClient(FakeClient):
     """کلاینت ساختگی که دانلود رسانه را هم پشتیبانی می‌کند."""
 
@@ -263,20 +303,6 @@ def _stub_watermark(monkeypatch, tmp_path):
     )
 
 
-WM_SETTINGS = {"watermark_enabled": True, "watermark_text": "@me"}
-
-
-def _use_plan(monkeypatch, plan, **overrides):
-    """پلن کاربر را برای این تست عوض می‌کند."""
-    from dataclasses import replace
-
-    from telkap.services import cache
-
-    monkeypatch.setattr(
-        cache, "get_plan", lambda uid: _async(replace(plan, **overrides))
-    )
-
-
 async def _copy_photo(copier, task_id, msg_id):
     # متن هر پست متفاوت است تا فیلتر «پست تکراری» جلویش را نگیرد
     return await copier.process(
@@ -289,19 +315,18 @@ async def test_watermark_uses_plan_quota_before_credit(tmp_path, monkeypatch):
     """سهمیه‌ی رایگان طرح اول مصرف می‌شود، اعتبار دست‌نخورده می‌ماند."""
     db_module, task_id = await _setup(tmp_path, monkeypatch, settings=WM_SETTINGS)
     try:
-        from telkap.plans import CREDIT_WATERMARK, FEAT_WATERMARK, WEEK
+        from telkap.plans import CREDIT_WATERMARK, FEAT_WATERMARK, MONTH
         from telkap.services import credits, entitlement
-        from telkap.services.copier import Copier, today_key
+        from telkap.services.copier import Copier
 
         _stub_watermark(monkeypatch, tmp_path)
-        _use_plan(monkeypatch, WEEK)          # سهمیه‌ی ۱۰ تایی روزانه
+        _use_plan(monkeypatch, MONTH)          # سهمیه‌ی ۲۰ تایی
         await credits.add(7, CREDIT_WATERMARK, 5)
 
         copier = Copier(FakeManager(PhotoClient(tmp_path)))
         assert await _copy_photo(copier, task_id, 1) is True
 
-        day = today_key()
-        assert await entitlement.used_today(7, FEAT_WATERMARK, day) == 1
+        assert await entitlement.used(1, FEAT_WATERMARK) == 1
         assert await credits.balance(7, CREDIT_WATERMARK) == 5   # دست‌نخورده
     finally:
         await db_module.close_db()
@@ -309,23 +334,22 @@ async def test_watermark_uses_plan_quota_before_credit(tmp_path, monkeypatch):
 
 @pytest.mark.asyncio
 async def test_watermark_falls_back_to_credit_when_quota_is_gone(tmp_path, monkeypatch):
-    """با تمام شدن سهمیه‌ی روزانه، از اعتبار خریداری‌شده برداشته می‌شود."""
+    """با تمام شدن سهمیه، از اعتبار خریداری‌شده برداشته می‌شود."""
     db_module, task_id = await _setup(tmp_path, monkeypatch, settings=WM_SETTINGS)
     try:
-        from telkap.plans import CREDIT_WATERMARK, FEAT_WATERMARK, WEEK
+        from telkap.plans import CREDIT_WATERMARK, FEAT_WATERMARK, MONTH
         from telkap.services import credits, entitlement
-        from telkap.services.copier import Copier, today_key
+        from telkap.services.copier import Copier
 
         _stub_watermark(monkeypatch, tmp_path)
-        _use_plan(monkeypatch, WEEK, watermark_daily=1)   # فقط یک سهمیه
+        _use_plan(monkeypatch, MONTH, watermark_quota=1)   # فقط یک سهمیه
         await credits.add(7, CREDIT_WATERMARK, 5)
 
         copier = Copier(FakeManager(PhotoClient(tmp_path)))
         assert await _copy_photo(copier, task_id, 1) is True
         assert await _copy_photo(copier, task_id, 2) is True
 
-        day = today_key()
-        assert await entitlement.used_today(7, FEAT_WATERMARK, day) == 1
+        assert await entitlement.used(1, FEAT_WATERMARK) == 1
         assert await credits.balance(7, CREDIT_WATERMARK) == 4   # دومی از اعتبار
     finally:
         await db_module.close_db()
@@ -336,12 +360,12 @@ async def test_watermark_stops_when_quota_and_credit_run_out(tmp_path, monkeypat
     """پست‌ها می‌روند ولی بدون واترمارک، و کاربر یک بار خبردار می‌شود."""
     db_module, task_id = await _setup(tmp_path, monkeypatch, settings=WM_SETTINGS)
     try:
-        from telkap.plans import CREDIT_WATERMARK, WEEK
+        from telkap.plans import CREDIT_WATERMARK, MONTH
         from telkap.services import credits
         from telkap.services.copier import Copier
 
         _stub_watermark(monkeypatch, tmp_path)
-        _use_plan(monkeypatch, WEEK, watermark_daily=1)
+        _use_plan(monkeypatch, MONTH, watermark_quota=1)
 
         warnings: list[tuple[int, str]] = []
 
@@ -361,23 +385,22 @@ async def test_watermark_stops_when_quota_and_credit_run_out(tmp_path, monkeypat
 
 
 @pytest.mark.asyncio
-async def test_unlimited_plan_never_touches_quota_or_credit(tmp_path, monkeypatch):
+async def test_unlimited_watermark_never_touches_quota_or_credit(tmp_path, monkeypatch):
     db_module, task_id = await _setup(tmp_path, monkeypatch, settings=WM_SETTINGS)
     try:
-        from telkap.plans import CREDIT_WATERMARK, CUSTOM, FEAT_WATERMARK
+        from telkap.plans import CREDIT_WATERMARK, CUSTOM, FEAT_WATERMARK, UNLIMITED
         from telkap.services import credits, entitlement
-        from telkap.services.copier import Copier, today_key
+        from telkap.services.copier import Copier
 
         _stub_watermark(monkeypatch, tmp_path)
-        _use_plan(monkeypatch, CUSTOM)
+        _use_plan(monkeypatch, CUSTOM, watermark_quota=UNLIMITED)
         await credits.add(7, CREDIT_WATERMARK, 3)
 
         copier = Copier(FakeManager(PhotoClient(tmp_path)))
         for index in range(4):
             assert await _copy_photo(copier, task_id, index + 1) is True
 
-        day = today_key()
-        assert await entitlement.used_today(7, FEAT_WATERMARK, day) == 0
+        assert await entitlement.used(1, FEAT_WATERMARK) == 0
         assert await credits.balance(7, CREDIT_WATERMARK) == 3
     finally:
         await db_module.close_db()
@@ -388,19 +411,18 @@ async def test_unlimited_plan_never_touches_quota_or_credit(tmp_path, monkeypatc
 async def test_reserve_splits_between_quota_and_credit(tmp_path, monkeypatch):
     db_module, _task_id = await _setup(tmp_path, monkeypatch, settings={})
     try:
-        from telkap.plans import CREDIT_HISTORY, FEAT_HISTORY, TWO_WEEK
+        from telkap.plans import CREDIT_HISTORY, FEAT_HISTORY, MONTH
         from telkap.services import credits, entitlement
 
         await credits.add(7, CREDIT_HISTORY, 30)
-        day = "2026-01-01"
 
         # سهمیه ۵۰ است؛ درخواست ۷۰ یعنی ۵۰ از سهمیه و ۲۰ از اعتبار
-        grant = await entitlement.reserve(7, FEAT_HISTORY, 70, TWO_WEEK, day)
+        grant = await entitlement.reserve(7, FEAT_HISTORY, 70, MONTH, 1)
         assert grant is not None
         assert (grant.from_quota, grant.from_credits) == (50, 20)
         assert grant.total == 70
         assert await credits.balance(7, CREDIT_HISTORY) == 10
-        assert await entitlement.used_today(7, FEAT_HISTORY, day) == 50
+        assert await entitlement.used(1, FEAT_HISTORY) == 50
     finally:
         await db_module.close_db()
 
@@ -410,15 +432,14 @@ async def test_reserve_takes_nothing_when_total_is_short(tmp_path, monkeypatch):
     """اگر مجموع سهمیه و اعتبار کم باشد، هیچ‌کدام نباید کم شوند."""
     db_module, _task_id = await _setup(tmp_path, monkeypatch, settings={})
     try:
-        from telkap.plans import CREDIT_HISTORY, FEAT_HISTORY, TWO_WEEK
+        from telkap.plans import CREDIT_HISTORY, FEAT_HISTORY, MONTH
         from telkap.services import credits, entitlement
 
         await credits.add(7, CREDIT_HISTORY, 5)
-        day = "2026-01-01"
 
-        assert await entitlement.reserve(7, FEAT_HISTORY, 100, TWO_WEEK, day) is None
+        assert await entitlement.reserve(7, FEAT_HISTORY, 100, MONTH, 1) is None
         assert await credits.balance(7, CREDIT_HISTORY) == 5
-        assert await entitlement.used_today(7, FEAT_HISTORY, day) == 0
+        assert await entitlement.used(1, FEAT_HISTORY) == 0
     finally:
         await db_module.close_db()
 
@@ -427,32 +448,31 @@ async def test_reserve_takes_nothing_when_total_is_short(tmp_path, monkeypatch):
 async def test_release_gives_quota_and_credit_back(tmp_path, monkeypatch):
     db_module, _task_id = await _setup(tmp_path, monkeypatch, settings={})
     try:
-        from telkap.plans import CREDIT_HISTORY, FEAT_HISTORY, TWO_WEEK
+        from telkap.plans import CREDIT_HISTORY, FEAT_HISTORY, MONTH
         from telkap.services import credits, entitlement
 
         await credits.add(7, CREDIT_HISTORY, 30)
-        day = "2026-01-01"
-
-        grant = await entitlement.reserve(7, FEAT_HISTORY, 70, TWO_WEEK, day)
-        await entitlement.release(7, grant, day)
+        grant = await entitlement.reserve(7, FEAT_HISTORY, 70, MONTH, 1)
+        await entitlement.release(7, grant, 1)
 
         assert await credits.balance(7, CREDIT_HISTORY) == 30
-        assert await entitlement.used_today(7, FEAT_HISTORY, day) == 0
+        assert await entitlement.used(1, FEAT_HISTORY) == 0
     finally:
         await db_module.close_db()
 
 
 @pytest.mark.asyncio
-async def test_quota_is_per_day_not_per_subscription(tmp_path, monkeypatch):
+async def test_quota_is_per_subscription_not_shared(tmp_path, monkeypatch):
+    """اشتراک تازه یعنی سهمیه‌ی تازه."""
     db_module, _task_id = await _setup(tmp_path, monkeypatch, settings={})
     try:
-        from telkap.plans import FEAT_HISTORY, TWO_WEEK
+        from telkap.plans import FEAT_HISTORY, MONTH
         from telkap.services import entitlement
 
-        assert await entitlement.reserve(7, FEAT_HISTORY, 50, TWO_WEEK, "2026-01-01")
-        assert await entitlement.quota_left(7, FEAT_HISTORY, TWO_WEEK, "2026-01-01") == 0
-        # روز بعد سهمیه دوباره کامل است
-        assert await entitlement.quota_left(7, FEAT_HISTORY, TWO_WEEK, "2026-01-02") == 50
+        assert await entitlement.reserve(7, FEAT_HISTORY, 50, MONTH, 1)
+        assert await entitlement.quota_left(1, FEAT_HISTORY, MONTH) == 0
+        # اشتراک بعدی شمارنده‌ی خودش را دارد
+        assert await entitlement.quota_left(2, FEAT_HISTORY, MONTH) == 50
     finally:
         await db_module.close_db()
 
@@ -464,14 +484,27 @@ async def test_plan_without_the_feature_uses_credit_only(tmp_path, monkeypatch):
         from telkap.plans import CREDIT_HISTORY, FEAT_HISTORY, WEEK
         from telkap.services import credits, entitlement
 
-        day = "2026-01-01"
-        assert await entitlement.quota_left(7, FEAT_HISTORY, WEEK, day) == 0
-        assert await entitlement.reserve(7, FEAT_HISTORY, 10, WEEK, day) is None
+        assert await entitlement.quota_left(1, FEAT_HISTORY, WEEK) == 0
+        assert await entitlement.reserve(7, FEAT_HISTORY, 10, WEEK, 1) is None
 
         await credits.add(7, CREDIT_HISTORY, 10)
-        grant = await entitlement.reserve(7, FEAT_HISTORY, 10, WEEK, day)
+        grant = await entitlement.reserve(7, FEAT_HISTORY, 10, WEEK, 1)
         assert grant is not None
         assert (grant.from_quota, grant.from_credits) == (0, 10)
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_messages_have_no_purchasable_credit(tmp_path, monkeypatch):
+    """پیام اعتبار خریدنی ندارد؛ فقط سهمیه‌ی طرح."""
+    db_module, _task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.plans import FEAT_MESSAGES, MONTH
+        from telkap.services import entitlement
+
+        assert await entitlement.reserve(7, FEAT_MESSAGES, 5_000, MONTH, 1) is None
+        assert await entitlement.used(1, FEAT_MESSAGES) == 0
     finally:
         await db_module.close_db()
 
@@ -480,18 +513,17 @@ async def test_plan_without_the_feature_uses_credit_only(tmp_path, monkeypatch):
 async def test_affordable_reports_without_charging(tmp_path, monkeypatch):
     db_module, _task_id = await _setup(tmp_path, monkeypatch, settings={})
     try:
-        from telkap.plans import CREDIT_HISTORY, FEAT_HISTORY, TWO_WEEK
+        from telkap.plans import CREDIT_HISTORY, FEAT_HISTORY, MONTH
         from telkap.services import credits, entitlement
 
-        day = "2026-01-01"
-        assert await entitlement.affordable(7, FEAT_HISTORY, 50, TWO_WEEK, day) is True
-        assert await entitlement.affordable(7, FEAT_HISTORY, 60, TWO_WEEK, day) is False
+        assert await entitlement.affordable(7, FEAT_HISTORY, 50, MONTH, 1) is True
+        assert await entitlement.affordable(7, FEAT_HISTORY, 60, MONTH, 1) is False
 
         await credits.add(7, CREDIT_HISTORY, 10)
-        assert await entitlement.affordable(7, FEAT_HISTORY, 60, TWO_WEEK, day) is True
+        assert await entitlement.affordable(7, FEAT_HISTORY, 60, MONTH, 1) is True
         # هیچ‌چیز مصرف نشده است
         assert await credits.balance(7, CREDIT_HISTORY) == 10
-        assert await entitlement.used_today(7, FEAT_HISTORY, day) == 0
+        assert await entitlement.used(1, FEAT_HISTORY) == 0
     finally:
         await db_module.close_db()
 
@@ -623,7 +655,7 @@ def test_guide_quotes_live_prices_from_plans():
     plans_text = guide.SECTIONS["plans"][1]()
     assert MONTH.price_label in plans_text
     assert CUSTOM.price_label in plans_text
-    assert MONTH.daily_label in plans_text
+    assert MONTH.messages_label in plans_text
 
 
 def test_guide_next_button_walks_every_section():
@@ -640,3 +672,96 @@ def test_guide_next_button_walks_every_section():
     last = guide._section_keyboard(keys[-1]).as_markup()
     targets = [b.callback_data for row in last.inline_keyboard for b in row]
     assert targets == ["guide:home"]
+
+
+# ---------------------------------------------------- تیکت پشتیبانی
+@pytest.mark.asyncio
+async def test_support_ticket_round_trip(tmp_path, monkeypatch):
+    """کاربر پیام می‌دهد، ادمین جواب می‌دهد، تیکت بسته می‌شود."""
+    db_module, _task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.models import SupportTicket
+        from telkap.services import support
+
+        assert await support.open_ticket(7) is None
+        assert await support.waiting_count() == 0
+
+        ticket, created = await support.add_user_message(7, "سلام، مشکل دارم")
+        assert created is True
+        assert ticket.awaiting_reply is True
+        assert await support.waiting_count() == 1
+
+        # پیام دوم به همان تیکت می‌چسبد، تیکت تازه نمی‌سازد
+        again, created = await support.add_user_message(7, "توضیح بیشتر")
+        assert created is False
+        assert again.id == ticket.id
+        assert len(await support.history(ticket.id)) == 2
+
+        replied = await support.add_admin_reply(ticket.id, admin_id=1, text="سلام، بفرمایید")
+        assert replied is not None
+        assert replied.awaiting_reply is False
+        assert await support.waiting_count() == 0
+
+        closed = await support.close(ticket.id)
+        assert closed.status == SupportTicket.STATUS_CLOSED
+        assert await support.open_ticket(7) is None
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_support_reply_never_leaks_admin_identity(tmp_path, monkeypatch):
+    """آیدی ادمین فقط داخلی ذخیره می‌شود و در متن پیام کاربر نمی‌آید."""
+    db_module, _task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import support
+
+        ticket, _ = await support.add_user_message(7, "سؤال")
+        await support.add_admin_reply(ticket.id, admin_id=987654321, text="پاسخ ما")
+
+        messages = await support.history(ticket.id)
+        reply = messages[-1]
+        assert reply.from_admin is True
+        assert reply.admin_id == 987654321      # فقط برای گزارش داخلی
+        assert "987654321" not in reply.text    # در متن نیست
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_support_new_ticket_after_close(tmp_path, monkeypatch):
+    db_module, _task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import support
+
+        first, _ = await support.add_user_message(7, "مشکل اول")
+        await support.close(first.id)
+
+        second, created = await support.add_user_message(7, "مشکل دوم")
+        assert created is True
+        assert second.id != first.id
+        assert len(await support.user_tickets(7)) == 2
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_support_open_tickets_puts_waiting_first(tmp_path, monkeypatch):
+    db_module, _task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.models import User
+        from telkap.services import support
+
+        async with db_module.get_session() as session:
+            session.add(User(id=8, first_name="دومی"))
+            await session.commit()
+
+        answered, _ = await support.add_user_message(7, "جواب گرفته")
+        await support.add_admin_reply(answered.id, admin_id=1, text="بله")
+        waiting, _ = await support.add_user_message(8, "منتظر جواب")
+
+        order = [t.id for t in await support.open_tickets()]
+        assert order[0] == waiting.id           # منتظر پاسخ، اول فهرست
+        assert answered.id in order
+    finally:
+        await db_module.close_db()

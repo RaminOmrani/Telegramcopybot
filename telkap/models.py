@@ -293,20 +293,27 @@ class DailyStat(Base):
     failed: Mapped[int] = mapped_column(Integer, default=0)
 
 
-class DailyUsage(Base):
-    """مصرف روزانه‌ی سهمیه‌های طرح، به ازای هر کاربر.
+class PeriodUsage(Base):
+    """مصرف سهمیه‌های یک اشتراک، در کل دوره‌ی آن.
+
+    سهمیه‌ها روزانه نیستند: «۲۰۰۰ پیام» یعنی ۲۰۰۰ پیام در کل ۳۰ روز. پس
+    شمارنده به اشتراک گره خورده، نه به روز. با تمدید یا خرید طرح تازه یک
+    اشتراک تازه ساخته می‌شود و شمارنده‌ها از صفر شروع می‌کنند.
 
     در دیتابیس نگه داشته می‌شود نه در حافظه، تا با ری‌استارت ربات سهمیه‌ی
     کسی صفر نشود.
     """
 
-    __tablename__ = "daily_usage"
-    __table_args__ = (UniqueConstraint("user_id", "day", "kind", name="uq_daily_usage"),)
+    __tablename__ = "period_usage"
+    __table_args__ = (
+        UniqueConstraint("subscription_id", "kind", name="uq_period_usage"),
+    )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
-    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
-    day: Mapped[str] = mapped_column(String(10))   # YYYY-MM-DD به وقت محلی
-    kind: Mapped[str] = mapped_column(String(16))  # watermark | history
+    subscription_id: Mapped[int] = mapped_column(
+        ForeignKey("subscriptions.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(16))  # messages | watermark | history
     used: Mapped[int] = mapped_column(Integer, default=0)
 
 
@@ -321,6 +328,52 @@ class ReminderState(Base):
     kind: Mapped[str] = mapped_column(String(32))
     sub_id: Mapped[int] = mapped_column(Integer)
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class SupportTicket(Base):
+    """گفتگوی پشتیبانی یک کاربر.
+
+    کاربر هرگز آیدی ادمین را نمی‌بیند؛ پیام‌ها از طریق خود ربات رد و بدل
+    می‌شوند و پاسخ‌ها با عنوان «پشتیبانی» به او می‌رسد.
+    """
+
+    __tablename__ = "support_tickets"
+
+    STATUS_OPEN = "open"
+    STATUS_CLOSED = "closed"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    subject: Mapped[str] = mapped_column(String(120), default="")
+    status: Mapped[str] = mapped_column(String(16), default=STATUS_OPEN, index=True)
+    # آیا آخرین پیام از سمت کاربر است و هنوز جواب نگرفته؟
+    awaiting_reply: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    messages: Mapped[list[SupportMessage]] = relationship(
+        back_populates="ticket", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+
+class SupportMessage(Base):
+    """یک پیام درون گفتگوی پشتیبانی."""
+
+    __tablename__ = "support_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ticket_id: Mapped[int] = mapped_column(
+        ForeignKey("support_tickets.id", ondelete="CASCADE"), index=True
+    )
+    from_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    # فقط برای گزارش داخلی؛ هرگز به کاربر نشان داده نمی‌شود
+    admin_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    text: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    ticket: Mapped[SupportTicket] = relationship(back_populates="messages")
 
 
 class ActivityLog(Base):

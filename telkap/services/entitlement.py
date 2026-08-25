@@ -1,13 +1,18 @@
 """سهمیه‌ی طرح + اعتبار خریداری‌شده، در یک جا.
 
-قابلیت‌های مصرفی (واترمارک و کپی پیام‌های گذشته) دو منبع دارند:
+<b>سهمیه‌ها برای کل دوره‌ی اشتراک‌اند، نه روزانه.</b> «۲٬۰۰۰ پیام» یعنی
+۲٬۰۰۰ پیام در کل ۳۰ روز. شمارنده به خود اشتراک گره خورده، پس با تمدید یا
+خرید طرح تازه از صفر شروع می‌شود.
 
-  ۱. <b>سهمیه‌ی روزانه‌ی طرح</b> — مثلاً ۲۰ واترمارک در روز. رایگان است و
-     هر شبانه‌روز از نو پر می‌شود.
-  ۲. <b>اعتبار خریداری‌شده</b> — واحدی، بدون انقضا، وقتی سهمیه تمام شود.
+قابلیت‌های مصرفی دو منبع دارند:
+
+  ۱. <b>سهمیه‌ی طرح</b> — رایگان، تا سقف دوره
+  ۲. <b>اعتبار خریداری‌شده</b> — واحدی، بدون انقضا، وقتی سهمیه تمام شود
 
 ترتیب مصرف همیشه «اول سهمیه، بعد اعتبار» است تا کاربر بی‌دلیل پول ندهد.
 اگر هر دو با هم هم کافی نباشند، عملیات انجام نمی‌شود و چیزی کم نمی‌گردد.
+
+پیام‌ها اعتبار خریدنی ندارند؛ فقط سهمیه‌ی طرح.
 """
 from __future__ import annotations
 
@@ -18,11 +23,12 @@ from sqlalchemy import select
 from sqlalchemy.exc import IntegrityError
 
 from telkap.db import get_session
-from telkap.models import DailyUsage
+from telkap.models import PeriodUsage
 from telkap.plans import (
     CREDIT_HISTORY,
     CREDIT_WATERMARK,
     FEAT_HISTORY,
+    FEAT_MESSAGES,
     FEAT_WATERMARK,
     UNLIMITED,
 )
@@ -30,11 +36,14 @@ from telkap.services import credits
 
 log = logging.getLogger(__name__)
 
-# قابلیت → (کلید مصرف روزانه، نوع اعتبار)
-_FEATURES = {
+# قابلیت → (کلید مصرف، نوع اعتبار یا None اگر خریدنی نیست)
+_FEATURES: dict[str, tuple[str, str | None]] = {
     FEAT_WATERMARK: ("watermark", CREDIT_WATERMARK),
     FEAT_HISTORY: ("history", CREDIT_HISTORY),
+    FEAT_MESSAGES: ("messages", None),
 }
+
+BIG = 1 << 30  # جای «نامحدود» در محاسبه‌ها
 
 
 @dataclass(slots=True)
@@ -60,45 +69,47 @@ class Grant:
             parts.append(f"{self.from_quota} از سهمیه‌ی طرح")
         if self.from_credits:
             parts.append(f"{self.from_credits} از اعتبار")
-        return " + ".join(parts)
+        return " + ".join(parts) or "۰"
 
 
-async def used_today(user_id: int, feature: str, day: str) -> int:
+async def used(subscription_id: int, feature: str) -> int:
+    """چقدر از سهمیه‌ی این اشتراک تا حالا مصرف شده است."""
     kind = _FEATURES[feature][0]
     async with get_session() as db:
         rows = await db.execute(
-            select(DailyUsage.used).where(
-                DailyUsage.user_id == user_id,
-                DailyUsage.day == day,
-                DailyUsage.kind == kind,
+            select(PeriodUsage.used).where(
+                PeriodUsage.subscription_id == subscription_id,
+                PeriodUsage.kind == kind,
             )
         )
         return int(rows.scalar_one_or_none() or 0)
 
 
-async def quota_left(user_id: int, feature: str, plan, day: str) -> int:
-    """چقدر از سهمیه‌ی رایگان امروز باقی مانده (برای نامحدود عدد بزرگ)."""
+async def quota_left(subscription_id: int | None, feature: str, plan) -> int:
+    """سهمیه‌ی باقی‌مانده‌ی این دوره (برای نامحدود عدد بزرگ)."""
     limit = plan.quota(feature) if plan else 0
     if limit == UNLIMITED:
-        return 1 << 30
-    if limit <= 0:
+        return BIG
+    if limit <= 0 or subscription_id is None:
         return 0
-    return max(0, limit - await used_today(user_id, feature, day))
+    return max(0, limit - await used(subscription_id, feature))
 
 
-async def _take_quota(user_id: int, feature: str, day: str, amount: int) -> None:
+async def _take(subscription_id: int, feature: str, amount: int) -> None:
+    """شمارنده‌ی مصرف را جابه‌جا می‌کند (عدد منفی یعنی برگرداندن)."""
     kind = _FEATURES[feature][0]
     async with get_session() as db:
         rows = await db.execute(
-            select(DailyUsage).where(
-                DailyUsage.user_id == user_id,
-                DailyUsage.day == day,
-                DailyUsage.kind == kind,
+            select(PeriodUsage).where(
+                PeriodUsage.subscription_id == subscription_id,
+                PeriodUsage.kind == kind,
             )
         )
         row = rows.scalar_one_or_none()
         if row is None:
-            db.add(DailyUsage(user_id=user_id, day=day, kind=kind, used=amount))
+            db.add(
+                PeriodUsage(subscription_id=subscription_id, kind=kind, used=max(0, amount))
+            )
             try:
                 await db.commit()
                 return
@@ -106,10 +117,9 @@ async def _take_quota(user_id: int, feature: str, day: str, amount: int) -> None
                 # دو ارسال همزمان؛ ردیف را کس دیگری ساخته است
                 await db.rollback()
                 rows = await db.execute(
-                    select(DailyUsage).where(
-                        DailyUsage.user_id == user_id,
-                        DailyUsage.day == day,
-                        DailyUsage.kind == kind,
+                    select(PeriodUsage).where(
+                        PeriodUsage.subscription_id == subscription_id,
+                        PeriodUsage.kind == kind,
                     )
                 )
                 row = rows.scalar_one_or_none()
@@ -119,7 +129,9 @@ async def _take_quota(user_id: int, feature: str, day: str, amount: int) -> None
         await db.commit()
 
 
-async def reserve(user_id: int, feature: str, amount: int, plan, day: str) -> Grant | None:
+async def reserve(
+    user_id: int, feature: str, amount: int, plan, subscription_id: int | None
+) -> Grant | None:
     """اول از سهمیه، بعد از اعتبار برمی‌دارد.
 
     اگر مجموع کافی نباشد None برمی‌گرداند و <b>هیچ‌چیز کم نمی‌شود</b>.
@@ -130,42 +142,50 @@ async def reserve(user_id: int, feature: str, amount: int, plan, day: str) -> Gr
     limit = plan.quota(feature) if plan else 0
     if limit == UNLIMITED:
         return Grant(feature, unlimited=True)
+    if subscription_id is None:
+        return None
 
-    available = await quota_left(user_id, feature, plan, day)
+    available = await quota_left(subscription_id, feature, plan)
     from_quota = min(amount, available)
     from_credits = amount - from_quota
 
-    if from_credits and not await credits.consume(user_id, _FEATURES[feature][1], from_credits):
-        return None  # اعتبار کم است؛ سهمیه هم دست‌نخورده می‌ماند
+    credit_kind = _FEATURES[feature][1]
+    if from_credits:
+        if credit_kind is None:
+            return None  # این قابلیت اعتبار خریدنی ندارد
+        if not await credits.consume(user_id, credit_kind, from_credits):
+            return None  # اعتبار کم است؛ سهمیه هم دست‌نخورده می‌ماند
 
     if from_quota:
-        await _take_quota(user_id, feature, day, from_quota)
+        await _take(subscription_id, feature, from_quota)
     return Grant(feature, from_quota=from_quota, from_credits=from_credits)
 
 
-async def release(user_id: int, grant: Grant | None, day: str) -> None:
+async def release(user_id: int, grant: Grant | None, subscription_id: int | None) -> None:
     """اگر عملیات انجام نشد، سهمیه و اعتبار برمی‌گردند."""
     if grant is None or grant.unlimited:
         return
-    if grant.from_quota:
-        await _take_quota(user_id, grant.feature, day, -grant.from_quota)
-    if grant.from_credits:
+    if grant.from_quota and subscription_id is not None:
+        await _take(subscription_id, grant.feature, -grant.from_quota)
+    credit_kind = _FEATURES[grant.feature][1]
+    if grant.from_credits and credit_kind:
         await credits.add(
-            user_id,
-            _FEATURES[grant.feature][1],
-            grant.from_credits,
-            note="بازگشت؛ عملیات انجام نشد",
+            user_id, credit_kind, grant.from_credits, note="بازگشت؛ عملیات انجام نشد"
         )
 
 
-async def affordable(user_id: int, feature: str, amount: int, plan, day: str) -> bool:
+async def affordable(
+    user_id: int, feature: str, amount: int, plan, subscription_id: int | None
+) -> bool:
     """آیا این تعداد از مجموع سهمیه و اعتبار قابل تأمین است؟ (بدون کم کردن)"""
     if feature not in _FEATURES or amount <= 0:
         return False
     if (plan.quota(feature) if plan else 0) == UNLIMITED:
         return True
-    left = await quota_left(user_id, feature, plan, day)
+    left = await quota_left(subscription_id, feature, plan)
     if left >= amount:
         return True
-    balance = await credits.balance(user_id, _FEATURES[feature][1])
-    return left + balance >= amount
+    credit_kind = _FEATURES[feature][1]
+    if credit_kind is None:
+        return False
+    return left + await credits.balance(user_id, credit_kind) >= amount

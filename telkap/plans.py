@@ -9,6 +9,7 @@ FEAT_PRIVATE = "private_source"    # کپی از کانال خصوصی
 FEAT_WATERMARK = "watermark"       # واترمارک تصاویر
 FEAT_HISTORY = "history"           # کپی پیام‌های گذشته
 FEAT_VIP = "vip_support"           # پشتیبانی ویژه
+FEAT_MESSAGES = "messages"         # سهمیه‌ی پیام (همیشه هست، فقط عددش فرق می‌کند)
 
 # بسته‌های اعتباری که جدا از اشتراک خریده می‌شوند (تومان به ازای هر واحد)
 WATERMARK_UNIT_TOMAN = 1_000       # هر تصویر واترمارک‌شده
@@ -56,6 +57,13 @@ def quota_label(value: int) -> str:
 
 @dataclass(frozen=True)
 class Plan:
+    """یک طرح اشتراک.
+
+    <b>همه‌ی سهمیه‌ها برای کل دوره‌ی اشتراک‌اند، نه روزانه.</b> یعنی «۲۰۰۰
+    پیام» یعنی ۲۰۰۰ پیام در کل ۳۰ روز. با تمدید یا خرید طرح تازه، سهمیه
+    از نو پر می‌شود.
+    """
+
     code: str
     title: str
     days: int
@@ -63,21 +71,26 @@ class Plan:
     tagline: str
     max_tasks: int              # چند کار کپی همزمان
     max_destinations: int       # چند کانال مقصد برای هر کار (شامل مقصد اصلی)
-    daily_messages: int         # سقف پیام در شبانه‌روز
-    watermark_daily: int        # چند تصویر در روز رایگان واترمارک می‌خورد
-    history_daily: int          # چند پیام قدیمی در روز رایگان کپی می‌شود
+    period_messages: int        # سقف پیام در کل دوره
+    watermark_quota: int        # چند تصویر در کل دوره واترمارک می‌خورد
+    history_quota: int          # چند پیام قدیمی در کل دوره کپی می‌شود
     features: frozenset[str]
     perks: tuple[str, ...] = field(default_factory=tuple)
+    # سقف «مصرف منصفانه» روزانه برای طرح‌های نامحدود. به کاربر نامحدود
+    # نشان داده می‌شود ولی جلوی سوءاستفاده را می‌گیرد. ۰ یعنی بدون سقف.
+    fair_use_daily: int = 0
 
     def has(self, feature: str) -> bool:
         return feature in self.features
 
     def quota(self, feature: str) -> int:
-        """سهمیه‌ی روزانه‌ی یک قابلیت مصرفی."""
+        """سهمیه‌ی کل دوره برای یک قابلیت مصرفی."""
         if feature == FEAT_WATERMARK:
-            return self.watermark_daily
+            return self.watermark_quota
         if feature == FEAT_HISTORY:
-            return self.history_daily
+            return self.history_quota
+        if feature == FEAT_MESSAGES:
+            return self.period_messages
         return UNLIMITED
 
     @property
@@ -85,16 +98,16 @@ class Plan:
         return f"{_fa(self.price_toman)} تومان"
 
     @property
-    def daily_label(self) -> str:
-        return quota_label(self.daily_messages)
+    def messages_label(self) -> str:
+        return quota_label(self.period_messages)
 
     @property
     def watermark_label(self) -> str:
-        return quota_label(self.watermark_daily)
+        return quota_label(self.watermark_quota)
 
     @property
     def history_label(self) -> str:
-        return quota_label(self.history_daily)
+        return quota_label(self.history_quota)
 
     @property
     def extra_destinations(self) -> int:
@@ -110,14 +123,14 @@ TRIAL = Plan(
     tagline="تست رایگان امکانات پایه",
     max_tasks=1,
     max_destinations=1,
-    daily_messages=50,
-    watermark_daily=0,
-    history_daily=0,
+    period_messages=20,
+    watermark_quota=0,
+    history_quota=0,
     features=frozenset({FEAT_PUBLIC}),
     perks=(
+        "۲۰ پیام برای تست",
         "۱ کار کپی فعال",
         "۱ کانال مقصد",
-        "۵۰ پیام در روز",
         "کپی از کانال‌های عمومی",
     ),
 )
@@ -130,16 +143,16 @@ WEEK = Plan(
     tagline="پلن پایه برای شروع",
     max_tasks=3,
     max_destinations=3,
-    daily_messages=500,
-    watermark_daily=10,
-    history_daily=0,
-    features=frozenset({FEAT_PUBLIC, FEAT_WATERMARK}),
+    period_messages=200,
+    watermark_quota=0,
+    history_quota=0,
+    features=frozenset({FEAT_PUBLIC}),
     perks=(
+        "۲۰۰ پیام در کل دوره",
         "۳ کار کپی فعال",
         "تا ۳ کانال مقصد برای هر کار",
-        "۵۰۰ پیام در روز",
-        "۱۰ واترمارک در روز",
         "کپی از کانال‌های عمومی",
+        "فیلتر، جایگزینی کلمات، هدر و فوتر",
     ),
 )
 
@@ -148,20 +161,19 @@ TWO_WEEK = Plan(
     title="اشتراک ۱۴ روزه",
     days=14,
     price_toman=229_000,
-    tagline="پلن محبوب، با کانال خصوصی و پیام‌های گذشته",
+    tagline="پلن محبوب، با کانال خصوصی و واترمارک",
     max_tasks=6,
     max_destinations=5,
-    daily_messages=1_500,
-    watermark_daily=20,
-    history_daily=50,
-    features=frozenset({FEAT_PUBLIC, FEAT_PRIVATE, FEAT_WATERMARK, FEAT_HISTORY}),
+    period_messages=1_000,
+    watermark_quota=10,
+    history_quota=0,
+    features=frozenset({FEAT_PUBLIC, FEAT_PRIVATE, FEAT_WATERMARK}),
     perks=(
+        "۱٬۰۰۰ پیام در کل دوره",
         "۶ کار کپی فعال",
         "تا ۵ کانال مقصد برای هر کار",
-        "۱٬۵۰۰ پیام در روز",
-        "۲۰ واترمارک در روز",
-        "۵۰ پیام گذشته در روز",
         "کپی از کانال‌های عمومی و خصوصی",
+        "۱۰ واترمارک",
     ),
 )
 
@@ -170,20 +182,20 @@ MONTH = Plan(
     title="اشتراک ۳۰ روزه",
     days=30,
     price_toman=429_000,
-    tagline="پلن حرفه‌ای با سهمیه‌های بالا",
+    tagline="پلن حرفه‌ای با همه‌ی امکانات",
     max_tasks=20,
     max_destinations=10,
-    daily_messages=4_000,
-    watermark_daily=50,
-    history_daily=100,
+    period_messages=2_000,
+    watermark_quota=20,
+    history_quota=50,
     features=frozenset({FEAT_PUBLIC, FEAT_PRIVATE, FEAT_WATERMARK, FEAT_HISTORY, FEAT_VIP}),
     perks=(
+        "۲٬۰۰۰ پیام در کل دوره",
         "۲۰ کار کپی فعال",
         "تا ۱۰ کانال مقصد برای هر کار",
-        "۴٬۰۰۰ پیام در روز",
-        "۵۰ واترمارک در روز",
-        "۱۰۰ پیام گذشته در روز",
         "کپی از کانال‌های عمومی و خصوصی",
+        "۲۰ واترمارک",
+        "۵۰ پیام گذشته",
         "پشتیبانی ویژه (VIP)",
     ),
 )
@@ -193,20 +205,23 @@ CUSTOM = Plan(
     title="طرح اختصاصی",
     days=30,
     price_toman=890_000,
-    tagline="بدون هیچ سقفی، همه‌ی امکانات باز",
-    max_tasks=100,
+    tagline="پیام نامحدود، بالاترین سهمیه‌ها",
+    max_tasks=50,
     max_destinations=20,
-    daily_messages=UNLIMITED,
-    watermark_daily=UNLIMITED,
-    history_daily=UNLIMITED,
+    period_messages=UNLIMITED,
+    watermark_quota=50,
+    history_quota=100,
     features=frozenset({FEAT_PUBLIC, FEAT_PRIVATE, FEAT_WATERMARK, FEAT_HISTORY, FEAT_VIP}),
+    # نامحدود نمایش داده می‌شود، ولی برای جلوگیری از سوءاستفاده سقف
+    # روزانه‌ی مصرف منصفانه دارد
+    fair_use_daily=10_000,
     perks=(
-        "🚀 پیام نامحدود در روز",
-        "💧 واترمارک نامحدود",
-        "🕓 پیام‌های گذشته نامحدود",
-        "۱۰۰ کار کپی فعال",
+        "🚀 پیام نامحدود",
+        "۵۰ کار کپی فعال",
         "تا ۲۰ کانال مقصد برای هر کار",
         "کپی از کانال‌های عمومی و خصوصی",
+        "۵۰ واترمارک",
+        "۱۰۰ پیام گذشته",
         "پشتیبانی ویژه (VIP)",
     ),
 )

@@ -53,6 +53,9 @@ class Flow(StatesGroup):
     admin_join_add = State()
     admin_credit = State()
 
+    support_message = State()
+    support_reply = State()
+
 
 async def get_or_create_user(tg_user: TgUser) -> User:
     async with get_session() as db:

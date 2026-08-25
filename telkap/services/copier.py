@@ -34,7 +34,7 @@ from telethon.tl.types import (
 from telkap.config import get_settings
 from telkap.db import get_session, log_activity
 from telkap.models import DailyStat, Destination, MessageMap, RetryItem, Task, utcnow
-from telkap.plans import FEAT_WATERMARK
+from telkap.plans import FEAT_MESSAGES, FEAT_WATERMARK
 from telkap.services import cache, entitlement
 from telkap.services.filters import MessageFacts, content_hash, should_copy
 from telkap.services.ratelimit import RateLimiter, daily_quota, hourly_quota
@@ -235,7 +235,8 @@ class Copier:
             )
             return False
 
-        plan = await cache.get_plan(user_id)
+        ent = await cache.get_entitlement(user_id)
+        plan = ent.plan
         if plan is None:
             log.info("کاربر %s اشتراک فعال ندارد؛ کار %s متوقف شد", user_id, task_id)
             await self._pause_task(task_id, "اشتراک منقضی شده است")
@@ -274,7 +275,7 @@ class Copier:
             )
             return False
 
-        if not await self._daily_quota_ok(user_id, task_id, plan):
+        if not await self._message_quota_ok(user_id, task_id, ent):
             return False
 
         digest = content_hash(facts)
@@ -308,7 +309,7 @@ class Copier:
         )
         wm_units = sum(1 for m in messages if classify_media(m) == "photo")
         want_wm = wanted_watermark and bool(wm_units)
-        day = today_key()
+        sub_id = ent.subscription_id
         watermark_open = True   # تا وقتی سهمیه و اعتبار تمام نشده
         any_sent = False
 
@@ -327,7 +328,7 @@ class Copier:
             grant = None
             if want_wm and watermark_open:
                 grant = await entitlement.reserve(
-                    user_id, FEAT_WATERMARK, wm_units, plan, day
+                    user_id, FEAT_WATERMARK, wm_units, plan, sub_id
                 )
                 if grant is None:
                     watermark_open = False
@@ -362,7 +363,7 @@ class Copier:
                         entities=plain or None,
                     )
             except ChatWriteForbiddenError:
-                await entitlement.release(user_id, grant, day)
+                await entitlement.release(user_id, grant, sub_id)
                 # فقط اگر مقصد اصلی مشکل دارد کار را متوقف می‌کنیم
                 if spec is targets[0]:
                     await self._pause_task(task_id, "دسترسی ارسال به کانال مقصد وجود ندارد")
@@ -376,10 +377,10 @@ class Copier:
                 await self._disable_destination(task_id, target)
                 continue
             except FloodWaitError:
-                await entitlement.release(user_id, grant, day)
+                await entitlement.release(user_id, grant, sub_id)
                 raise
             except Exception as exc:
-                await entitlement.release(user_id, grant, day)
+                await entitlement.release(user_id, grant, sub_id)
                 log.exception("ارسال به مقصد %s ناموفق بود؛ در صف تلاش مجدد", target)
                 await self._enqueue_retry(
                     task_id, user_id, src_chat_id, src_ids, str(target), str(exc)
@@ -388,7 +389,7 @@ class Copier:
 
             if not sent:
                 # چیزی ارسال نشد (مثلاً متن خالی)؛ سهمیه نباید سوخته شود
-                await entitlement.release(user_id, grant, day)
+                await entitlement.release(user_id, grant, sub_id)
 
             if sent:
                 any_sent = True
@@ -800,47 +801,71 @@ class Copier:
             await db.commit()
         await log_activity(task_id=task_id, event="error", detail=detail, level="error")
 
-    async def _daily_quota_ok(self, user_id: int, task_id: int, plan) -> bool:
-        """سقف روزانه‌ی پلن کاربر را بررسی و یکی از آن کم می‌کند."""
-        limit = int(getattr(plan, "daily_messages", 0))
-        if limit < 0:
-            return True  # طرح نامحدود
-
+    async def _message_quota_ok(self, user_id: int, task_id: int, ent) -> bool:
+        """سهمیه‌ی پیام دوره و سقف «مصرف منصفانه»‌ی روزانه را بررسی می‌کند."""
+        plan = ent.plan
         day = today_key()
         if day != self._quota_day:
             # روز عوض شد؛ هشدارها دوباره مجاز می‌شوند
             self._quota_day = day
             self._quota_warned.clear()
-        if not daily_quota.is_seeded(user_id, day):
-            # پس از ری‌استارت، مصرف امروز از جدول آمار خوانده می‌شود
-            async with get_session() as db:
-                used = await db.scalar(
-                    select(func.coalesce(func.sum(DailyStat.copied), 0)).where(
-                        DailyStat.user_id == user_id, DailyStat.day == day
-                    )
-                )
-            daily_quota.seed(user_id, day, int(used or 0))
 
-        if daily_quota.allow(user_id, day, limit):
+        # ۱) سقف مصرف منصفانه‌ی روزانه (فقط برای طرح‌های نامحدود)
+        fair = int(getattr(plan, "fair_use_daily", 0) or 0)
+        if fair > 0:
+            if not daily_quota.is_seeded(user_id, day):
+                async with get_session() as db:
+                    spent = await db.scalar(
+                        select(func.coalesce(func.sum(DailyStat.copied), 0)).where(
+                            DailyStat.user_id == user_id, DailyStat.day == day
+                        )
+                    )
+                daily_quota.seed(user_id, day, int(spent or 0))
+            if not daily_quota.allow(user_id, day, fair):
+                await self._reject_quota(
+                    user_id,
+                    task_id,
+                    detail=f"سقف مصرف منصفانه‌ی روزانه ({fair} پیام) پر شد",
+                    notice=(
+                        "📊 امروز به سقف مصرف منصفانه رسیدید و کپی تا نیمه‌شب "
+                        "متوقف می‌شود.\n\nاگر به حجم بیشتری نیاز دارید، با "
+                        "پشتیبانی در تماس باشید."
+                    ),
+                )
+                return False
+
+        # ۲) سهمیه‌ی پیام کل دوره
+        grant = await entitlement.reserve(
+            user_id, FEAT_MESSAGES, 1, plan, ent.subscription_id
+        )
+        if grant is not None:
             return True
 
+        limit = plan.quota(FEAT_MESSAGES) if plan else 0
+        await self._reject_quota(
+            user_id,
+            task_id,
+            detail=f"سهمیه‌ی پیام طرح ({limit} پیام) تمام شد",
+            notice=(
+                f"📊 سهمیه‌ی <b>{limit} پیام</b> طرح شما تمام شد و کپی متوقف شده است.\n\n"
+                "با تمدید یا خرید طرح بالاتر، سهمیه از نو پر می‌شود.\n"
+                "«💳 خرید اشتراک» را بزنید."
+            ),
+        )
+        return False
+
+    async def _reject_quota(
+        self, user_id: int, task_id: int, *, detail: str, notice: str
+    ) -> None:
         await self._bump(task_id, user_id, skipped=True)
         await log_activity(
-            user_id=user_id,
-            task_id=task_id,
-            event="skip",
-            detail=f"سقف روزانه‌ی پلن ({limit} پیام) پر شده است",
+            user_id=user_id, task_id=task_id, event="skip", detail=detail
         )
-        if user_id not in self._quota_warned:
-            self._quota_warned.add(user_id)
-            if self.notifier:
-                await self.notifier(
-                    user_id,
-                    f"📊 سقف روزانه‌ی اشتراک شما ({limit} پیام) امروز پر شد.\n"
-                    "کپی از نیمه‌شب دوباره ادامه پیدا می‌کند.\n\n"
-                    "برای سقف بیشتر یا پیام نامحدود، از «💳 خرید اشتراک» پلن بالاتر بگیرید.",
-                )
-        return False
+        if user_id in self._quota_warned:
+            return
+        self._quota_warned.add(user_id)
+        if self.notifier:
+            await self.notifier(user_id, notice)
 
     async def _warn_out_of_watermark(self, user_id: int, task_id: int) -> None:
         """یک بار به کاربر می‌گوید سهمیه و اعتبار واترمارکش تمام شده است."""

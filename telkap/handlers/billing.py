@@ -58,9 +58,9 @@ def _plans_text() -> str:
             lines.append(f"   ✓ {perk}")
     lines.append(f"\n{RULE}")
     lines.append(
-        "🎫 <b>اعتبار جداگانه</b> — سهمیه‌ی روزانه‌ی واترمارک و پیام‌های گذشته "
-        "هر شب پر می‌شود. اگر بیشتر لازم داشتید، به‌جای طرح بالاتر می‌توانید "
-        f"واحدی بخرید (هر واحد {toman(WATERMARK_UNIT_TOMAN)}، بدون انقضا)."
+        "🎫 <b>اعتبار جداگانه</b> — سهمیه‌ی واترمارک و پیام‌های گذشته برای کل "
+        "دوره است. اگر وسط دوره کم آوردید، به‌جای طرح بالاتر می‌توانید واحدی "
+        f"بخرید (هر واحد {toman(WATERMARK_UNIT_TOMAN)}، بدون انقضا)."
     )
     lines.append("\nبرای خرید، یکی از گزینه‌های زیر را بزنید 👇")
     return "\n".join(lines)
@@ -74,11 +74,11 @@ def _compare_text() -> str:
     rows = [
         ("💰 قیمت", lambda p: p.price_label.replace(" تومان", "")),
         ("📅 مدت", lambda p: f"{fa_num(p.days)} روز"),
-        ("📨 پیام روزانه", lambda p: p.daily_label),
+        ("📨 پیام کل دوره", lambda p: p.messages_label),
         ("📋 کار کپی", lambda p: fa_num(p.max_tasks)),
         ("📤 مقصد هر کار", lambda p: fa_num(p.max_destinations)),
-        ("💧 واترمارک روزانه", lambda p: p.watermark_label),
-        ("🕓 پیام گذشته روزانه", lambda p: p.history_label),
+        ("💧 واترمارک", lambda p: p.watermark_label),
+        ("🕓 پیام گذشته", lambda p: p.history_label),
         ("🔒 کانال خصوصی", lambda p: mark(p.has(FEAT_PRIVATE))),
         ("👑 پشتیبانی ویژه", lambda p: mark(p.has(FEAT_VIP))),
     ]
@@ -91,9 +91,9 @@ def _compare_text() -> str:
             blocks.append(f"   {label}: {getter(plan)}")
     blocks.append(f"\n{RULE}")
     blocks.append(
-        "<i>سهمیه‌ها هر شبانه‌روز از نو پر می‌شوند. اگر سهمیه‌ی روزتان تمام "
-        "شد یا طرحتان آن را ندارد، می‌توانید اعتبار واحدی بخرید — اعتبار "
-        "انقضا و سقف روزانه ندارد.</i>"
+        "<i>همه‌ی سهمیه‌ها برای کل دوره‌ی اشتراک‌اند، نه روزانه. با تمدید یا "
+        "خرید طرح تازه از نو پر می‌شوند. اگر وسط دوره سهمیه‌ی واترمارک یا "
+        "پیام گذشته کم آوردید، اعتبار واحدی بخرید — اعتبار انقضا ندارد.</i>"
     )
     return "\n".join(blocks)
 
@@ -180,8 +180,8 @@ async def cb_credits(call: CallbackQuery) -> None:
         lines.append(f"   قیمت هر واحد: <b>{toman(price)}</b>")
         lines.append(f"   مانده‌ی شما: <b>{fa_num(balances.get(kind, 0))}</b>\n")
     lines.append(
-        "<i>اعتبار تاریخ انقضا ندارد و تا وقتی مصرف نشود باقی می‌ماند. "
-        "اگر پلن شما خودش این قابلیت را داشته باشد، اعتبار مصرف نمی‌شود.</i>"
+        "<i>اعتبار تاریخ انقضا ندارد و با تمام شدن اشتراک هم از بین نمی‌رود. "
+        "همیشه اول سهمیه‌ی طرحتان مصرف می‌شود، بعد اعتبار.</i>"
     )
     await call.message.edit_text("\n".join(lines), reply_markup=credits_menu(balances))
 

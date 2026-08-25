@@ -7,7 +7,6 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
-from sqlalchemy import func, select
 
 from telkap.db import get_session
 from telkap.handlers.common import (
@@ -18,19 +17,19 @@ from telkap.handlers.common import (
     hash_pin,
 )
 from telkap.keyboards import BTN_ACCOUNT, account_menu, main_menu
-from telkap.models import DailyStat, User
+from telkap.models import User
 from telkap.plans import (
     CREDIT_HISTORY,
     CREDIT_WATERMARK,
     FEAT_HISTORY,
+    FEAT_MESSAGES,
     FEAT_PRIVATE,
     FEAT_VIP,
     FEAT_WATERMARK,
     UNLIMITED,
 )
 from telkap.services import credits, entitlement
-from telkap.services.copier import today_key
-from telkap.services.subscription import active_plan_for, remaining_days
+from telkap.services.subscription import active_entitlement, remaining_days
 from telkap.services.userbot import LoginError, manager
 from telkap.texts import (
     ASK_PIN,
@@ -48,7 +47,7 @@ router = Router(name="account")
 
 
 async def _account_text(user: User) -> str:
-    plan = await active_plan_for(user.id)
+    plan, sub_id = await active_entitlement(user.id)
     days = await remaining_days(user.id)
     lines = ["👤 <b>حساب کاربری</b>", "━━━━━━━━━━━━━━━━━━", ""]
     if user.is_logged_in:
@@ -59,31 +58,25 @@ async def _account_text(user: User) -> str:
     lines.append("")
 
     if plan:
-        used = await today_usage(user.id)
-        quota = (
-            f"{fa_num(used)} از {plan.daily_label}"
-            if plan.daily_messages
-            else f"{fa_num(used)} (نامحدود)"
-        )
-        day = today_key()
-        wm_used = await entitlement.used_today(user.id, FEAT_WATERMARK, day)
-        hist_used = await entitlement.used_today(user.id, FEAT_HISTORY, day)
+        msg_used = await entitlement.used(sub_id, FEAT_MESSAGES) if sub_id else 0
+        wm_used = await entitlement.used(sub_id, FEAT_WATERMARK) if sub_id else 0
+        hist_used = await entitlement.used(sub_id, FEAT_HISTORY) if sub_id else 0
         lines += [
             f"💎 طرح: <b>{plan.title}</b>",
             f"📅 باقی‌مانده: <b>{fa_num(days)} روز</b>",
             f"📋 سقف کار کپی: {fa_num(plan.max_tasks)}",
             f"📤 سقف مقصد هر کار: {fa_num(plan.max_destinations)}",
             "",
-            "<b>سهمیه‌های امروز</b>",
-            f"  📨 پیام: {quota}",
-            f"  💧 واترمارک: {_usage(wm_used, plan.watermark_daily)}",
-            f"  🕓 پیام گذشته: {_usage(hist_used, plan.history_daily)}",
+            "<b>سهمیه‌های این دوره</b>",
+            f"  📨 پیام: {_usage(msg_used, plan.period_messages)}",
+            f"  💧 واترمارک: {_usage(wm_used, plan.watermark_quota)}",
+            f"  🕓 پیام گذشته: {_usage(hist_used, plan.history_quota)}",
             "",
             "<b>امکانات طرح شما</b>",
             f"  {_mark(plan.has(FEAT_PRIVATE))} کپی از کانال خصوصی",
             f"  {_mark(plan.has(FEAT_VIP))} پشتیبانی ویژه",
             "",
-            "<i>سهمیه‌ها هر شب نیمه‌شب دوباره پر می‌شوند.</i>",
+            "<i>سهمیه‌ها برای کل دوره‌اند و با تمدید از نو پر می‌شوند.</i>",
         ]
     else:
         lines.append("💎 طرح: ⛔️ اشتراک فعالی ندارید")
@@ -104,24 +97,13 @@ def _mark(flag: bool) -> str:
     return "✅" if flag else "➖"
 
 
-def _usage(used: int, limit: int) -> str:
-    """مصرف امروز از سهمیه، به شکل «۳ از ۲۰»."""
+def _usage(spent: int, limit: int) -> str:
+    """مصرف این دوره از سهمیه، به شکل «۳ از ۲۰»."""
     if limit == UNLIMITED:
-        return f"{fa_num(used)} (نامحدود)"
+        return f"{fa_num(spent)} (نامحدود)"
     if limit == 0:
         return "در طرح شما نیست"
-    return f"{fa_num(used)} از {fa_num(limit)}"
-
-
-async def today_usage(user_id: int) -> int:
-    """تعداد پیام‌های کپی‌شده‌ی امروز این کاربر."""
-    async with get_session() as db:
-        used = await db.scalar(
-            select(func.coalesce(func.sum(DailyStat.copied), 0)).where(
-                DailyStat.user_id == user_id, DailyStat.day == today_key()
-            )
-        )
-    return int(used or 0)
+    return f"{fa_num(spent)} از {fa_num(limit)} (مانده: {fa_num(max(0, limit - spent))})"
 
 
 @router.message(Command("account"))

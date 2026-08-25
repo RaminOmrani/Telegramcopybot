@@ -18,7 +18,7 @@ from telkap.db import get_session
 from telkap.models import Destination, Rule, Task
 from telkap.plans import Plan
 from telkap.services.defaults import merged_settings
-from telkap.services.subscription import active_plan_for
+from telkap.services.subscription import active_entitlement
 
 log = logging.getLogger(__name__)
 
@@ -63,8 +63,16 @@ class TaskSnapshot:
     rules: list[RuleSnapshot] = field(default_factory=list)
 
 
+@dataclass(slots=True)
+class Entitlement:
+    """طرح فعال کاربر به‌همراه شناسه‌ی اشتراکی که سهمیه‌ها به آن گره خورده‌اند."""
+
+    plan: Plan | None
+    subscription_id: int | None = None
+
+
 _tasks: dict[int, TaskSnapshot] = {}
-_plans: dict[int, tuple[float, Plan | None]] = {}
+_plans: dict[int, tuple[float, Entitlement]] = {}
 
 
 async def get_task(task_id: int) -> TaskSnapshot | None:
@@ -132,15 +140,21 @@ def clear() -> None:
     _plans.clear()
 
 
-async def get_plan(user_id: int) -> Plan | None:
-    """پلن فعال کاربر، با کش کوتاه‌مدت."""
+async def get_entitlement(user_id: int) -> Entitlement:
+    """طرح فعال و شناسه‌ی اشتراک کاربر، با کش کوتاه‌مدت."""
     cached = _plans.get(user_id)
     now = time.monotonic()
     if cached is not None and now - cached[0] < PLAN_TTL_SECONDS:
         return cached[1]
-    plan = await active_plan_for(user_id)
-    _plans[user_id] = (now, plan)
-    return plan
+    plan, sub_id = await active_entitlement(user_id)
+    entry = Entitlement(plan, sub_id)
+    _plans[user_id] = (now, entry)
+    return entry
+
+
+async def get_plan(user_id: int) -> Plan | None:
+    """فقط طرح فعال کاربر (برای جاهایی که شناسه‌ی اشتراک لازم نیست)."""
+    return (await get_entitlement(user_id)).plan
 
 
 def stats() -> dict[str, int]:

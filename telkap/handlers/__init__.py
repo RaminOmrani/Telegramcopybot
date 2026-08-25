@@ -16,6 +16,7 @@ from telkap.handlers import (
     preview,
     settings,
     start,
+    support,
     tasks,
 )
 
@@ -27,6 +28,7 @@ def build_router() -> Router:
     root.include_router(admin.router)
     root.include_router(admin_users.router)
     root.include_router(admin_channels.router)
+    root.include_router(support.router)
     root.include_router(account.router)
     root.include_router(tasks.router)
     root.include_router(chatpicker.router)

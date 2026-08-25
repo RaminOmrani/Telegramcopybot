@@ -31,6 +31,17 @@ async def active_plan_for(user_id: int) -> Plan | None:
     return get_plan(sub.plan_code)
 
 
+async def active_entitlement(user_id: int) -> tuple[Plan | None, int | None]:
+    """طرح فعال و شناسه‌ی اشتراکش.
+
+    سهمیه‌ها به اشتراک گره خورده‌اند، پس مصرف‌کننده‌ها به شناسه هم نیاز دارند.
+    """
+    sub = await active_subscription(user_id)
+    if sub is None:
+        return None, None
+    return get_plan(sub.plan_code), sub.id
+
+
 async def grant(
     user_id: int,
     plan_code: str,
