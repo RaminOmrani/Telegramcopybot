@@ -20,7 +20,7 @@ from telkap.handlers import build_router
 from telkap.handlers import history as history_handlers
 from telkap.middlewares import BanMiddleware, ErrorLogMiddleware, ForceJoinMiddleware
 from telkap.models import Task
-from telkap.services import backup, forcejoin, maintenance, reminders
+from telkap.services import backup, forcejoin, maintenance, planstore, reminders
 from telkap.services.copier import Copier
 from telkap.services.history import HistoryCopier
 from telkap.services.retry import RetryWorker
@@ -132,6 +132,8 @@ async def main() -> None:
         observer.middleware(ForceJoinMiddleware())
     dispatcher.include_router(build_router())
 
+    # طرح‌ها و قیمت‌های ویرایش‌شده‌ی ادمین باید پیش از هر درخواستی سر جایشان باشند
+    await planstore.load()
     await forcejoin.seed_from_env()
     await manager.restore_all()
 

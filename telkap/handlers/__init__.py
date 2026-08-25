@@ -5,6 +5,8 @@ from telkap.handlers import (
     account,
     admin,
     admin_channels,
+    admin_limits,
+    admin_plans,
     admin_users,
     billing,
     chatpicker,
@@ -28,6 +30,8 @@ def build_router() -> Router:
     root.include_router(admin.router)
     root.include_router(admin_users.router)
     root.include_router(admin_channels.router)
+    root.include_router(admin_plans.router)
+    root.include_router(admin_limits.router)
     root.include_router(support.router)
     root.include_router(account.router)
     root.include_router(tasks.router)

@@ -14,8 +14,9 @@ from telkap.plans import (
     CREDIT_KINDS,
     CREDIT_PACKS,
     POPULAR_CODE,
-    PURCHASABLE,
     credit_price,
+    credit_unit,
+    purchasable,
     toman,
 )
 from telkap.services.defaults import MEDIA_KINDS
@@ -394,7 +395,7 @@ PLAN_ICONS = {
 
 def plans_menu() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    for plan in PURCHASABLE:
+    for plan in purchasable():
         icon = PLAN_ICONS.get(plan.code, "▫️")
         star = " ⭐️" if plan.code == POPULAR_CODE else ""
         kb.row(
@@ -413,7 +414,8 @@ def plans_menu() -> InlineKeyboardMarkup:
 def credits_menu(balances: dict[str, int]) -> InlineKeyboardMarkup:
     """فهرست بسته‌های اعتبار، با نمایش مانده‌ی فعلی."""
     kb = InlineKeyboardBuilder()
-    for kind, (title, _desc, price) in CREDIT_KINDS.items():
+    for kind, (title, _desc, _default) in CREDIT_KINDS.items():
+        price = credit_unit(kind)
         have = fa_num(balances.get(kind, 0))
         kb.row(
             InlineKeyboardButton(

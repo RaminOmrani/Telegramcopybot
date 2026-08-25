@@ -52,6 +52,10 @@ class User(Base):
     watermark_credits: Mapped[int] = mapped_column(Integer, default=0)
     history_credits: Mapped[int] = mapped_column(Integer, default=0)
 
+    # سقف‌ها و قابلیت‌های اختصاصی این کاربر که ادمین دستی تعیین کرده و
+    # روی طرحش سوار می‌شود. کلید نبود یعنی «همان مقدار طرح».
+    limits: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
     tasks: Mapped[list[Task]] = relationship(back_populates="user", cascade="all, delete-orphan")
     subscriptions: Mapped[list[Subscription]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
@@ -374,6 +378,32 @@ class SupportMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     ticket: Mapped[SupportTicket] = relationship(back_populates="messages")
+
+
+class PlanOverride(Base):
+    """تغییرهای ادمین روی یک طرح.
+
+    مقادیر پیش‌فرض در `plans.py` می‌مانند و اینجا فقط تفاوت‌ها ذخیره
+    می‌شوند؛ پس پاک کردن یک ردیف، طرح را به حالت کارخانه برمی‌گرداند.
+    """
+
+    __tablename__ = "plan_overrides"
+
+    code: Mapped[str] = mapped_column(String(32), primary_key=True)
+    data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    updated_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AppSetting(Base):
+    """تنظیم عمومیِ قابل ویرایش از پنل ادمین (قیمت اعتبار، سقف‌ها و…)."""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[Any] = mapped_column(JSON, default=None)
+    updated_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class ActivityLog(Base):

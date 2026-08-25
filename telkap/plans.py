@@ -1,7 +1,7 @@
 """تعریف پلن‌های اشتراک، سطح دسترسی هر پلن و بسته‌های اعتبار جداگانه."""
 from __future__ import annotations
 
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 
 # قابلیت‌هایی که به پلن وابسته‌اند
 FEAT_PUBLIC = "public_source"      # کپی از کانال عمومی
@@ -19,7 +19,7 @@ CREDIT_WATERMARK = "wm"
 CREDIT_HISTORY = "hist"
 
 CREDIT_KINDS: dict[str, tuple[str, str, int]] = {
-    # کد: (عنوان، توضیح، قیمت هر واحد)
+    # کد: (عنوان، توضیح، قیمت پیش‌فرض هر واحد)
     CREDIT_WATERMARK: (
         "💧 اعتبار واترمارک",
         "هر تصویری که واترمارک بخورد، یک واحد کم می‌شود.",
@@ -31,6 +31,15 @@ CREDIT_KINDS: dict[str, tuple[str, str, int]] = {
         HISTORY_UNIT_TOMAN,
     ),
 }
+
+# قیمت زنده‌ی هر واحد اعتبار. از پنل ادمین قابل تغییر است و
+# `planstore` هنگام بالا آمدن ربات مقدار ذخیره‌شده را اینجا می‌نشاند.
+CREDIT_UNITS: dict[str, int] = {kind: info[2] for kind, info in CREDIT_KINDS.items()}
+
+
+def credit_unit(kind: str) -> int:
+    """قیمت فعلی هر واحد از یک نوع اعتبار (تومان)."""
+    return CREDIT_UNITS.get(kind, 0)
 
 # تعدادهای پیشنهادی در دکمه‌ها؛ کاربر می‌تواند عدد دلخواه هم بدهد
 CREDIT_PACKS: tuple[int, ...] = (50, 100, 500, 1000)
@@ -75,7 +84,6 @@ class Plan:
     watermark_quota: int        # چند تصویر در کل دوره واترمارک می‌خورد
     history_quota: int          # چند پیام قدیمی در کل دوره کپی می‌شود
     features: frozenset[str]
-    perks: tuple[str, ...] = field(default_factory=tuple)
     # سقف «مصرف منصفانه» روزانه برای طرح‌های نامحدود. به کاربر نامحدود
     # نشان داده می‌شود ولی جلوی سوءاستفاده را می‌گیرد. ۰ یعنی بدون سقف.
     fair_use_daily: int = 0
@@ -114,6 +122,33 @@ class Plan:
         """مقصدهای اضافی، بدون شمردن مقصد اصلی."""
         return max(0, self.max_destinations - 1)
 
+    @property
+    def perks(self) -> tuple[str, ...]:
+        """فهرست امکانات طرح، ساخته‌شده از خودِ عددها.
+
+        متن ثابت نیست تا وقتی ادمین سقفی را از پنل عوض می‌کند، توضیح طرح
+        هم همان‌جا به‌روز شود و دو جا نگهداری نخواهد.
+        """
+        lines = [
+            "🚀 پیام نامحدود (بدون سقف دوره)"
+            if self.period_messages < 0
+            else f"{_fa(self.period_messages)} پیام در کل دوره",
+            f"مدت: {_fa(self.days)} روز",
+            f"{_fa(self.max_tasks)} کار کپی فعال",
+            f"تا {_fa(self.max_destinations)} کانال مقصد برای هر کار",
+        ]
+        if self.has(FEAT_PRIVATE):
+            lines.append("کپی از کانال‌های عمومی و خصوصی")
+        elif self.has(FEAT_PUBLIC):
+            lines.append("کپی از کانال‌های عمومی")
+        if self.watermark_quota:
+            lines.append(f"💧 {self.watermark_label} واترمارک")
+        if self.history_quota:
+            lines.append(f"🕓 {self.history_label} پیام گذشته")
+        if self.has(FEAT_VIP):
+            lines.append("پشتیبانی ویژه (VIP)")
+        return tuple(lines)
+
 
 TRIAL = Plan(
     code="trial",
@@ -127,12 +162,6 @@ TRIAL = Plan(
     watermark_quota=0,
     history_quota=0,
     features=frozenset({FEAT_PUBLIC}),
-    perks=(
-        "۲۰ پیام برای تست",
-        "۱ کار کپی فعال",
-        "۱ کانال مقصد",
-        "کپی از کانال‌های عمومی",
-    ),
 )
 
 WEEK = Plan(
@@ -147,13 +176,6 @@ WEEK = Plan(
     watermark_quota=0,
     history_quota=0,
     features=frozenset({FEAT_PUBLIC}),
-    perks=(
-        "۲٬۰۰۰ پیام در کل دوره",
-        "۳ کار کپی فعال",
-        "تا ۳ کانال مقصد برای هر کار",
-        "کپی از کانال‌های عمومی",
-        "فیلتر، جایگزینی کلمات، هدر و فوتر",
-    ),
 )
 
 TWO_WEEK = Plan(
@@ -168,13 +190,6 @@ TWO_WEEK = Plan(
     watermark_quota=10,
     history_quota=0,
     features=frozenset({FEAT_PUBLIC, FEAT_PRIVATE, FEAT_WATERMARK}),
-    perks=(
-        "۱۰٬۰۰۰ پیام در کل دوره",
-        "۶ کار کپی فعال",
-        "تا ۵ کانال مقصد برای هر کار",
-        "کپی از کانال‌های عمومی و خصوصی",
-        "۱۰ واترمارک",
-    ),
 )
 
 MONTH = Plan(
@@ -189,15 +204,6 @@ MONTH = Plan(
     watermark_quota=20,
     history_quota=50,
     features=frozenset({FEAT_PUBLIC, FEAT_PRIVATE, FEAT_WATERMARK, FEAT_HISTORY, FEAT_VIP}),
-    perks=(
-        "۲۰٬۰۰۰ پیام در کل دوره",
-        "۲۰ کار کپی فعال",
-        "تا ۱۰ کانال مقصد برای هر کار",
-        "کپی از کانال‌های عمومی و خصوصی",
-        "۲۰ واترمارک",
-        "۵۰ پیام گذشته",
-        "پشتیبانی ویژه (VIP)",
-    ),
 )
 
 CUSTOM = Plan(
@@ -215,20 +221,19 @@ CUSTOM = Plan(
     # نامحدود نمایش داده می‌شود، ولی برای جلوگیری از سوءاستفاده سقف
     # روزانه‌ی مصرف منصفانه دارد
     fair_use_daily=10_000,
-    perks=(
-        "🚀 پیام نامحدود (بدون سقف دوره)",
-        "مدت: ۳۰ روز — همان مدت طرح ۳۰ روزه",
-        "۵۰ کار کپی فعال",
-        "تا ۲۰ کانال مقصد برای هر کار",
-        "کپی از کانال‌های عمومی و خصوصی",
-        "۵۰ واترمارک",
-        "۱۰۰ پیام گذشته",
-        "پشتیبانی ویژه (VIP)",
-    ),
 )
 
-PLANS: dict[str, Plan] = {p.code: p for p in (TRIAL, WEEK, TWO_WEEK, MONTH, CUSTOM)}
-PURCHASABLE: tuple[Plan, ...] = (WEEK, TWO_WEEK, MONTH, CUSTOM)
+# مقادیر کارخانه‌ای؛ هرگز تغییر نمی‌کنند و «بازگردانی به پیش‌فرض» از
+# همین‌ها می‌خواند.
+DEFAULT_PLANS: dict[str, Plan] = {
+    p.code: p for p in (TRIAL, WEEK, TWO_WEEK, MONTH, CUSTOM)
+}
+
+# طرح‌های زنده. هرچه ادمین از پنل عوض کند `planstore` اینجا می‌نشاند، پس
+# همه‌ی مصرف‌کننده‌ها باید از همین بخوانند نه از ثابت‌های بالا.
+PLANS: dict[str, Plan] = dict(DEFAULT_PLANS)
+
+PURCHASABLE_CODES: tuple[str, ...] = (WEEK.code, TWO_WEEK.code, MONTH.code, CUSTOM.code)
 POPULAR_CODE = TWO_WEEK.code
 
 
@@ -236,12 +241,21 @@ def get_plan(code: str) -> Plan | None:
     return PLANS.get(code)
 
 
+def all_plans() -> dict[str, Plan]:
+    """همه‌ی طرح‌ها با مقادیر فعلی (شامل تغییرهای ادمین)."""
+    return PLANS
+
+
+def purchasable() -> tuple[Plan, ...]:
+    """طرح‌های قابل خرید، به ترتیب نمایش."""
+    return tuple(PLANS[code] for code in PURCHASABLE_CODES if code in PLANS)
+
+
 def credit_price(kind: str, quantity: int) -> int:
     """قیمت کل یک بسته‌ی اعتبار به تومان."""
-    info = CREDIT_KINDS.get(kind)
-    if info is None or quantity <= 0:
+    if kind not in CREDIT_KINDS or quantity <= 0:
         return 0
-    return info[2] * quantity
+    return credit_unit(kind) * quantity
 
 
 def toman(amount: int) -> str:

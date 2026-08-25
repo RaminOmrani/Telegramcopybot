@@ -8,7 +8,7 @@ from tests.test_copier import FakeClient, FakeManager, FakeMessage, _setup
 
 # ------------------------------------------------------------- طرح‌ها
 def test_every_plan_is_self_consistent():
-    from telkap.plans import FEAT_HISTORY, FEAT_WATERMARK, PLANS, PURCHASABLE, UNLIMITED
+    from telkap.plans import FEAT_HISTORY, FEAT_WATERMARK, PLANS, UNLIMITED, purchasable
 
     for plan in PLANS.values():
         assert plan.days > 0
@@ -21,7 +21,7 @@ def test_every_plan_is_self_consistent():
             assert plan.has(feature) == (plan.quota(feature) != 0), (
                 f"{plan.code}: {feature}"
             )
-    for plan in PURCHASABLE:
+    for plan in purchasable():
         assert plan.price_toman > 0
         assert plan.code != "trial"
 
@@ -837,11 +837,11 @@ def test_custom_plan_is_thirty_days_like_the_month_plan():
 
 def test_guide_plans_section_shows_duration_of_every_plan():
     from telkap.handlers import guide
-    from telkap.plans import PURCHASABLE, TRIAL
+    from telkap.plans import TRIAL, purchasable
     from telkap.texts import fa_num
 
     text = guide.SECTIONS["plans"][1]()
-    for plan in (TRIAL, *PURCHASABLE):
+    for plan in (TRIAL, *purchasable()):
         assert f"{fa_num(plan.days)} روز" in text, plan.code
 
 

@@ -13,8 +13,8 @@ from telkap.models import Task
 from telkap.plans import (
     CREDIT_HISTORY,
     FEAT_HISTORY,
-    HISTORY_UNIT_TOMAN,
     UNLIMITED,
+    credit_unit,
     toman,
 )
 from telkap.services import credits, entitlement
@@ -61,7 +61,7 @@ async def cb_start(call: CallbackQuery, state: FSMContext) -> None:
             )
             + "دو راه دارید:\n"
             "۱) طرح بالاتری بگیرید\n"
-            f"۲) اعتبار بخرید — هر پیام {toman(HISTORY_UNIT_TOMAN)}، بدون انقضا.",
+            f"۲) اعتبار بخرید — هر پیام {toman(credit_unit(CREDIT_HISTORY))}، بدون انقضا.",
             reply_markup=credit_offer_menu(CREDIT_HISTORY),
         )
         return
@@ -123,7 +123,7 @@ async def got_count(message: Message, state: FSMContext) -> None:
             f"اعتبار شما: {fa_num(available)} پیام\n"
             f"مجموع در دسترس: <b>{fa_num(quota + available)}</b>\n\n"
             f"یا عدد کمتری بفرستید، یا اعتبار بخرید (هر پیام "
-            f"{toman(HISTORY_UNIT_TOMAN)}).",
+            f"{toman(credit_unit(CREDIT_HISTORY))}).",
             reply_markup=credit_offer_menu(CREDIT_HISTORY),
         )
         return

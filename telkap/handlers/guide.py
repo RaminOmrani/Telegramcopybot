@@ -15,12 +15,13 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from telkap.keyboards import BTN_HELP
 from telkap.plans import (
+    CREDIT_HISTORY,
+    CREDIT_WATERMARK,
     CUSTOM,
-    HISTORY_UNIT_TOMAN,
-    PURCHASABLE,
     TRIAL,
     TWO_WEEK,
-    WATERMARK_UNIT_TOMAN,
+    credit_unit,
+    purchasable,
     toman,
 )
 from telkap.texts import fa_num
@@ -227,7 +228,7 @@ def _plans() -> str:
         f"    📨 {plan.messages_label} پیام | 📋 {fa_num(plan.max_tasks)} کار | "
         f"📤 {fa_num(plan.max_destinations)} مقصد\n"
         f"    💧 {plan.watermark_label} واترمارک | 🕓 {plan.history_label} پیام گذشته"
-        for icon, plan in zip("🥉🥈🥇💎", PURCHASABLE, strict=False)
+        for icon, plan in zip("🥉🥈🥇💎", purchasable(), strict=False)
     )
     return (
         "💎 <b>طرح‌ها و سقف‌ها</b>\n"
@@ -262,9 +263,9 @@ def _credits() -> str:
         "هر طرح یک <b>سهمیه‌ی رایگان</b> برای واترمارک و کپی پیام‌های گذشته "
         "دارد که برای کل دوره است. اگر وسط دوره تمام شد یا طرحتان آن قابلیت "
         "را ندارد، می‌توانید <b>به‌اندازه‌ی نیازتان</b> اعتبار بخرید:\n\n"
-        f"💧 <b>اعتبار واترمارک</b> — هر واحد {toman(WATERMARK_UNIT_TOMAN)}\n"
+        f"💧 <b>اعتبار واترمارک</b> — هر واحد {toman(credit_unit(CREDIT_WATERMARK))}\n"
         "    یک واحد = یک تصویری که واترمارک می‌خورد\n\n"
-        f"🕓 <b>اعتبار پیام گذشته</b> — هر واحد {toman(HISTORY_UNIT_TOMAN)}\n"
+        f"🕓 <b>اعتبار پیام گذشته</b> — هر واحد {toman(credit_unit(CREDIT_HISTORY))}\n"
         "    یک واحد = یک پیام قدیمی که کپی می‌شود\n\n"
         "<b>خرید:</b> «💳 خرید اشتراک» ← «🎫 خرید اعتبار»\n"
         "بسته‌های آماده (۵۰ / ۱۰۰ / ۵۰۰ / ۱۰۰۰) یا عدد دلخواه خودتان.\n\n"

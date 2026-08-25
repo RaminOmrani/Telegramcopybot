@@ -19,7 +19,7 @@ from telkap.db import get_session
 from telkap.handlers.common import Flow, parse_int
 from telkap.models import Subscription, Task, User, utcnow
 from telkap.plans import CREDIT_HISTORY, CREDIT_KINDS, CREDIT_WATERMARK, PLANS, get_plan
-from telkap.services import credits, subscription
+from telkap.services import credits, limits, subscription
 from telkap.services.userbot import manager
 from telkap.texts import fa_num
 
@@ -233,6 +233,12 @@ async def _detail(user_id: int, flt: str, page: int):
         f"🎫 اعتبار واترمارک: <b>{fa_num(int(user.watermark_credits or 0))}</b>",
         f"🎫 اعتبار پیام گذشته: <b>{fa_num(int(user.history_credits or 0))}</b>",
     ]
+
+    base_plan = get_plan(sub.plan_code) if sub is not None else None
+    custom = limits.describe(base_plan, user.limits)
+    if custom:
+        lines += ["", "🎛 <b>سقف‌های اختصاصی</b>", *custom]
+
     return "\n".join(lines), _detail_keyboard(user, sub is not None, flt, page)
 
 
@@ -275,6 +281,9 @@ def _detail_keyboard(user: User, has_sub: bool, flt: str, page: int) -> InlineKe
     kb.row(
         InlineKeyboardButton(text="🎫 اعتبار واترمارک", callback_data=f"admu:cwm:{uid}:-:{ctx}"),
         InlineKeyboardButton(text="🎫 اعتبار گذشته", callback_data=f"admu:chist:{uid}:-:{ctx}"),
+    )
+    kb.row(
+        InlineKeyboardButton(text="🎛 سقف‌های اختصاصی", callback_data=f"ul:show:{uid}:{ctx}")
     )
     kb.row(
         InlineKeyboardButton(text="📋 کارهای کاربر", callback_data=f"admu:tasks:{uid}:-:{ctx}"),

@@ -24,11 +24,28 @@ async def active_subscription(user_id: int) -> Subscription | None:
         return rows.scalar_one_or_none()
 
 
+async def _user_limits(user_id: int) -> dict:
+    """سقف‌های اختصاصی‌ای که ادمین برای این کاربر گذاشته است."""
+    async with get_session() as db:
+        user = await db.get(User, user_id)
+        return dict(user.limits or {}) if user is not None else {}
+
+
+async def effective_plan(plan_code: str, user_id: int) -> Plan | None:
+    """طرح، پس از اعمال تغییرهای اختصاصی همان کاربر."""
+    from telkap.services import limits
+
+    base = get_plan(plan_code)
+    if base is None:
+        return None
+    return limits.apply(base, await _user_limits(user_id))
+
+
 async def active_plan_for(user_id: int) -> Plan | None:
     sub = await active_subscription(user_id)
     if sub is None:
         return None
-    return get_plan(sub.plan_code)
+    return await effective_plan(sub.plan_code, user_id)
 
 
 async def active_entitlement(user_id: int) -> tuple[Plan | None, int | None]:
@@ -39,7 +56,7 @@ async def active_entitlement(user_id: int) -> tuple[Plan | None, int | None]:
     sub = await active_subscription(user_id)
     if sub is None:
         return None, None
-    return get_plan(sub.plan_code), sub.id
+    return await effective_plan(sub.plan_code, user_id), sub.id
 
 
 async def grant(

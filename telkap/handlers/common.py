@@ -52,6 +52,9 @@ class Flow(StatesGroup):
     admin_dm = State()
     admin_join_add = State()
     admin_credit = State()
+    admin_plan_value = State()
+    admin_credit_price = State()
+    admin_limit_value = State()
 
     support_message = State()
     support_reply = State()

@@ -25,13 +25,14 @@ from telkap.keyboards import (
 from telkap.models import PaymentRequest
 from telkap.plans import (
     CREDIT_KINDS,
+    CREDIT_WATERMARK,
     FEAT_PRIVATE,
     FEAT_VIP,
     POPULAR_CODE,
-    PURCHASABLE,
-    WATERMARK_UNIT_TOMAN,
     credit_price,
+    credit_unit,
     get_plan,
+    purchasable,
     toman,
 )
 from telkap.services import credits, payments
@@ -49,7 +50,7 @@ RULE = "━━━━━━━━━━━━━━━━━━"
 
 def _plans_text() -> str:
     lines = ["💎 <b>طرح‌های اشتراک</b>", RULE]
-    for plan in PURCHASABLE:
+    for plan in purchasable():
         icon = PLAN_ICONS.get(plan.code, "▫️")
         star = "  ⭐️ <i>محبوب‌ترین</i>" if plan.code == POPULAR_CODE else ""
         lines.append(f"\n{icon} <b>{plan.title}</b> — {plan.price_label}{star}")
@@ -60,7 +61,7 @@ def _plans_text() -> str:
     lines.append(
         "🎫 <b>اعتبار جداگانه</b> — سهمیه‌ی واترمارک و پیام‌های گذشته برای کل "
         "دوره است. اگر وسط دوره کم آوردید، به‌جای طرح بالاتر می‌توانید واحدی "
-        f"بخرید (هر واحد {toman(WATERMARK_UNIT_TOMAN)}، بدون انقضا)."
+        f"بخرید (هر واحد {toman(credit_unit(CREDIT_WATERMARK))}، بدون انقضا)."
     )
     lines.append("\nبرای خرید، یکی از گزینه‌های زیر را بزنید 👇")
     return "\n".join(lines)
@@ -84,7 +85,7 @@ def _compare_text() -> str:
     ]
 
     blocks = ["📊 <b>مقایسه‌ی طرح‌ها</b>", RULE]
-    for plan in PURCHASABLE:
+    for plan in purchasable():
         icon = PLAN_ICONS.get(plan.code, "▫️")
         blocks.append(f"\n{icon} <b>{plan.title}</b>")
         for label, getter in rows:
@@ -174,7 +175,8 @@ async def cb_credits(call: CallbackQuery) -> None:
     await get_or_create_user(call.from_user)
     balances = await credits.balances(call.from_user.id)
     lines = ["🎫 <b>خرید اعتبار</b>", RULE, ""]
-    for kind, (title, desc, price) in CREDIT_KINDS.items():
+    for kind, (title, desc, _default) in CREDIT_KINDS.items():
+        price = credit_unit(kind)
         lines.append(f"{title}")
         lines.append(f"   {desc}")
         lines.append(f"   قیمت هر واحد: <b>{toman(price)}</b>")
@@ -219,7 +221,7 @@ async def cb_credit_ask(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
     await state.set_state(Flow.credit_amount)
     await state.update_data(credit_kind=kind)
-    price = CREDIT_KINDS[kind][2]
+    price = credit_unit(kind)
     await call.message.answer(
         f"🔢 چند واحد می‌خواهید؟ عدد را بفرستید.\n"
         f"هر واحد {toman(price)} — مثلاً <code>250</code>\n\n"
