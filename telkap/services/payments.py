@@ -149,8 +149,12 @@ async def approve(request_id: int, admin_id: int):
         await db.commit()
         await db.refresh(request)
 
+    # پاداش دعوت فقط پس از تأیید خرید تعلق می‌گیرد — همین‌جا، نه هنگام ثبت‌نام
+    from telkap.services import referral
+
     if kind == PaymentRequest.KIND_CREDIT:
         await credits.add(user_id, plan_code, quantity, note=f"رسید #{request_id}")
+        await referral.on_payment_approved(request)
         await log_activity(
             user_id=user_id,
             event="payment_approved",
@@ -159,6 +163,7 @@ async def approve(request_id: int, admin_id: int):
         return request, None
 
     sub = await grant(user_id, plan_code, granted_by=admin_id, note=f"رسید #{request_id}")
+    await referral.on_payment_approved(request)
     await log_activity(
         user_id=user_id,
         event="payment_approved",

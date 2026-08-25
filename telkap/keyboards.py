@@ -31,14 +31,17 @@ BTN_PLANS = "💳 خرید اشتراک"
 BTN_LOGS = "🧾 گزارش فعالیت"
 BTN_HELP = "📚 راهنما"
 BTN_SUPPORT = "🛟 پشتیبانی"
+BTN_WALLET = "👛 کیف پول و دعوت"
 
 
 def main_menu() -> ReplyKeyboardMarkup:
+    # منوی اصلی عمداً روی ۸ دکمه نگه داشته می‌شود؛ «گزارش فعالیت» که کم
+    # استفاده است به «حساب کاربری» منتقل شد تا جای کیف پول باز شود.
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text=BTN_NEW_TASK), KeyboardButton(text=BTN_TASKS)],
             [KeyboardButton(text=BTN_FORWARD), KeyboardButton(text=BTN_ACCOUNT)],
-            [KeyboardButton(text=BTN_PLANS), KeyboardButton(text=BTN_LOGS)],
+            [KeyboardButton(text=BTN_PLANS), KeyboardButton(text=BTN_WALLET)],
             [KeyboardButton(text=BTN_HELP), KeyboardButton(text=BTN_SUPPORT)],
         ],
         resize_keyboard=True,
@@ -489,6 +492,10 @@ def account_menu(logged_in: bool, has_pin: bool) -> InlineKeyboardMarkup:
     )
     kb.row(
         InlineKeyboardButton(text="📊 سهمیه و اعتبار من", callback_data="acc:quota")
+    )
+    kb.row(
+        InlineKeyboardButton(text="👛 کیف پول", callback_data="wal:home"),
+        InlineKeyboardButton(text="🧾 گزارش فعالیت", callback_data="acc:logs"),
     )
     return kb.as_markup()
 

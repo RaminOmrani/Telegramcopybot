@@ -84,6 +84,8 @@ def _add_missing_columns(conn) -> None:
             ("watermark_credits", "INTEGER DEFAULT 0"),
             ("history_credits", "INTEGER DEFAULT 0"),
             ("limits", "JSON DEFAULT '{}'"),
+            ("wallet_toman", "INTEGER DEFAULT 0"),
+            ("referred_by", "BIGINT"),
         ],
         "payment_requests": [
             ("kind", "VARCHAR(16) DEFAULT 'plan'"),

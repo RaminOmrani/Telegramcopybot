@@ -7,6 +7,7 @@ from telkap.handlers import (
     admin_channels,
     admin_limits,
     admin_plans,
+    admin_referral,
     admin_users,
     billing,
     chatpicker,
@@ -20,6 +21,7 @@ from telkap.handlers import (
     start,
     support,
     tasks,
+    wallet,
     watermark_wizard,
 )
 
@@ -33,6 +35,7 @@ def build_router() -> Router:
     root.include_router(admin_channels.router)
     root.include_router(admin_plans.router)
     root.include_router(admin_limits.router)
+    root.include_router(admin_referral.router)
     root.include_router(support.router)
     root.include_router(account.router)
     root.include_router(tasks.router)
@@ -43,6 +46,7 @@ def build_router() -> Router:
     root.include_router(watermark_wizard.router)
     root.include_router(settings.router)
     root.include_router(history.router)
+    root.include_router(wallet.router)
     root.include_router(billing.router)
     # فوروارد آخر ثبت می‌شود چون هندلر پیام فورواردشده‌اش فیلتر حالت ندارد
     root.include_router(forward.router)

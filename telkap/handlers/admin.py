@@ -40,7 +40,10 @@ def admin_menu(pending: int = 0, tickets: int = 0) -> InlineKeyboardBuilder:
             text=f"🛟 تیکت‌های پشتیبانی{ticket_badge}", callback_data="adm:tickets"
         )
     )
-    kb.row(InlineKeyboardButton(text="🧩 طرح‌ها و قیمت‌ها", callback_data="adm:plans"))
+    kb.row(
+        InlineKeyboardButton(text="🧩 طرح‌ها و قیمت‌ها", callback_data="adm:plans"),
+        InlineKeyboardButton(text="🎁 دعوت دوستان", callback_data="adm:ref"),
+    )
     kb.row(InlineKeyboardButton(text="📢 عضویت اجباری", callback_data="adm:join"))
     kb.row(InlineKeyboardButton(text=f"🧾 رسیدهای در انتظار{badge}", callback_data="adm:pay"))
     kb.row(

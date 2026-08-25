@@ -56,6 +56,14 @@ class User(Base):
     # روی طرحش سوار می‌شود. کلید نبود یعنی «همان مقدار طرح».
     limits: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
 
+    # موجودی کیف پول به تومان. مرجعِ حقیقت همین ستون است و جدول
+    # wallet_entries دفترِ توضیح آن؛ هر تغییر باید هر دو را بنویسد.
+    wallet_toman: Mapped[int] = mapped_column(Integer, default=0)
+
+    # چه کسی این کاربر را دعوت کرده. فقط یک بار در اولین /start بسته
+    # می‌شود و هرگز بازنویسی نمی‌گردد، وگرنه پاداش قابل دزدیدن است.
+    referred_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+
     tasks: Mapped[list[Task]] = relationship(back_populates="user", cascade="all, delete-orphan")
     subscriptions: Mapped[list[Subscription]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
@@ -378,6 +386,64 @@ class SupportMessage(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     ticket: Mapped[SupportTicket] = relationship(back_populates="messages")
+
+
+class WalletEntry(Base):
+    """دفتر تراکنش کیف پول: هر واریز و برداشت با علت و مرجع.
+
+    بدون این دفتر، وقتی کاربر می‌گوید «موجودی‌ام کم شده» هیچ راهی برای
+    اثبات نیست. `amount_toman` علامت‌دار است: مثبت واریز، منفی برداشت.
+    `balance_after` هم ذخیره می‌شود تا بازسازی تاریخچه به جمع‌زدن کل
+    جدول نیاز نداشته باشد.
+    """
+
+    __tablename__ = "wallet_entries"
+    __table_args__ = (Index("ix_wallet_user_time", "user_id", "id"),)
+
+    REASON_REFERRAL = "referral"     # پاداش دعوت
+    REASON_TOPUP = "topup"           # شارژ توسط کاربر
+    REASON_PURCHASE = "purchase"     # خرید از موجودی
+    REASON_REFUND = "refund"         # عودت
+    REASON_ADMIN = "admin"           # تنظیم دستی ادمین
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    amount_toman: Mapped[int] = mapped_column(Integer)      # علامت‌دار
+    balance_after: Mapped[int] = mapped_column(Integer, default=0)
+    reason: Mapped[str] = mapped_column(String(16), default=REASON_ADMIN)
+    note: Mapped[str] = mapped_column(String(255), default="")
+    # شناسه‌ی چیزی که این تراکنش به آن مربوط است (رسید، پاداش و…)
+    ref_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    admin_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ReferralReward(Base):
+    """پاداش دعوت، از لحظه‌ی تعلق تا لحظه‌ی پرداخت.
+
+    پاداش هنگام ثبت‌نام ساخته نمی‌شود؛ فقط وقتی خریدِ کاربرِ دعوت‌شده
+    تأیید شود. قید یکتا جلوی پرداخت دوباره برای یک رسید را می‌گیرد.
+    """
+
+    __tablename__ = "referral_rewards"
+    __table_args__ = (
+        UniqueConstraint("payment_id", name="uq_referral_payment"),
+        Index("ix_referral_referrer", "referrer_id", "id"),
+    )
+
+    STATUS_PAID = "paid"
+    STATUS_VOID = "void"          # رد شده: زیر حداقل خرید، سقف پر، یا خاموش
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    referrer_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    referred_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    payment_id: Mapped[int] = mapped_column(Integer)
+    # مبلغ خریدی که پاداش از آن حساب شده، برای حسابرسی بعدی
+    basis_toman: Mapped[int] = mapped_column(Integer, default=0)
+    amount_toman: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(16), default=STATUS_PAID, index=True)
+    note: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
 class PlanOverride(Base):

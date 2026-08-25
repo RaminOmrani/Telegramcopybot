@@ -18,8 +18,15 @@ from telkap.config import get_settings
 from telkap.db import get_session
 from telkap.handlers.common import Flow, parse_int
 from telkap.models import Subscription, Task, User, utcnow
-from telkap.plans import CREDIT_HISTORY, CREDIT_KINDS, CREDIT_WATERMARK, PLANS, get_plan
-from telkap.services import credits, limits, subscription
+from telkap.plans import (
+    CREDIT_HISTORY,
+    CREDIT_KINDS,
+    CREDIT_WATERMARK,
+    PLANS,
+    get_plan,
+    toman,
+)
+from telkap.services import credits, limits, referral, subscription, wallet
 from telkap.services.userbot import manager
 from telkap.texts import fa_num
 
@@ -232,7 +239,17 @@ async def _detail(user_id: int, flt: str, page: int):
         "",
         f"🎫 اعتبار واترمارک: <b>{fa_num(int(user.watermark_credits or 0))}</b>",
         f"🎫 اعتبار پیام گذشته: <b>{fa_num(int(user.history_credits or 0))}</b>",
+        f"👛 کیف پول: <b>{toman(int(user.wallet_toman or 0))}</b>",
     ]
+
+    if user.referred_by:
+        lines.append(f"🎁 معرف: <code>{user.referred_by}</code>")
+    ref_stats = await referral.stats(user_id)
+    if ref_stats.invited:
+        lines.append(
+            f"🎁 دعوت‌شده‌ها: <b>{fa_num(ref_stats.invited)}</b> "
+            f"({fa_num(ref_stats.buyers)} خریدار · {toman(ref_stats.earned)})"
+        )
 
     base_plan = get_plan(sub.plan_code) if sub is not None else None
     custom = limits.describe(base_plan, user.limits)
@@ -281,6 +298,9 @@ def _detail_keyboard(user: User, has_sub: bool, flt: str, page: int) -> InlineKe
     kb.row(
         InlineKeyboardButton(text="🎫 اعتبار واترمارک", callback_data=f"admu:cwm:{uid}:-:{ctx}"),
         InlineKeyboardButton(text="🎫 اعتبار گذشته", callback_data=f"admu:chist:{uid}:-:{ctx}"),
+    )
+    kb.row(
+        InlineKeyboardButton(text="👛 کیف پول", callback_data=f"admu:wal:{uid}:-:{ctx}")
     )
     kb.row(
         InlineKeyboardButton(text="🎛 سقف‌های اختصاصی", callback_data=f"ul:show:{uid}:{ctx}")
@@ -548,6 +568,59 @@ async def got_credit(message: Message, state: FSMContext) -> None:
         )
     except Exception:
         log.debug("اطلاع تغییر اعتبار به کاربر نرسید", exc_info=True)
+    await _show_user(
+        message,
+        uid,
+        str(data.get("admin_flt", "all")),
+        int(data.get("admin_page", 0)),
+        edit=False,
+    )
+
+
+# ------------------------------------------------------------ کیف پول
+@router.callback_query(F.data.startswith("admu:wal:"))
+async def cb_wallet_ask(call: CallbackQuery, state: FSMContext) -> None:
+    if not await _guard(call):
+        return
+    _action, uid, _arg, flt, page = _parse(call.data)
+    have = await wallet.balance(uid)
+    await call.answer()
+    await state.set_state(Flow.admin_wallet)
+    await state.update_data(admin_target=uid, admin_flt=flt, admin_page=page)
+    await call.message.answer(
+        f"👛 <b>کیف پول کاربر</b> <code>{uid}</code>\n\n"
+        f"موجودی فعلی: <b>{toman(have)}</b>\n\n"
+        "چه مبلغی (به تومان) اضافه شود؟ عدد منفی یعنی کسر.\n"
+        "مثال: <code>50000</code> یا <code>-20000</code>\n\nانصراف: /cancel"
+    )
+
+
+@router.message(Flow.admin_wallet)
+async def got_wallet(message: Message, state: FSMContext) -> None:
+    if not _is_admin(message.from_user.id):
+        await state.clear()
+        return
+    amount = parse_int(message.text or "")
+    if amount is None or amount == 0:
+        await message.answer("یک عدد صحیح غیر صفر بفرستید.")
+        return
+    data = await state.get_data()
+    uid = int(data.get("admin_target", 0))
+
+    left = await wallet.adjust(uid, amount, admin_id=message.from_user.id)
+    if left is None:
+        await message.answer("⚠️ موجودی کاربر برای این کسر کافی نیست.")
+        return
+    await state.clear()
+    await message.answer(f"✅ اعمال شد. موجودی تازه: <b>{toman(left)}</b>")
+    try:
+        verb = "به کیف پول شما اضافه شد" if amount > 0 else "از کیف پول شما کم شد"
+        await message.bot.send_message(
+            uid,
+            f"👛 {toman(abs(amount))} {verb}.\nموجودی: <b>{toman(left)}</b>",
+        )
+    except Exception:
+        log.debug("اطلاع تغییر کیف پول به کاربر نرسید", exc_info=True)
     await _show_user(
         message,
         uid,
