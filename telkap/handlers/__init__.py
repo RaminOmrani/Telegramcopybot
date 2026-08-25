@@ -4,6 +4,7 @@ from aiogram import Router
 from telkap.handlers import (
     account,
     admin,
+    admin_channels,
     admin_users,
     billing,
     chatpicker,
@@ -23,6 +24,7 @@ def build_router() -> Router:
     root.include_router(start.router)
     root.include_router(admin.router)
     root.include_router(admin_users.router)
+    root.include_router(admin_channels.router)
     root.include_router(account.router)
     root.include_router(tasks.router)
     root.include_router(chatpicker.router)

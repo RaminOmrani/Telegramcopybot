@@ -80,6 +80,15 @@ def _add_missing_columns(conn) -> None:
     """
     additions = {
         "destinations": [("overrides", "JSON DEFAULT '{}'")],
+        "users": [
+            ("watermark_credits", "INTEGER DEFAULT 0"),
+            ("history_credits", "INTEGER DEFAULT 0"),
+        ],
+        "payment_requests": [
+            ("kind", "VARCHAR(16) DEFAULT 'plan'"),
+            ("quantity", "INTEGER DEFAULT 0"),
+            ("amount_toman", "INTEGER DEFAULT 0"),
+        ],
     }
     for table, columns in additions.items():
         existing = _table_columns(conn, table)

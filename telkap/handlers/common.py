@@ -37,6 +37,7 @@ class Flow(StatesGroup):
     fwd_value = State()
 
     receipt = State()
+    credit_amount = State()
     dest_add = State()
     dest_override = State()
     import_settings = State()
@@ -49,6 +50,8 @@ class Flow(StatesGroup):
     admin_user_find = State()
     admin_days = State()
     admin_dm = State()
+    admin_join_add = State()
+    admin_credit = State()
 
 
 async def get_or_create_user(tg_user: TgUser) -> User:

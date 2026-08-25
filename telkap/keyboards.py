@@ -10,7 +10,14 @@ from aiogram.types import (
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from telkap.models import Task
-from telkap.plans import POPULAR_CODE, PURCHASABLE
+from telkap.plans import (
+    CREDIT_KINDS,
+    CREDIT_PACKS,
+    POPULAR_CODE,
+    PURCHASABLE,
+    credit_price,
+    toman,
+)
 from telkap.services.defaults import MEDIA_KINDS
 from telkap.services.watermark import POSITIONS
 from telkap.texts import fa_num, on_off
@@ -27,7 +34,7 @@ BTN_HELP = "📚 راهنما"
 def main_menu() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BTN_TASKS), KeyboardButton(text=BTN_NEW_TASK)],
+            [KeyboardButton(text=BTN_NEW_TASK), KeyboardButton(text=BTN_TASKS)],
             [KeyboardButton(text=BTN_FORWARD), KeyboardButton(text=BTN_ACCOUNT)],
             [KeyboardButton(text=BTN_PLANS), KeyboardButton(text=BTN_LOGS)],
             [KeyboardButton(text=BTN_HELP)],
@@ -51,44 +58,59 @@ MEDIA_LABELS = {
 }
 
 
-def tasks_list(tasks: list[Task]) -> InlineKeyboardMarkup:
+def tasks_list(tasks: list[Task], *, dest_counts: dict[int, int] | None = None) -> InlineKeyboardMarkup:
+    """فهرست کارها؛ کنار هر کار وضعیت و تعداد مقصدهایش دیده می‌شود."""
     kb = InlineKeyboardBuilder()
+    counts = dest_counts or {}
     for task in tasks:
         status = "🟢" if task.enabled else "🔴"
         title = task.title or task.source_title or task.source_ref
+        dests = counts.get(task.id, 1)
+        badge = f" · 📤{fa_num(dests)}" if dests > 1 else ""
         kb.row(
             InlineKeyboardButton(
-                text=f"{status} {title[:40]}", callback_data=f"task:open:{task.id}"
+                text=f"{status} {title[:36]}{badge}", callback_data=f"task:open:{task.id}"
             )
         )
-    kb.row(InlineKeyboardButton(text="➕ کار جدید", callback_data="task:new"))
+    kb.row(InlineKeyboardButton(text="➕ ساخت کار جدید", callback_data="task:new"))
     return kb.as_markup()
+
+
+def _divider(label: str) -> InlineKeyboardButton:
+    """خط جداکننده‌ی تزئینی؛ فشردنش کاری نمی‌کند."""
+    return InlineKeyboardButton(text=f"─── {label} ───", callback_data="noop")
 
 
 def task_menu(task: Task, *, backfill_running: bool = False) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    toggle = "⏸ توقف کار" if task.enabled else "▶️ فعال‌سازی"
+    toggle = "⏸  توقف این کار" if task.enabled else "▶️  فعال‌سازی این کار"
     kb.row(InlineKeyboardButton(text=toggle, callback_data=f"task:toggle:{task.id}"))
+
+    kb.row(_divider("محتوا"))
     kb.row(
         InlineKeyboardButton(text="🧹 پاک‌سازی متن", callback_data=f"set:clean:{task.id}"),
         InlineKeyboardButton(text="🔤 جایگزینی کلمات", callback_data=f"rule:replace:{task.id}"),
     )
     kb.row(
-        InlineKeyboardButton(text="🚦 فیلترها", callback_data=f"set:filters:{task.id}"),
+        InlineKeyboardButton(text="✍️ هدر / فوتر / امضا", callback_data=f"set:text:{task.id}"),
         InlineKeyboardButton(text="🎞 نوع محتوا", callback_data=f"set:media:{task.id}"),
     )
     kb.row(
-        InlineKeyboardButton(text="✍️ هدر / فوتر / امضا", callback_data=f"set:text:{task.id}"),
+        InlineKeyboardButton(text="🚦 فیلترها", callback_data=f"set:filters:{task.id}"),
         InlineKeyboardButton(text="💧 واترمارک", callback_data=f"set:wm:{task.id}"),
     )
-    kb.row(
-        InlineKeyboardButton(text="⚙️ ارسال و ترافیک", callback_data=f"set:send:{task.id}"),
-        InlineKeyboardButton(text="🕐 زمان‌بندی", callback_data=f"set:time:{task.id}"),
-    )
+
+    kb.row(_divider("انتشار"))
     kb.row(
         InlineKeyboardButton(text="📤 کانال‌های مقصد", callback_data=f"dest:list:{task.id}"),
-        InlineKeyboardButton(text="📈 آمار", callback_data=f"task:stats:{task.id}"),
+        InlineKeyboardButton(text="⚙️ ارسال و ترافیک", callback_data=f"set:send:{task.id}"),
     )
+    kb.row(
+        InlineKeyboardButton(text="🕐 زمان‌بندی", callback_data=f"set:time:{task.id}"),
+        InlineKeyboardButton(text="📈 آمار این کار", callback_data=f"task:stats:{task.id}"),
+    )
+
+    kb.row(_divider("ابزارها"))
     kb.row(
         InlineKeyboardButton(text="🧪 تست تنظیمات", callback_data=f"task:test:{task.id}"),
         InlineKeyboardButton(text="📋 کپی تنظیمات", callback_data=f"clone:pick:{task.id}"),
@@ -330,16 +352,78 @@ def confirm(yes_cb: str, no_cb: str) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
+PLAN_ICONS = {
+    "trial": "🎁",
+    "week": "🥉",
+    "two_week": "🥈",
+    "month": "🥇",
+    "custom": "💎",
+}
+
+
 def plans_menu() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for plan in PURCHASABLE:
-        star = "⭐️ " if plan.code == POPULAR_CODE else ""
+        icon = PLAN_ICONS.get(plan.code, "▫️")
+        star = " ⭐️" if plan.code == POPULAR_CODE else ""
         kb.row(
             InlineKeyboardButton(
-                text=f"{star}{plan.title} — {plan.price_label}",
+                text=f"{icon} {plan.title} · {plan.price_label}{star}",
                 callback_data=f"plan:{plan.code}",
             )
         )
+    kb.row(
+        InlineKeyboardButton(text="📊 مقایسه‌ی طرح‌ها", callback_data="cmp:plans"),
+        InlineKeyboardButton(text="🎫 خرید اعتبار", callback_data="credit:menu"),
+    )
+    return kb.as_markup()
+
+
+def credits_menu(balances: dict[str, int]) -> InlineKeyboardMarkup:
+    """فهرست بسته‌های اعتبار، با نمایش مانده‌ی فعلی."""
+    kb = InlineKeyboardBuilder()
+    for kind, (title, _desc, price) in CREDIT_KINDS.items():
+        have = fa_num(balances.get(kind, 0))
+        kb.row(
+            InlineKeyboardButton(
+                text=f"{title} · مانده {have} · هر واحد {toman(price)}",
+                callback_data=f"credit:pick:{kind}",
+            )
+        )
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت به طرح‌ها", callback_data="credit:plans"))
+    return kb.as_markup()
+
+
+def credit_packs_menu(kind: str) -> InlineKeyboardMarkup:
+    """انتخاب تعداد واحد اعتبار."""
+    kb = InlineKeyboardBuilder()
+    row: list[InlineKeyboardButton] = []
+    for amount in CREDIT_PACKS:
+        row.append(
+            InlineKeyboardButton(
+                text=f"{fa_num(amount)} عدد · {toman(credit_price(kind, amount))}",
+                callback_data=f"credit:buy:{kind}:{amount}",
+            )
+        )
+        if len(row) == 2:
+            kb.row(*row)
+            row = []
+    if row:
+        kb.row(*row)
+    kb.row(
+        InlineKeyboardButton(text="🔢 تعداد دلخواه", callback_data=f"credit:ask:{kind}")
+    )
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="credit:menu"))
+    return kb.as_markup()
+
+
+def credit_offer_menu(kind: str) -> InlineKeyboardMarkup:
+    """دکمه‌ی کوتاه «اعتبار بخر» برای جاهایی که قابلیت قفل است."""
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        InlineKeyboardButton(text="🎫 خرید اعتبار", callback_data=f"credit:pick:{kind}")
+    )
+    kb.row(InlineKeyboardButton(text="💳 دیدن طرح‌ها", callback_data="credit:plans"))
     return kb.as_markup()
 
 

@@ -22,7 +22,7 @@ from telkap.keyboards import (
     task_menu,
     tasks_list,
 )
-from telkap.models import DailyStat, Task, User
+from telkap.models import DailyStat, Destination, Task, User
 from telkap.plans import FEAT_PRIVATE
 from telkap.services import cache
 from telkap.services.copier import today_key
@@ -92,6 +92,30 @@ async def show_task(target: Message, task_id: int, *, edit: bool = False) -> Non
     await target.answer(text, reply_markup=markup)
 
 
+async def _dest_counts(tasks) -> dict[int, int]:
+    """تعداد کل مقصدهای فعال هر کار (مقصد اصلی + مقصدهای اضافی)."""
+    if not tasks:
+        return {}
+    ids = [task.id for task in tasks]
+    async with get_session() as db:
+        rows = await db.execute(
+            select(Destination.task_id, func.count(Destination.id))
+            .where(Destination.task_id.in_(ids), Destination.enabled.is_(True))
+            .group_by(Destination.task_id)
+        )
+        extra = dict(rows.all())
+    return {task_id: 1 + extra.get(task_id, 0) for task_id in ids}
+
+
+async def _tasks_header(user_id: int, tasks) -> str:
+    plan = await active_plan_for(user_id)
+    head = f"📋 <b>کارهای کپی شما</b> — {fa_num(len(tasks))}"
+    if plan:
+        head += f" از {fa_num(plan.max_tasks)}"
+        head += f"\n<i>طرح {plan.title} · تا {fa_num(plan.max_destinations)} مقصد برای هر کار</i>"
+    return head
+
+
 # ------------------------------------------------------------------- لیست
 @router.message(Command("tasks"))
 @router.message(F.text == BTN_TASKS)
@@ -104,7 +128,8 @@ async def cmd_tasks(message: Message) -> None:
         )
         return
     await message.answer(
-        f"📋 <b>کارهای کپی شما</b> ({fa_num(len(tasks))})", reply_markup=tasks_list(tasks)
+        await _tasks_header(message.from_user.id, tasks),
+        reply_markup=tasks_list(tasks, dest_counts=await _dest_counts(tasks)),
     )
 
 
@@ -116,7 +141,8 @@ async def cb_list(call: CallbackQuery) -> None:
         await call.message.edit_text("هنوز کاری نساخته‌اید.", reply_markup=tasks_list([]))
         return
     await call.message.edit_text(
-        f"📋 <b>کارهای کپی شما</b> ({fa_num(len(tasks))})", reply_markup=tasks_list(tasks)
+        await _tasks_header(call.from_user.id, tasks),
+        reply_markup=tasks_list(tasks, dest_counts=await _dest_counts(tasks)),
     )
 
 

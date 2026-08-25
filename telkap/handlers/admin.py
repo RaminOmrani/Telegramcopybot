@@ -15,7 +15,7 @@ from telkap.config import get_settings
 from telkap.db import get_session
 from telkap.handlers.common import Flow, parse_int
 from telkap.models import DailyStat, PaymentRequest, RetryItem, Subscription, Task, User, utcnow
-from telkap.plans import PLANS
+from telkap.plans import PLANS, toman
 from telkap.services import backup, payments
 from telkap.services.copier import today_key
 from telkap.services.subscription import grant
@@ -34,6 +34,7 @@ def admin_menu(pending: int = 0) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     badge = f" ({fa_num(pending)})" if pending else ""
     kb.row(InlineKeyboardButton(text="👥 مدیریت کاربران", callback_data="adm:users"))
+    kb.row(InlineKeyboardButton(text="📢 عضویت اجباری", callback_data="adm:join"))
     kb.row(InlineKeyboardButton(text=f"🧾 رسیدهای در انتظار{badge}", callback_data="adm:pay"))
     kb.row(
         InlineKeyboardButton(text="📊 آمار", callback_data="adm:stats"),
@@ -147,10 +148,9 @@ async def cb_payments(call: CallbackQuery) -> None:
 
     kb = InlineKeyboardBuilder()
     for req in requests:
-        plan = PLANS.get(req.plan_code)
         kb.row(
             InlineKeyboardButton(
-                text=f"#{req.id} — {plan.title if plan else req.plan_code}",
+                text=f"#{req.id} — {payments.describe(req)}",
                 callback_data=f"adm:payshow:{req.id}",
             )
         )
@@ -173,7 +173,6 @@ async def cb_payment_show(call: CallbackQuery) -> None:
         await call.answer("این رسید پیدا نشد.", show_alert=True)
         return
 
-    plan = PLANS.get(req.plan_code)
     kb = InlineKeyboardBuilder()
     kb.row(
         InlineKeyboardButton(text="✅ تأیید", callback_data=f"pay:ok:{req.id}"),
@@ -182,8 +181,8 @@ async def cb_payment_show(call: CallbackQuery) -> None:
     caption = (
         f"🧾 رسید <code>{req.id}</code>\n"
         f"کاربر: <code>{req.user_id}</code>\n"
-        f"پلن: <b>{plan.title if plan else req.plan_code}</b>"
-        f" — {plan.price_label if plan else ''}"
+        f"خرید: <b>{payments.describe(req)}</b>\n"
+        f"مبلغ: <b>{toman(req.amount_toman)}</b>"
     )
     await call.answer()
     if req.receipt_kind == "photo":

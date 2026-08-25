@@ -8,7 +8,7 @@ from datetime import timedelta
 from pathlib import Path
 from typing import Any
 
-from sqlalchemy import delete, select
+from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 from telethon.errors import (
     ChatWriteForbiddenError,
@@ -34,10 +34,10 @@ from telethon.tl.types import (
 from telkap.config import get_settings
 from telkap.db import get_session, log_activity
 from telkap.models import DailyStat, Destination, MessageMap, RetryItem, Task, utcnow
-from telkap.plans import FEAT_WATERMARK
-from telkap.services import cache
+from telkap.plans import CREDIT_WATERMARK, FEAT_WATERMARK
+from telkap.services import cache, credits
 from telkap.services.filters import MessageFacts, content_hash, should_copy
-from telkap.services.ratelimit import RateLimiter, hourly_quota
+from telkap.services.ratelimit import RateLimiter, daily_quota, hourly_quota
 from telkap.services.transform import apply_transforms, drop_custom_emoji, remap_entities
 from telkap.services.watermark import add_text_watermark
 
@@ -162,6 +162,11 @@ class Copier:
         self.limiter = RateLimiter(get_settings().rate_per_minute)
         # کارهایی که هشدار «اکانت پریمیوم نیست» برایشان رفته؛ تا تکرار نشود
         self._premium_warned: set[int] = set()
+        # کاربرانی که هشدار پر شدن سقف روزانه برایشان رفته
+        self._quota_warned: set[int] = set()
+        self._quota_day: str = ""
+        # کاربرانی که هشدار تمام شدن اعتبار واترمارک گرفته‌اند
+        self._credit_warned: set[int] = set()
 
     # ------------------------------------------------------------- هندلرها
     def make_new_message_handler(self, user_id: int):
@@ -269,6 +274,9 @@ class Copier:
             )
             return False
 
+        if not await self._daily_quota_ok(user_id, task_id, plan):
+            return False
+
         digest = content_hash(facts)
         if cfg.get("skip_duplicates") and await self._is_duplicate(task_id, digest):
             await self._bump(task_id, user_id, skipped=True)
@@ -290,7 +298,20 @@ class Copier:
         if delay > 0:
             await asyncio.sleep(min(delay, 3600))
 
+        # واترمارک یا در پلن هست، یا با اعتبار خریداری‌شده انجام می‌شود
         allow_watermark = plan.has(FEAT_WATERMARK)
+        charge_watermark = False
+        wanted_watermark = bool(
+            cfg.get("watermark_enabled")
+            and cfg.get("watermark_text")
+            and not cfg.get("caption_only")
+        )
+        # هر تصویر یک واحد اعتبار می‌برد؛ آلبوم چند تصویر دارد
+        wm_units = sum(1 for m in messages if classify_media(m) == "photo")
+        if wanted_watermark and not allow_watermark and wm_units:
+            if await credits.balance(user_id, CREDIT_WATERMARK) >= wm_units:
+                allow_watermark = True
+                charge_watermark = True
         any_sent = False
 
         for spec in targets:
@@ -351,6 +372,12 @@ class Copier:
                     task_id, user_id, src_chat_id, src_ids, str(target), str(exc)
                 )
                 continue
+
+            if sent and charge_watermark and allow_watermark:
+                # اعتبار پس از ارسال موفق کم می‌شود، نه قبلش
+                if not await credits.consume(user_id, CREDIT_WATERMARK, wm_units):
+                    allow_watermark = False
+                    await self._warn_out_of_credit(user_id, task_id)
 
             if sent:
                 any_sent = True
@@ -761,6 +788,68 @@ class Copier:
             task.last_error = detail[:400]
             await db.commit()
         await log_activity(task_id=task_id, event="error", detail=detail, level="error")
+
+    async def _daily_quota_ok(self, user_id: int, task_id: int, plan) -> bool:
+        """سقف روزانه‌ی پلن کاربر را بررسی و یکی از آن کم می‌کند."""
+        limit = int(getattr(plan, "daily_messages", 0) or 0)
+        if limit <= 0:
+            return True  # پلن نامحدود
+
+        day = today_key()
+        if day != self._quota_day:
+            # روز عوض شد؛ هشدارها دوباره مجاز می‌شوند
+            self._quota_day = day
+            self._quota_warned.clear()
+        if not daily_quota.is_seeded(user_id, day):
+            # پس از ری‌استارت، مصرف امروز از جدول آمار خوانده می‌شود
+            async with get_session() as db:
+                used = await db.scalar(
+                    select(func.coalesce(func.sum(DailyStat.copied), 0)).where(
+                        DailyStat.user_id == user_id, DailyStat.day == day
+                    )
+                )
+            daily_quota.seed(user_id, day, int(used or 0))
+
+        if daily_quota.allow(user_id, day, limit):
+            return True
+
+        await self._bump(task_id, user_id, skipped=True)
+        await log_activity(
+            user_id=user_id,
+            task_id=task_id,
+            event="skip",
+            detail=f"سقف روزانه‌ی پلن ({limit} پیام) پر شده است",
+        )
+        if user_id not in self._quota_warned:
+            self._quota_warned.add(user_id)
+            if self.notifier:
+                await self.notifier(
+                    user_id,
+                    f"📊 سقف روزانه‌ی اشتراک شما ({limit} پیام) امروز پر شد.\n"
+                    "کپی از نیمه‌شب دوباره ادامه پیدا می‌کند.\n\n"
+                    "برای سقف بیشتر یا پیام نامحدود، از «💳 خرید اشتراک» پلن بالاتر بگیرید.",
+                )
+        return False
+
+    async def _warn_out_of_credit(self, user_id: int, task_id: int) -> None:
+        """یک بار به کاربر می‌گوید اعتبار واترمارکش تمام شده است."""
+        if user_id in self._credit_warned:
+            return
+        self._credit_warned.add(user_id)
+        await log_activity(
+            user_id=user_id,
+            task_id=task_id,
+            event="credit_empty",
+            detail="اعتبار واترمارک تمام شد",
+            level="warning",
+        )
+        if self.notifier:
+            await self.notifier(
+                user_id,
+                "💧 اعتبار واترمارک شما تمام شد و پست‌ها بدون واترمارک ارسال می‌شوند.\n\n"
+                "از «💳 خرید اشتراک» → «🎫 خرید اعتبار» می‌توانید اعتبار تازه بگیرید، "
+                "یا پلنی بگیرید که واترمارک در خودش هست.",
+            )
 
     async def _warn_no_premium(self, user_id: int, task_id: int) -> None:
         """یک بار به کاربر می‌گوید چرا ایموجی پریمیوم ساده شده است."""

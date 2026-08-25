@@ -18,8 +18,8 @@ from telkap.config import get_settings
 from telkap.db import get_session
 from telkap.handlers.common import Flow, parse_int
 from telkap.models import Subscription, Task, User, utcnow
-from telkap.plans import PLANS, get_plan
-from telkap.services import subscription
+from telkap.plans import CREDIT_HISTORY, CREDIT_KINDS, CREDIT_WATERMARK, PLANS, get_plan
+from telkap.services import credits, subscription
 from telkap.services.userbot import manager
 from telkap.texts import fa_num
 
@@ -229,6 +229,9 @@ async def _detail(user_id: int, flt: str, page: int):
         "",
         f"کارهای کپی: {fa_num(tasks)} (فعال: {fa_num(active_tasks)})",
         f"مجموع پست‌های کپی‌شده: {fa_num(int(copied))}",
+        "",
+        f"🎫 اعتبار واترمارک: <b>{fa_num(int(user.watermark_credits or 0))}</b>",
+        f"🎫 اعتبار پیام گذشته: <b>{fa_num(int(user.history_credits or 0))}</b>",
     ]
     return "\n".join(lines), _detail_keyboard(user, sub is not None, flt, page)
 
@@ -269,6 +272,10 @@ def _detail_keyboard(user: User, has_sub: bool, flt: str, page: int) -> InlineKe
         kb.row(
             InlineKeyboardButton(text="🚫 مسدود کردن", callback_data=f"admu:ban:{uid}:-:{ctx}")
         )
+    kb.row(
+        InlineKeyboardButton(text="🎫 اعتبار واترمارک", callback_data=f"admu:cwm:{uid}:-:{ctx}"),
+        InlineKeyboardButton(text="🎫 اعتبار گذشته", callback_data=f"admu:chist:{uid}:-:{ctx}"),
+    )
     kb.row(
         InlineKeyboardButton(text="📋 کارهای کاربر", callback_data=f"admu:tasks:{uid}:-:{ctx}"),
         InlineKeyboardButton(text="✉️ پیام", callback_data=f"admu:dm:{uid}:-:{ctx}"),
@@ -479,6 +486,66 @@ async def cb_ban(call: CallbackQuery) -> None:
         return
     await call.answer("🚫 مسدود شد. کارهایش هم متوقف شد." if banning else "✅ آزاد شد.")
     await _show_user(call.message, uid, flt, page)
+
+
+# ------------------------------------------------------------- اعتبارها
+@router.callback_query(F.data.startswith("admu:cwm:"))
+@router.callback_query(F.data.startswith("admu:chist:"))
+async def cb_credit_ask(call: CallbackQuery, state: FSMContext) -> None:
+    if not await _guard(call):
+        return
+    action, uid, _arg, flt, page = _parse(call.data)
+    kind = CREDIT_WATERMARK if action == "cwm" else CREDIT_HISTORY
+    title = CREDIT_KINDS[kind][0]
+    have = await credits.balance(uid, kind)
+    await call.answer()
+    await state.set_state(Flow.admin_credit)
+    await state.update_data(
+        admin_target=uid, admin_credit_kind=kind, admin_flt=flt, admin_page=page
+    )
+    await call.message.answer(
+        f"{title}\n\n"
+        f"مانده‌ی کاربر <code>{uid}</code>: <b>{fa_num(have)}</b> واحد\n\n"
+        "چند واحد اضافه شود؟ عدد منفی یعنی کم کردن.\n"
+        "مثال: <code>100</code> یا <code>-20</code>\n\nانصراف: /cancel"
+    )
+
+
+@router.message(Flow.admin_credit)
+async def got_credit(message: Message, state: FSMContext) -> None:
+    if not _is_admin(message.from_user.id):
+        await state.clear()
+        return
+    amount = parse_int(message.text or "")
+    if amount is None or amount == 0:
+        await message.answer("یک عدد صحیح غیر صفر بفرستید.")
+        return
+    data = await state.get_data()
+    uid = int(data.get("admin_target", 0))
+    kind = str(data.get("admin_credit_kind", CREDIT_WATERMARK))
+    await state.clear()
+
+    left = await credits.add(uid, kind, amount, note=f"ادمین {message.from_user.id}")
+    title = CREDIT_KINDS[kind][0]
+    await message.answer(
+        f"✅ {amount:+d} واحد اعمال شد.\n{title} — مانده: <b>{fa_num(left)}</b>"
+    )
+    try:
+        verb = "به حساب شما اضافه شد" if amount > 0 else "از حساب شما کم شد"
+        await message.bot.send_message(
+            uid,
+            f"🎫 {fa_num(abs(amount))} واحد {title} {verb}.\n"
+            f"مانده: <b>{fa_num(left)}</b> واحد",
+        )
+    except Exception:
+        log.debug("اطلاع تغییر اعتبار به کاربر نرسید", exc_info=True)
+    await _show_user(
+        message,
+        uid,
+        str(data.get("admin_flt", "all")),
+        int(data.get("admin_page", 0)),
+        edit=False,
+    )
 
 
 # --------------------------------------------------------- کارهای کاربر

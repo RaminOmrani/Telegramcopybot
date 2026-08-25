@@ -14,28 +14,89 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from telkap.config import get_settings
-from telkap.handlers.common import Flow, get_or_create_user
-from telkap.keyboards import BTN_PLANS, plans_menu
+from telkap.handlers.common import Flow, get_or_create_user, parse_int
+from telkap.keyboards import (
+    BTN_PLANS,
+    PLAN_ICONS,
+    credit_packs_menu,
+    credits_menu,
+    plans_menu,
+)
 from telkap.models import PaymentRequest
-from telkap.plans import POPULAR_CODE, PURCHASABLE, get_plan
-from telkap.services import payments
+from telkap.plans import (
+    CREDIT_KINDS,
+    FEAT_HISTORY,
+    FEAT_PRIVATE,
+    FEAT_VIP,
+    FEAT_WATERMARK,
+    POPULAR_CODE,
+    PURCHASABLE,
+    WATERMARK_UNIT_TOMAN,
+    credit_price,
+    get_plan,
+    toman,
+)
+from telkap.services import credits, payments
 from telkap.services.subscription import active_subscription, remaining_days
 from telkap.texts import fa_num
+
+MAX_CREDIT_UNITS = 20_000
 
 log = logging.getLogger(__name__)
 router = Router(name="billing")
 
 
+RULE = "━━━━━━━━━━━━━━━━━━"
+
+
 def _plans_text() -> str:
-    lines = ["💳 <b>تعرفه‌های اشتراک</b>\n"]
+    lines = ["💎 <b>طرح‌های اشتراک</b>", RULE]
     for plan in PURCHASABLE:
-        star = " ⭐️ <i>پیشنهاد ویژه</i>" if plan.code == POPULAR_CODE else ""
-        lines.append(f"\n<b>{plan.title}</b> — {plan.price_label}{star}")
+        icon = PLAN_ICONS.get(plan.code, "▫️")
+        star = "  ⭐️ <i>محبوب‌ترین</i>" if plan.code == POPULAR_CODE else ""
+        lines.append(f"\n{icon} <b>{plan.title}</b> — {plan.price_label}{star}")
         lines.append(f"<i>{plan.tagline}</i>")
         for perk in plan.perks:
-            lines.append(f"  • {perk}")
-    lines.append("\nبرای خرید، پلن موردنظر را انتخاب کنید.")
+            lines.append(f"   ✓ {perk}")
+    lines.append(f"\n{RULE}")
+    lines.append(
+        "🎫 <b>اعتبار جداگانه</b> — اگر فقط گاهی به واترمارک یا کپی پیام‌های "
+        f"گذشته نیاز دارید، به‌جای پلن بالاتر می‌توانید واحدی بخرید "
+        f"(هر واحد {toman(WATERMARK_UNIT_TOMAN)})."
+    )
+    lines.append("\nبرای خرید، یکی از گزینه‌های زیر را بزنید 👇")
     return "\n".join(lines)
+
+
+def _compare_text() -> str:
+    """جدول مقایسه‌ی همه‌ی طرح‌ها در یک نگاه."""
+    def mark(flag: bool) -> str:
+        return "✅" if flag else "➖"
+
+    rows = [
+        ("💰 قیمت", lambda p: p.price_label.replace(" تومان", "")),
+        ("📅 مدت", lambda p: f"{fa_num(p.days)} روز"),
+        ("📨 پیام روزانه", lambda p: p.daily_label),
+        ("📋 کار کپی", lambda p: fa_num(p.max_tasks)),
+        ("📤 مقصد هر کار", lambda p: fa_num(p.max_destinations)),
+        ("🔒 کانال خصوصی", lambda p: mark(p.has(FEAT_PRIVATE))),
+        ("💧 واترمارک", lambda p: mark(p.has(FEAT_WATERMARK))),
+        ("🕓 پیام‌های گذشته", lambda p: mark(p.has(FEAT_HISTORY))),
+        ("👑 پشتیبانی ویژه", lambda p: mark(p.has(FEAT_VIP))),
+    ]
+
+    blocks = ["📊 <b>مقایسه‌ی طرح‌ها</b>", RULE]
+    for plan in PURCHASABLE:
+        icon = PLAN_ICONS.get(plan.code, "▫️")
+        blocks.append(f"\n{icon} <b>{plan.title}</b>")
+        for label, getter in rows:
+            blocks.append(f"   {label}: {getter(plan)}")
+    blocks.append(f"\n{RULE}")
+    blocks.append(
+        "<i>واترمارک و کپی پیام‌های گذشته در طرح‌هایی که ➖ دارند، با خرید "
+        "اعتبار واحدی هم در دسترس است.</i>"
+    )
+    return "\n".join(blocks)
 
 
 @router.message(Command("plans"))
@@ -95,6 +156,144 @@ async def cb_plan(call: CallbackQuery, state: FSMContext) -> None:
     )
 
 
+# ------------------------------------------------------- مقایسه و اعتبار
+@router.callback_query(F.data == "cmp:plans")
+async def cb_compare(call: CallbackQuery) -> None:
+    await call.answer()
+    await call.message.edit_text(_compare_text(), reply_markup=plans_menu())
+
+
+@router.callback_query(F.data == "credit:plans")
+async def cb_back_to_plans(call: CallbackQuery) -> None:
+    await call.answer()
+    await call.message.edit_text(_plans_text(), reply_markup=plans_menu())
+
+
+@router.callback_query(F.data == "credit:menu")
+async def cb_credits(call: CallbackQuery) -> None:
+    await call.answer()
+    await get_or_create_user(call.from_user)
+    balances = await credits.balances(call.from_user.id)
+    lines = ["🎫 <b>خرید اعتبار</b>", RULE, ""]
+    for kind, (title, desc, price) in CREDIT_KINDS.items():
+        lines.append(f"{title}")
+        lines.append(f"   {desc}")
+        lines.append(f"   قیمت هر واحد: <b>{toman(price)}</b>")
+        lines.append(f"   مانده‌ی شما: <b>{fa_num(balances.get(kind, 0))}</b>\n")
+    lines.append(
+        "<i>اعتبار تاریخ انقضا ندارد و تا وقتی مصرف نشود باقی می‌ماند. "
+        "اگر پلن شما خودش این قابلیت را داشته باشد، اعتبار مصرف نمی‌شود.</i>"
+    )
+    await call.message.edit_text("\n".join(lines), reply_markup=credits_menu(balances))
+
+
+@router.callback_query(F.data.startswith("credit:pick:"))
+async def cb_credit_pick(call: CallbackQuery) -> None:
+    kind = call.data.split(":")[2]
+    info = CREDIT_KINDS.get(kind)
+    if info is None:
+        await call.answer("این بسته وجود ندارد.", show_alert=True)
+        return
+    title, desc, price = info
+    await call.answer()
+    have = await credits.balance(call.from_user.id, kind)
+    text = (
+        f"{title}\n{RULE}\n\n"
+        f"{desc}\n"
+        f"قیمت هر واحد: <b>{toman(price)}</b>\n"
+        f"مانده‌ی فعلی شما: <b>{fa_num(have)}</b>\n\n"
+        "چند واحد می‌خواهید؟"
+    )
+    markup = credit_packs_menu(kind)
+    try:
+        await call.message.edit_text(text, reply_markup=markup)
+    except Exception:
+        await call.message.answer(text, reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("credit:ask:"))
+async def cb_credit_ask(call: CallbackQuery, state: FSMContext) -> None:
+    kind = call.data.split(":")[2]
+    if kind not in CREDIT_KINDS:
+        await call.answer("این بسته وجود ندارد.", show_alert=True)
+        return
+    await call.answer()
+    await state.set_state(Flow.credit_amount)
+    await state.update_data(credit_kind=kind)
+    price = CREDIT_KINDS[kind][2]
+    await call.message.answer(
+        f"🔢 چند واحد می‌خواهید؟ عدد را بفرستید.\n"
+        f"هر واحد {toman(price)} — مثلاً <code>250</code>\n\n"
+        "انصراف: /cancel"
+    )
+
+
+@router.message(Flow.credit_amount)
+async def got_credit_amount(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    kind = str(data.get("credit_kind", ""))
+    quantity = parse_int(message.text or "")
+    if kind not in CREDIT_KINDS:
+        await state.clear()
+        await message.answer("این بسته وجود ندارد.")
+        return
+    if quantity is None or quantity <= 0:
+        await message.answer("یک عدد مثبت بفرستید، مثلاً <code>250</code>.")
+        return
+    if quantity > MAX_CREDIT_UNITS:
+        await message.answer(f"حداکثر {fa_num(MAX_CREDIT_UNITS)} واحد در هر خرید.")
+        return
+    await state.clear()
+    await _start_credit_purchase(message, message.from_user.id, kind, quantity, state)
+
+
+@router.callback_query(F.data.startswith("credit:buy:"))
+async def cb_credit_buy(call: CallbackQuery, state: FSMContext) -> None:
+    _, _, kind, raw = call.data.split(":")
+    if kind not in CREDIT_KINDS:
+        await call.answer("این بسته وجود ندارد.", show_alert=True)
+        return
+    await call.answer()
+    await _start_credit_purchase(call.message, call.from_user.id, kind, int(raw), state)
+
+
+async def _start_credit_purchase(
+    target: Message, user_id: int, kind: str, quantity: int, state: FSMContext
+) -> None:
+    """رسید کارت‌به‌کارت برای خرید اعتبار را می‌خواهد."""
+    title = CREDIT_KINDS[kind][0]
+    amount = credit_price(kind, quantity)
+    request = await payments.create_credit_request(user_id, kind, quantity, amount)
+    if request is None:
+        await target.answer("⚠️ ثبت درخواست ناموفق بود. دوباره تلاش کنید.")
+        return
+
+    cfg = get_settings()
+    if not cfg.card_number:
+        support = f"@{cfg.support_username}" if cfg.support_username else "پشتیبانی"
+        await target.answer(
+            f"🎫 <b>{title}</b> — {fa_num(quantity)} واحد\n"
+            f"مبلغ: <b>{toman(amount)}</b>\n\n"
+            f"برای پرداخت با {support} در تماس باشید.\n"
+            f"شناسه‌ی شما: <code>{user_id}</code>"
+        )
+        return
+
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="❌ انصراف", callback_data="pay:cancel"))
+    holder = f"\nبه نام: <b>{cfg.card_holder}</b>" if cfg.card_holder else ""
+    await state.set_state(Flow.receipt)
+    await state.update_data(request_id=request.id)
+    await target.answer(
+        f"🎫 <b>{title}</b>\n"
+        f"تعداد: <b>{fa_num(quantity)}</b> واحد\n"
+        f"مبلغ قابل پرداخت: <b>{toman(amount)}</b>\n\n"
+        f"💳 شماره کارت:\n<code>{cfg.card_number}</code>{holder}\n\n"
+        "پس از واریز، <b>تصویر رسید</b> را همین‌جا بفرستید.",
+        reply_markup=kb.as_markup(),
+    )
+
+
 @router.callback_query(F.data == "pay:cancel")
 async def cb_cancel(call: CallbackQuery, state: FSMContext) -> None:
     await state.clear()
@@ -127,10 +326,10 @@ async def got_receipt(message: Message, state: FSMContext) -> None:
         await message.answer("⚠️ این درخواست دیگر معتبر نیست. دوباره از «💳 خرید اشتراک» شروع کنید.")
         return
 
-    plan = get_plan(request.plan_code)
     await message.answer(
         "✅ رسید شما ثبت شد.\n\n"
-        f"پلن: <b>{plan.title if plan else request.plan_code}</b>\n"
+        f"خرید: <b>{payments.describe(request)}</b>\n"
+        f"مبلغ: <b>{toman(request.amount_toman)}</b>\n"
         f"کد پیگیری: <code>{request.id}</code>\n\n"
         "پس از بررسی، نتیجه همین‌جا اعلام می‌شود."
     )
@@ -140,7 +339,6 @@ async def got_receipt(message: Message, state: FSMContext) -> None:
 async def _notify_admins(message: Message, request: PaymentRequest) -> None:
     """رسید را با دکمه‌های تأیید/رد برای همه‌ی ادمین‌ها می‌فرستد."""
     cfg = get_settings()
-    plan = get_plan(request.plan_code)
     user = message.from_user
     username = f"@{user.username}" if user.username else "—"
 
@@ -153,8 +351,8 @@ async def _notify_admins(message: Message, request: PaymentRequest) -> None:
         "🧾 <b>رسید جدید</b>\n\n"
         f"کاربر: {user.full_name} ({username})\n"
         f"شناسه: <code>{user.id}</code>\n"
-        f"پلن: <b>{plan.title if plan else request.plan_code}</b>"
-        f" — {plan.price_label if plan else ''}\n"
+        f"خرید: <b>{payments.describe(request)}</b>\n"
+        f"مبلغ: <b>{toman(request.amount_toman)}</b>\n"
         f"کد پیگیری: <code>{request.id}</code>"
     )
 
@@ -185,18 +383,26 @@ async def cb_approve(call: CallbackQuery) -> None:
         await call.answer("این درخواست قبلاً بررسی شده است.", show_alert=True)
         return
 
-    plan = get_plan(request.plan_code)
     await call.answer("تأیید شد")
     await _mark_reviewed(call, f"✅ تأیید شد توسط {call.from_user.full_name}")
 
-    try:
-        await call.bot.send_message(
-            request.user_id,
+    if sub is not None:
+        plan = get_plan(request.plan_code)
+        note = (
             f"🎉 پرداخت شما تأیید شد!\n\n"
             f"اشتراک <b>{plan.title if plan else request.plan_code}</b> فعال است "
             f"تا {sub.expires_at:%Y-%m-%d}.\n\n"
-            "حالا می‌توانید کار کپی بسازید.",
+            "حالا می‌توانید کار کپی بسازید."
         )
+    else:
+        left = await credits.balance(request.user_id, request.plan_code)
+        note = (
+            f"🎉 پرداخت شما تأیید شد!\n\n"
+            f"<b>{payments.describe(request)}</b> به حساب شما اضافه شد.\n"
+            f"مانده‌ی اعتبار: <b>{fa_num(left)}</b> واحد"
+        )
+    try:
+        await call.bot.send_message(request.user_id, note)
     except Exception:
         log.warning("اطلاع تأیید به کاربر %s نرسید", request.user_id, exc_info=True)
 

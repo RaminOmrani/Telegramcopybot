@@ -7,6 +7,7 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
+from sqlalchemy import func, select
 
 from telkap.db import get_session
 from telkap.handlers.common import (
@@ -17,7 +18,17 @@ from telkap.handlers.common import (
     hash_pin,
 )
 from telkap.keyboards import BTN_ACCOUNT, account_menu, main_menu
-from telkap.models import User
+from telkap.models import DailyStat, User
+from telkap.plans import (
+    CREDIT_HISTORY,
+    CREDIT_WATERMARK,
+    FEAT_HISTORY,
+    FEAT_PRIVATE,
+    FEAT_VIP,
+    FEAT_WATERMARK,
+)
+from telkap.services import credits
+from telkap.services.copier import today_key
 from telkap.services.subscription import active_plan_for, remaining_days
 from telkap.services.userbot import LoginError, manager
 from telkap.texts import (
@@ -38,19 +49,62 @@ router = Router(name="account")
 async def _account_text(user: User) -> str:
     plan = await active_plan_for(user.id)
     days = await remaining_days(user.id)
-    lines = ["👤 <b>حساب کاربری</b>\n"]
+    lines = ["👤 <b>حساب کاربری</b>", "━━━━━━━━━━━━━━━━━━", ""]
     if user.is_logged_in:
-        lines.append(f"وضعیت اتصال: ✅ متصل ({user.account_name or user.phone or '—'})")
+        lines.append(f"🔗 اتصال اکانت: ✅ متصل ({user.account_name or user.phone or '—'})")
     else:
-        lines.append("وضعیت اتصال: ❌ متصل نیست")
+        lines.append("🔗 اتصال اکانت: ❌ متصل نیست")
+    lines.append(f"🔒 پین امنیتی: {'✅ فعال' if user.pin_hash else '❌ غیرفعال'}")
+    lines.append("")
+
     if plan:
-        lines.append(f"اشتراک: <b>{plan.title}</b>")
-        lines.append(f"باقی‌مانده: {fa_num(days)} روز")
-        lines.append(f"سقف کارهای کپی: {fa_num(plan.max_tasks)}")
+        used = await today_usage(user.id)
+        quota = (
+            f"{fa_num(used)} از {plan.daily_label}"
+            if plan.daily_messages
+            else f"{fa_num(used)} (نامحدود)"
+        )
+        lines += [
+            f"💎 طرح: <b>{plan.title}</b>",
+            f"📅 باقی‌مانده: <b>{fa_num(days)} روز</b>",
+            f"📨 پیام امروز: {quota}",
+            f"📋 سقف کار کپی: {fa_num(plan.max_tasks)}",
+            f"📤 سقف مقصد هر کار: {fa_num(plan.max_destinations)}",
+            "",
+            "<b>امکانات طرح شما</b>",
+            f"  {_mark(plan.has(FEAT_PRIVATE))} کپی از کانال خصوصی",
+            f"  {_mark(plan.has(FEAT_WATERMARK))} واترمارک تصاویر",
+            f"  {_mark(plan.has(FEAT_HISTORY))} کپی پیام‌های گذشته",
+            f"  {_mark(plan.has(FEAT_VIP))} پشتیبانی ویژه",
+        ]
     else:
-        lines.append("اشتراک: ⛔️ فعال نیست")
-    lines.append(f"پین امنیتی: {'✅ فعال' if user.pin_hash else '❌ غیرفعال'}")
+        lines.append("💎 طرح: ⛔️ اشتراک فعالی ندارید")
+
+    balances = await credits.balances(user.id)
+    wm, hist = balances.get(CREDIT_WATERMARK, 0), balances.get(CREDIT_HISTORY, 0)
+    if wm or hist:
+        lines += [
+            "",
+            "🎫 <b>اعتبار شما</b>",
+            f"  💧 واترمارک: {fa_num(wm)} واحد",
+            f"  🕓 پیام گذشته: {fa_num(hist)} واحد",
+        ]
     return "\n".join(lines)
+
+
+def _mark(flag: bool) -> str:
+    return "✅" if flag else "➖"
+
+
+async def today_usage(user_id: int) -> int:
+    """تعداد پیام‌های کپی‌شده‌ی امروز این کاربر."""
+    async with get_session() as db:
+        used = await db.scalar(
+            select(func.coalesce(func.sum(DailyStat.copied), 0)).where(
+                DailyStat.user_id == user_id, DailyStat.day == today_key()
+            )
+        )
+    return int(used or 0)
 
 
 @router.message(Command("account"))

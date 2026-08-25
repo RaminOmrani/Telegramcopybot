@@ -48,6 +48,10 @@ class User(Base):
     is_banned: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
+    # اعتبارهای خریداری‌شده‌ی جدا از اشتراک (هر واحد = یک تصویر یا یک پیام)
+    watermark_credits: Mapped[int] = mapped_column(Integer, default=0)
+    history_credits: Mapped[int] = mapped_column(Integer, default=0)
+
     tasks: Mapped[list[Task]] = relationship(back_populates="user", cascade="all, delete-orphan")
     subscriptions: Mapped[list[Subscription]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
@@ -222,8 +226,32 @@ class RetryItem(Base):
         return [int(part) for part in self.src_msg_ids.split(",") if part.strip()]
 
 
+class ForceJoinChannel(Base):
+    """کانالی که کاربر پیش از استفاده از ربات باید عضو آن باشد.
+
+    ادمین از داخل پنل هر تعداد کانال اضافه می‌کند؛ ربات باید در همه‌ی
+    آن‌ها ادمین باشد تا بتواند عضویت را بررسی کند.
+    """
+
+    __tablename__ = "force_join_channels"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ref: Mapped[str] = mapped_column(String(128), unique=True)   # username یا -100…
+    title: Mapped[str] = mapped_column(String(160), default="")
+    invite_link: Mapped[str] = mapped_column(String(256), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    added_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    @property
+    def url(self) -> str:
+        if self.invite_link:
+            return self.invite_link
+        return f"https://t.me/{self.ref.lstrip('@')}"
+
+
 class PaymentRequest(Base):
-    """درخواست خرید اشتراک با رسید کارت‌به‌کارت."""
+    """درخواست خرید اشتراک یا بسته‌ی اعتبار، با رسید کارت‌به‌کارت."""
 
     __tablename__ = "payment_requests"
 
@@ -231,9 +259,16 @@ class PaymentRequest(Base):
     STATUS_APPROVED = "approved"
     STATUS_REJECTED = "rejected"
 
+    KIND_PLAN = "plan"
+    KIND_CREDIT = "credit"
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # برای خرید اشتراک کد پلن، و برای اعتبار کد بسته (wm / hist)
     plan_code: Mapped[str] = mapped_column(String(32))
+    kind: Mapped[str] = mapped_column(String(16), default=KIND_PLAN)
+    quantity: Mapped[int] = mapped_column(Integer, default=0)
+    amount_toman: Mapped[int] = mapped_column(Integer, default=0)
     receipt_file_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     receipt_kind: Mapped[str] = mapped_column(String(16), default="photo")  # photo | document | text
     note: Mapped[str] = mapped_column(String(400), default="")

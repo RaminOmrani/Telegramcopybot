@@ -14,6 +14,7 @@ from telkap.handlers.common import Flow
 from telkap.keyboards import destinations_menu
 from telkap.models import Destination, Task
 from telkap.services import cache
+from telkap.services.subscription import active_plan_for
 from telkap.services.userbot import manager
 from telkap.texts import NO_LOGIN, fa_num
 
@@ -40,11 +41,18 @@ async def _extras(task_id: int) -> list[Destination]:
 async def _render(target: Message, task: Task, *, edit: bool = False) -> None:
     extras = await _extras(task.id)
     primary = task.dest_title or task.dest_ref
+    plan = await active_plan_for(task.user_id)
+    active = 1 + sum(1 for d in extras if d.enabled)
+    cap = (
+        f" از {fa_num(plan.max_destinations)} مجاز در طرح «{plan.title}»"
+        if plan
+        else ""
+    )
     text = (
         "📤 <b>کانال‌های مقصد</b>\n\n"
-        f"پست‌های «{task.source_title or task.source_ref}» در همه‌ی کانال‌های "
-        f"زیر منتشر می‌شوند.\n\n"
-        f"تعداد: {fa_num(1 + sum(1 for d in extras if d.enabled))} کانال فعال"
+        f"هر پست «{task.source_title or task.source_ref}» در همه‌ی کانال‌های "
+        f"زیر منتشر می‌شود — مبدا فقط یک بار خوانده می‌شود.\n\n"
+        f"🟢 فعال: {fa_num(active)} کانال{cap}"
     )
     markup = destinations_menu(task.id, primary, extras)
     if edit:
@@ -74,13 +82,22 @@ async def cb_add(call: CallbackQuery, state: FSMContext) -> None:
         await call.answer("دسترسی ندارید", show_alert=True)
         return
 
+    plan = await active_plan_for(call.from_user.id)
+    if plan is None:
+        await call.answer("اشتراک فعالی ندارید.", show_alert=True)
+        return
+
     async with get_session() as db:
         count = await db.scalar(
             select(func.count(Destination.id)).where(Destination.task_id == task_id)
         )
-    if (count or 0) >= MAX_EXTRA_DESTS:
+    # سقف پلن و سقف فنی، هرکدام کمتر بود
+    allowed_extra = min(plan.extra_destinations, MAX_EXTRA_DESTS)
+    if (count or 0) >= allowed_extra:
         await call.answer(
-            f"حداکثر {fa_num(MAX_EXTRA_DESTS)} مقصد اضافی مجاز است.", show_alert=True
+            f"در طرح «{plan.title}» هر کار می‌تواند {fa_num(plan.max_destinations)} "
+            "کانال مقصد داشته باشد.\nبرای بیشتر، طرح بالاتری بگیرید.",
+            show_alert=True,
         )
         return
 

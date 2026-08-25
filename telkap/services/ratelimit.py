@@ -58,4 +58,56 @@ class HourlyQuota:
         self._counts.pop(task_id, None)
 
 
+class DailyQuota:
+    """سقف پیام در شبانه‌روز به ازای هر کاربر (از روی پلن او).
+
+    شمارش در حافظه است تا مسیر هر پست پرس‌وجوی دیتابیس نزند، ولی مقدار
+    اولیه‌ی هر روز از جدول آمار خوانده می‌شود؛ وگرنه با هر ری‌استارت
+    سقف صفر می‌شد و کاربر می‌توانست دوباره از اول شروع کند.
+    """
+
+    def __init__(self) -> None:
+        self._counts: dict[int, int] = {}
+        self._day: str = ""
+
+    def _roll(self, day: str) -> None:
+        if day != self._day:
+            self._day = day
+            self._counts.clear()
+
+    def is_seeded(self, user_id: int, day: str) -> bool:
+        self._roll(day)
+        return user_id in self._counts
+
+    def seed(self, user_id: int, day: str, used: int) -> None:
+        self._roll(day)
+        self._counts.setdefault(user_id, max(0, used))
+
+    def remaining(self, user_id: int, day: str, limit: int) -> int:
+        """چند پیام دیگر مجاز است؛ برای نامحدود عدد بزرگ برمی‌گرداند."""
+        if limit <= 0:
+            return 1 << 30
+        self._roll(day)
+        return max(0, limit - self._counts.get(user_id, 0))
+
+    def allow(self, user_id: int, day: str, limit: int) -> bool:
+        """اگر جا باشد یکی به شمارنده اضافه می‌کند و True می‌دهد."""
+        if limit <= 0:
+            return True  # نامحدود
+        self._roll(day)
+        used = self._counts.get(user_id, 0)
+        if used >= limit:
+            return False
+        self._counts[user_id] = used + 1
+        return True
+
+    def used(self, user_id: int, day: str) -> int:
+        self._roll(day)
+        return self._counts.get(user_id, 0)
+
+    def forget(self, user_id: int) -> None:
+        self._counts.pop(user_id, None)
+
+
 hourly_quota = HourlyQuota()
+daily_quota = DailyQuota()
