@@ -37,7 +37,7 @@ def test_message_quotas_are_per_period():
     from telkap.plans import CUSTOM, MONTH, TRIAL, TWO_WEEK, UNLIMITED, WEEK
 
     assert [p.period_messages for p in (TRIAL, WEEK, TWO_WEEK, MONTH)] == [
-        20, 200, 1_000, 2_000
+        20, 2_000, 10_000, 20_000
     ]
     assert CUSTOM.period_messages == UNLIMITED
     assert CUSTOM.messages_label == "نامحدود"
@@ -503,7 +503,8 @@ async def test_messages_have_no_purchasable_credit(tmp_path, monkeypatch):
         from telkap.plans import FEAT_MESSAGES, MONTH
         from telkap.services import entitlement
 
-        assert await entitlement.reserve(7, FEAT_MESSAGES, 5_000, MONTH, 1) is None
+        too_many = MONTH.period_messages + 1
+        assert await entitlement.reserve(7, FEAT_MESSAGES, too_many, MONTH, 1) is None
         assert await entitlement.used(1, FEAT_MESSAGES) == 0
     finally:
         await db_module.close_db()
@@ -765,3 +766,33 @@ async def test_support_open_tickets_puts_waiting_first(tmp_path, monkeypatch):
         assert answered.id in order
     finally:
         await db_module.close_db()
+
+
+def test_custom_plan_is_thirty_days_like_the_month_plan():
+    """طرح اختصاصی هم ۳۰ روزه است؛ فقط امکاناتش بیشتر است."""
+    from telkap.plans import CUSTOM, MONTH
+
+    assert CUSTOM.days == MONTH.days == 30
+    assert CUSTOM.max_tasks > MONTH.max_tasks
+    assert CUSTOM.watermark_quota > MONTH.watermark_quota
+    assert CUSTOM.history_quota > MONTH.history_quota
+    # مدت در توضیح طرح هم گفته شده تا کاربر گمان نکند طولانی‌تر است
+    assert "۳۰" in CUSTOM.tagline or any("۳۰ روز" in perk for perk in CUSTOM.perks)
+
+
+def test_guide_plans_section_shows_duration_of_every_plan():
+    from telkap.handlers import guide
+    from telkap.plans import PURCHASABLE, TRIAL
+    from telkap.texts import fa_num
+
+    text = guide.SECTIONS["plans"][1]()
+    for plan in (TRIAL, *PURCHASABLE):
+        assert f"{fa_num(plan.days)} روز" in text, plan.code
+
+
+def test_guide_points_users_at_the_quota_screen():
+    """کاربر باید بداند مانده‌اش را کجا ببیند."""
+    from telkap.handlers import guide
+
+    for key in ("plans", "credits", "faq"):
+        assert "سهمیه و اعتبار من" in guide.SECTIONS[key][1](), key

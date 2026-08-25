@@ -16,7 +16,7 @@ from telkap.handlers.common import (
     get_or_create_user,
     hash_pin,
 )
-from telkap.keyboards import BTN_ACCOUNT, account_menu, main_menu
+from telkap.keyboards import BTN_ACCOUNT, account_menu, main_menu, quota_menu
 from telkap.models import User
 from telkap.plans import (
     CREDIT_HISTORY,
@@ -271,3 +271,99 @@ async def cb_sub(call: CallbackQuery) -> None:
     user = await get_or_create_user(call.from_user)
     await call.answer()
     await call.message.answer(await _account_text(user))
+
+
+# ------------------------------------------------- سهمیه و اعتبار من
+def _bar(spent: int, limit: int, width: int = 10) -> str:
+    """نوار پیشرفت ساده‌ی مصرف."""
+    if limit <= 0:
+        return ""
+    filled = min(width, round(width * min(spent, limit) / limit))
+    return "▓" * filled + "░" * (width - filled)
+
+
+def _line(icon: str, title: str, spent: int, limit: int, credit: int | None = None) -> list[str]:
+    """یک بلوک سه‌خطی: عنوان، مانده، نوار."""
+    rows = [f"{icon} <b>{title}</b>"]
+    if limit == UNLIMITED:
+        rows.append(f"   مصرف: {fa_num(spent)} — <b>نامحدود</b>")
+    elif limit == 0:
+        rows.append("   در طرح شما نیست")
+    else:
+        left = max(0, limit - spent)
+        rows.append(
+            f"   مانده: <b>{fa_num(left)}</b> از {fa_num(limit)}  "
+            f"(مصرف: {fa_num(spent)})"
+        )
+        rows.append(f"   <code>{_bar(spent, limit)}</code>")
+    if credit is not None and credit > 0:
+        rows.append(f"   ➕ اعتبار خریداری‌شده: <b>{fa_num(credit)}</b>")
+    return rows
+
+
+@router.callback_query(F.data == "acc:quota")
+async def cb_quota(call: CallbackQuery) -> None:
+    """همه‌ی سهمیه‌ها و اعتبارها در یک صفحه."""
+    await call.answer()
+    user = await get_or_create_user(call.from_user)
+    plan, sub_id = await active_entitlement(user.id)
+    balances = await credits.balances(user.id)
+    wm_credit = balances.get(CREDIT_WATERMARK, 0)
+    hist_credit = balances.get(CREDIT_HISTORY, 0)
+
+    lines = ["📊 <b>سهمیه و اعتبار من</b>", "━━━━━━━━━━━━━━━━━━", ""]
+    if plan is None:
+        lines += [
+            "⛔️ اشتراک فعالی ندارید.",
+            "",
+            f"🎫 اعتبار واترمارک: <b>{fa_num(wm_credit)}</b>",
+            f"🎫 اعتبار پیام گذشته: <b>{fa_num(hist_credit)}</b>",
+            "",
+            "<i>اعتبار از بین نمی‌رود؛ با فعال شدن اشتراک قابل استفاده است.</i>",
+        ]
+        await call.message.answer("\n".join(lines), reply_markup=quota_menu())
+        return
+
+    days = await remaining_days(user.id)
+    msg_used = await entitlement.used(sub_id, FEAT_MESSAGES) if sub_id else 0
+    wm_used = await entitlement.used(sub_id, FEAT_WATERMARK) if sub_id else 0
+    hist_used = await entitlement.used(sub_id, FEAT_HISTORY) if sub_id else 0
+
+    lines += [
+        f"💎 طرح: <b>{plan.title}</b> ({fa_num(plan.days)} روزه)",
+        f"📅 باقی‌مانده: <b>{fa_num(days)} روز</b>",
+        "",
+    ]
+    lines += _line("📨", "پیام", msg_used, plan.period_messages)
+    if plan.fair_use_daily:
+        lines.append(
+            f"   <i>سقف مصرف منصفانه: {fa_num(plan.fair_use_daily)} در روز</i>"
+        )
+    lines.append("")
+    lines += _line("💧", "واترمارک", wm_used, plan.watermark_quota, wm_credit)
+    lines.append("")
+    lines += _line("🕓", "پیام گذشته", hist_used, plan.history_quota, hist_credit)
+
+    total_wm = _total(plan.watermark_quota, wm_used, wm_credit)
+    total_hist = _total(plan.history_quota, hist_used, hist_credit)
+    lines += [
+        "",
+        "━━━━━━━━━━━━━━━━━━",
+        "<b>در مجموع همین حالا می‌توانید:</b>",
+        f"  💧 {total_wm} تصویر واترمارک بزنید",
+        f"  🕓 {total_hist} پیام قدیمی کپی کنید",
+        "",
+        f"📋 کار کپی: {fa_num(plan.max_tasks)}  |  "
+        f"📤 مقصد هر کار: {fa_num(plan.max_destinations)}",
+        "",
+        "<i>سهمیه‌ها برای کل دوره‌اند و با تمدید از نو پر می‌شوند. "
+        "اعتبار خریداری‌شده انقضا ندارد.</i>",
+    ]
+    await call.message.answer("\n".join(lines), reply_markup=quota_menu())
+
+
+def _total(limit: int, spent: int, credit: int) -> str:
+    """مجموع سهمیه‌ی مانده و اعتبار، به شکل خوانا."""
+    if limit == UNLIMITED:
+        return "نامحدود"
+    return fa_num(max(0, limit - spent) + credit)

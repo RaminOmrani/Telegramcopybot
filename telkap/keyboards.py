@@ -440,7 +440,20 @@ def account_menu(logged_in: bool, has_pin: bool) -> InlineKeyboardMarkup:
             callback_data="acc:pin",
         )
     )
-    kb.row(InlineKeyboardButton(text="💳 اشتراک من", callback_data="acc:sub"))
+    kb.row(
+        InlineKeyboardButton(text="📊 سهمیه و اعتبار من", callback_data="acc:quota")
+    )
+    return kb.as_markup()
+
+
+def quota_menu() -> InlineKeyboardMarkup:
+    """زیر صفحه‌ی «سهمیه و اعتبار من»."""
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        InlineKeyboardButton(text="🎫 خرید اعتبار", callback_data="credit:menu"),
+        InlineKeyboardButton(text="⬆️ ارتقای طرح", callback_data="credit:plans"),
+    )
+    kb.row(InlineKeyboardButton(text="🔄 به‌روزرسانی", callback_data="acc:quota"))
     return kb.as_markup()
 
 
