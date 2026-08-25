@@ -60,6 +60,7 @@ class Flow(StatesGroup):
     support_reply = State()
 
     watermark_logo = State()
+    watermark_input = State()
 
 
 async def get_or_create_user(tg_user: TgUser) -> User:

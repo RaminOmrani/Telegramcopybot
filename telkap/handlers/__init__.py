@@ -20,6 +20,7 @@ from telkap.handlers import (
     start,
     support,
     tasks,
+    watermark_wizard,
 )
 
 
@@ -39,6 +40,7 @@ def build_router() -> Router:
     root.include_router(destinations.router)
     root.include_router(preview.router)
     root.include_router(clone.router)
+    root.include_router(watermark_wizard.router)
     root.include_router(settings.router)
     root.include_router(history.router)
     root.include_router(billing.router)

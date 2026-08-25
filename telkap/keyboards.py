@@ -225,6 +225,21 @@ def watermark_menu(task_id: int, cfg: dict) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.row(_flag("واترمارک", bool(cfg.get("watermark_enabled")), f"flag:watermark_enabled:{task_id}"))
 
+    # ساده‌ترین راه: کاربر هرچه می‌خواهد می‌فرستد و از شش پیش‌نمایش انتخاب می‌کند
+    kb.row(
+        InlineKeyboardButton(
+            text="🎨 ساخت با پیش‌نمایش (ساده‌ترین راه)",
+            callback_data=f"wmpv:{task_id}",
+        )
+    )
+    if cfg.get("watermark_logo") or (cfg.get("watermark_text") or "").strip():
+        kb.row(
+            InlineKeyboardButton(
+                text="👁 پیش‌نمایش تنظیمات فعلی", callback_data=f"wmpvnow:{task_id}"
+            )
+        )
+    kb.row(_divider("تنظیم دستی"))
+
     # نوع واترمارک: متن یا لوگوی تصویری
     kind = cfg.get("watermark_kind", "text")
     kb.row(
