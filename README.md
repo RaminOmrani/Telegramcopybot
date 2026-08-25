@@ -283,6 +283,51 @@ sudo journalctl -u telkap -f                   # دیدن لاگ زنده
 دوباره بالا بیاید. یا از `docker compose up -d` استفاده کنید که همین رفتار
 را دارد.
 
+### اجرای دائمی روی VPS ویندوزی
+
+سه فایل `.bat` در ریشه‌ی پروژه کار را ساده می‌کنند:
+
+| فایل | کار |
+|---|---|
+| `setup.bat` | ساخت `.venv`، نصب وابستگی‌ها و ساخت `.env` — فقط بار اول |
+| `start.bat` | اجرای ربات (محیط مجازی خودش فعال می‌شود) |
+| `update.bat` | گرفتن آخرین نسخه از گیت‌هاب و نصب وابستگی‌های تازه |
+
+بار اول `setup.bat` را بزنید، `.env` را پر کنید، بعد `start.bat` تا مطمئن
+شوید ربات بالا می‌آید. اما تا وقتی پنجره باز است ربات روشن است؛ برای
+۲۴ ساعته ماندن باید سرویس ویندوز بسازید.
+
+**سرویس با NSSM.** [nssm.cc](https://nssm.cc/download) را دانلود و
+`nssm.exe` را در `C:\nssm\` بگذارید. در Command Prompt با دسترسی
+Administrator:
+
+```bat
+C:\nssm\nssm.exe install TelkapBot
+```
+
+در پنجره‌ای که باز می‌شود:
+
+- **Path**: `C:\Telegramcopybot\.venv\Scripts\python.exe`
+- **Startup directory**: `C:\Telegramcopybot`
+- **Arguments**: `-m telkap.main`
+- تب **I/O** → `Output` و `Error` را روی `C:\Telegramcopybot\data\bot.log` بگذارید
+- تب **Exit actions** → `Restart`, تأخیر ۱۰۰۰۰ میلی‌ثانیه
+
+سپس:
+
+```bat
+nssm start TelkapBot        rem شروع
+nssm restart TelkapBot      rem بعد از هر به‌روزرسانی
+nssm status TelkapBot       rem وضعیت
+nssm stop TelkapBot         rem توقف
+```
+
+سرویس روی `Automatic` تنظیم می‌شود، پس با ری‌استارت شدن VPS ربات خودش
+بالا می‌آید و لازم نیست کسی وارد ویندوز شود.
+
+> ⚠️ Remote Desktop را که ببندید سرویس همچنان کار می‌کند — ولی اگر ربات را
+> با `start.bat` اجرا کرده باشید، با بستن پنجره خاموش می‌شود.
+
 ---
 
 ## نحوه استفاده
