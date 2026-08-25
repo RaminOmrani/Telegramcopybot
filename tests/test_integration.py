@@ -163,6 +163,57 @@ def test_watermark_writes_image(tmp_path):
     assert add_text_watermark(broken, tmp_path / "y.jpg", "@x") == broken
 
 
+def test_logo_watermark_writes_image(tmp_path):
+    from PIL import Image
+
+    from telkap.services.watermark import add_logo_watermark
+
+    src = tmp_path / "in.jpg"
+    Image.new("RGB", (800, 600), (30, 60, 120)).save(src)
+
+    logo = tmp_path / "logo.png"
+    Image.new("RGBA", (200, 200), (255, 0, 0, 255)).save(logo)
+
+    dest = tmp_path / "out.jpg"
+    result = add_logo_watermark(src, dest, logo, position="top-left", opacity=80)
+
+    assert result == dest and dest.exists()
+    with Image.open(dest) as img:
+        assert img.size == (800, 600)
+
+    # لوگوی ناموجود یا خراب نباید کپی را متوقف کند
+    assert add_logo_watermark(src, tmp_path / "x.jpg", tmp_path / "nope.png") == src
+    broken = tmp_path / "broken.png"
+    broken.write_bytes(b"not an image")
+    assert add_logo_watermark(src, tmp_path / "z.jpg", broken) == src
+
+
+def test_watermark_ready_and_dispatch(tmp_path):
+    from PIL import Image
+
+    from telkap.services.watermark import apply_watermark, watermark_ready
+
+    assert not watermark_ready({})
+    assert not watermark_ready({"watermark_enabled": True, "watermark_text": "  "})
+    assert watermark_ready({"watermark_enabled": True, "watermark_text": "@ch"})
+
+    # حالت لوگو فقط وقتی آماده است که فایل لوگو واقعاً روی دیسک باشد
+    cfg = {"watermark_enabled": True, "watermark_kind": "logo", "watermark_logo": ""}
+    assert not watermark_ready(cfg)
+    cfg["watermark_logo"] = str(tmp_path / "missing.png")
+    assert not watermark_ready(cfg)
+
+    logo = tmp_path / "logo.png"
+    Image.new("RGBA", (120, 120), (0, 200, 0, 255)).save(logo)
+    cfg["watermark_logo"] = str(logo)
+    assert watermark_ready(cfg)
+
+    src = tmp_path / "base.jpg"
+    Image.new("RGB", (640, 480), (10, 10, 10)).save(src)
+    dest = tmp_path / "final.jpg"
+    assert apply_watermark(src, dest, cfg) == dest and dest.exists()
+
+
 def test_crypto_roundtrip():
     from telkap.crypto import decrypt, encrypt
 

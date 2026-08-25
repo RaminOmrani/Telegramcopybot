@@ -56,6 +56,8 @@ class Flow(StatesGroup):
     support_message = State()
     support_reply = State()
 
+    watermark_logo = State()
+
 
 async def get_or_create_user(tg_user: TgUser) -> User:
     async with get_session() as db:

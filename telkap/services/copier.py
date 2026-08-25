@@ -39,7 +39,7 @@ from telkap.services import cache, entitlement
 from telkap.services.filters import MessageFacts, content_hash, should_copy
 from telkap.services.ratelimit import RateLimiter, daily_quota, hourly_quota
 from telkap.services.transform import apply_transforms, drop_custom_emoji, remap_entities
-from telkap.services.watermark import add_text_watermark
+from telkap.services.watermark import apply_watermark, watermark_ready
 
 log = logging.getLogger(__name__)
 
@@ -302,11 +302,7 @@ class Copier:
         # واترمارک: اول از سهمیه‌ی روزانه‌ی طرح، بعد از اعتبار خریداری‌شده.
         # هر تصویر یک واحد می‌برد و آلبوم چند تصویر دارد، پس به ازای هر
         # مقصد جداگانه برداشت می‌شود.
-        wanted_watermark = bool(
-            cfg.get("watermark_enabled")
-            and cfg.get("watermark_text")
-            and not cfg.get("caption_only")
-        )
+        wanted_watermark = watermark_ready(cfg) and not cfg.get("caption_only")
         wm_units = sum(1 for m in messages if classify_media(m) == "photo")
         want_wm = wanted_watermark and bool(wm_units)
         sub_id = ent.subscription_id
@@ -437,12 +433,7 @@ class Copier:
             )
             return [sent.id]
 
-        watermarking = (
-            allow_watermark
-            and cfg.get("watermark_enabled")
-            and cfg.get("watermark_text")
-            and media_kind == "photo"
-        )
+        watermarking = allow_watermark and media_kind == "photo" and watermark_ready(cfg)
 
         if watermarking:
             files = await self._watermarked_files(client, messages, cfg)
@@ -556,14 +547,7 @@ class Copier:
                 continue
             src_path = Path(src)
             dest_path = src_path.with_name(f"wm_{src_path.name}").with_suffix(".jpg")
-            final = add_text_watermark(
-                src_path,
-                dest_path,
-                cfg.get("watermark_text", ""),
-                position=cfg.get("watermark_position", "bottom-right"),
-                opacity=int(cfg.get("watermark_opacity", 60)),
-                size_percent=int(cfg.get("watermark_size", 4)),
-            )
+            final = apply_watermark(src_path, dest_path, cfg)
             if final != src_path:
                 src_path.unlink(missing_ok=True)
             results.append(str(final))

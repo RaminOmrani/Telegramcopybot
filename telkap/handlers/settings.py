@@ -2,12 +2,14 @@
 from __future__ import annotations
 
 import logging
+from pathlib import Path
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 from sqlalchemy import select
 
+from telkap.config import get_settings
 from telkap.db import get_session
 from telkap.handlers.common import Flow, parse_int
 from telkap.handlers.tasks import show_task
@@ -100,6 +102,16 @@ async def _render(call: CallbackQuery, panel: str, task_id: int) -> None:
         await call.message.edit_text(title, reply_markup=builder(task_id, cfg))
     except Exception:
         await call.message.answer(title, reply_markup=builder(task_id, cfg))
+
+
+async def _render_message(message: Message, panel: str, task_id: int) -> None:
+    """همان پنل، ولی به‌صورت پیام تازه (پس از یک مرحله‌ی گفتگویی)."""
+    task = await _owned_task(message.from_user.id, task_id)
+    if task is None:
+        return
+    title, builder = PANELS[panel]
+    cfg = merged_settings(task.settings)
+    await message.answer(title, reply_markup=builder(task_id, cfg))
 
 
 @router.callback_query(F.data.startswith("set:"))
@@ -271,6 +283,119 @@ async def cb_wm_numbers(call: CallbackQuery) -> None:
         cfg["watermark_size"] = max(1, min(20, int(cfg.get("watermark_size", 4)) + step))
     await _save_settings(task_id, cfg)
     await call.answer()
+    await _render(call, "wm", task_id)
+
+
+@router.callback_query(F.data.startswith("wmkind:"))
+async def cb_wm_kind(call: CallbackQuery) -> None:
+    """جابه‌جایی بین واترمارک متنی و لوگوی تصویری."""
+    _, kind, raw_id = call.data.split(":")
+    task_id = int(raw_id)
+    task = await _owned_task(call.from_user.id, task_id)
+    if task is None or kind not in {"text", "logo"}:
+        await call.answer("دسترسی ندارید", show_alert=True)
+        return
+    cfg = merged_settings(task.settings)
+    cfg["watermark_kind"] = kind
+    await _save_settings(task_id, cfg)
+    await call.answer("واترمارک متنی" if kind == "text" else "واترمارک لوگو")
+    await _render(call, "wm", task_id)
+
+
+@router.callback_query(F.data.startswith("wmlogo:"))
+async def cb_wm_logo_ask(call: CallbackQuery, state: FSMContext) -> None:
+    task_id = int(call.data.split(":")[1])
+    if await _owned_task(call.from_user.id, task_id) is None:
+        await call.answer("دسترسی ندارید", show_alert=True)
+        return
+    await call.answer()
+    await state.set_state(Flow.watermark_logo)
+    await state.update_data(task_id=task_id)
+    await call.message.answer(
+        "🖼 <b>لوگوی واترمارک</b>\n\n"
+        "تصویر لوگو را همین‌جا بفرستید. می‌توانید:\n"
+        "• یک <b>عکس</b> بفرستید\n"
+        "• یک <b>استیکر</b> بفرستید (مثلاً لوگوی کانالتان)\n"
+        "• یا فایل <b>PNG</b> با پس‌زمینه‌ی شفاف — بهترین نتیجه را می‌دهد\n\n"
+        "<i>اندازه و شفافیت را بعداً از همان منو تنظیم می‌کنید.</i>\n\n"
+        "انصراف: /cancel"
+    )
+
+
+@router.message(Flow.watermark_logo)
+async def got_wm_logo(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    task_id = int(data.get("task_id", 0))
+    task = await _owned_task(message.from_user.id, task_id)
+    if task is None:
+        await state.clear()
+        await message.answer("این کار پیدا نشد.")
+        return
+
+    file_id = None
+    if message.photo:
+        file_id = message.photo[-1].file_id
+    elif message.sticker and not message.sticker.is_animated and not message.sticker.is_video:
+        file_id = message.sticker.file_id
+    elif message.document and (message.document.mime_type or "").startswith("image/"):
+        file_id = message.document.file_id
+
+    if file_id is None:
+        await message.answer(
+            "⚠️ یک <b>عکس</b>، <b>استیکر ساده</b> یا فایل تصویری بفرستید.\n"
+            "<i>استیکر متحرک و ویدیویی پشتیبانی نمی‌شود.</i>"
+        )
+        return
+
+    notice = await message.answer("⏳ در حال ذخیره‌ی لوگو…")
+    path = await _download_logo(message, file_id, task_id)
+    if path is None:
+        await state.clear()
+        await notice.edit_text("⚠️ دریافت فایل ناموفق بود. دوباره تلاش کنید.")
+        return
+
+    cfg = merged_settings(task.settings)
+    cfg["watermark_logo"] = str(path)
+    cfg["watermark_kind"] = "logo"
+    if not cfg.get("watermark_size") or int(cfg.get("watermark_size", 4)) < 8:
+        cfg["watermark_size"] = 15   # لوگو معمولاً بزرگ‌تر از متن دیده می‌شود
+    await _save_settings(task_id, cfg)
+    await state.clear()
+    await notice.edit_text(
+        "✅ لوگو ذخیره شد و واترمارک روی حالت لوگو رفت.\n\n"
+        "حالا از منوی واترمارک موقعیت، اندازه و شفافیتش را تنظیم کنید."
+    )
+    await _render_message(message, "wm", task_id)
+
+
+async def _download_logo(message: Message, file_id: str, task_id: int):
+    """فایل لوگو را از تلگرام می‌گیرد و کنار دیتابیس ذخیره می‌کند."""
+    logo_dir = get_settings().download_dir / "logos"
+    logo_dir.mkdir(parents=True, exist_ok=True)
+    target = logo_dir / f"task-{task_id}.png"
+    try:
+        info = await message.bot.get_file(file_id)
+        await message.bot.download_file(info.file_path, destination=str(target))
+    except Exception:
+        log.exception("دانلود لوگوی واترمارک ناموفق بود")
+        return None
+    return target
+
+
+@router.callback_query(F.data.startswith("wmlogodel:"))
+async def cb_wm_logo_delete(call: CallbackQuery) -> None:
+    task_id = int(call.data.split(":")[1])
+    task = await _owned_task(call.from_user.id, task_id)
+    if task is None:
+        await call.answer("دسترسی ندارید", show_alert=True)
+        return
+    cfg = merged_settings(task.settings)
+    old = cfg.get("watermark_logo")
+    cfg["watermark_logo"] = ""
+    await _save_settings(task_id, cfg)
+    if old:
+        Path(old).unlink(missing_ok=True)
+    await call.answer("لوگو حذف شد")
     await _render(call, "wm", task_id)
 
 

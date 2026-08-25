@@ -223,7 +223,37 @@ def text_menu(task_id: int, cfg: dict) -> InlineKeyboardMarkup:
 def watermark_menu(task_id: int, cfg: dict) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.row(_flag("واترمارک", bool(cfg.get("watermark_enabled")), f"flag:watermark_enabled:{task_id}"))
-    kb.row(InlineKeyboardButton(text="✏️ متن واترمارک", callback_data=f"ask:watermark_text:{task_id}"))
+
+    # نوع واترمارک: متن یا لوگوی تصویری
+    kind = cfg.get("watermark_kind", "text")
+    kb.row(
+        InlineKeyboardButton(
+            text=("🔘" if kind == "text" else "⚪️") + " ✏️ متن",
+            callback_data=f"wmkind:text:{task_id}",
+        ),
+        InlineKeyboardButton(
+            text=("🔘" if kind == "logo" else "⚪️") + " 🖼 لوگو",
+            callback_data=f"wmkind:logo:{task_id}",
+        ),
+    )
+    if kind == "logo":
+        has_logo = bool(cfg.get("watermark_logo"))
+        kb.row(
+            InlineKeyboardButton(
+                text="🔄 تعویض لوگو" if has_logo else "📎 آپلود لوگو",
+                callback_data=f"wmlogo:{task_id}",
+            )
+        )
+        if has_logo:
+            kb.row(
+                InlineKeyboardButton(text="🗑 حذف لوگو", callback_data=f"wmlogodel:{task_id}")
+            )
+    else:
+        kb.row(
+            InlineKeyboardButton(
+                text="✏️ متن واترمارک", callback_data=f"ask:watermark_text:{task_id}"
+            )
+        )
     row: list[InlineKeyboardButton] = []
     current = cfg.get("watermark_position", "bottom-right")
     for key, label in POSITIONS.items():

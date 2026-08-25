@@ -47,7 +47,9 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
     # --- واترمارک ---
     "watermark_enabled": False,
+    "watermark_kind": "text",   # text | logo
     "watermark_text": "",
+    "watermark_logo": "",       # مسیر فایل لوگوی آپلودشده
     "watermark_position": "bottom-right",   # 5 حالت: 4 گوشه + center
     "watermark_opacity": 60,    # 0..100
     "watermark_size": 4,        # درصدی از عرض تصویر (1..20)

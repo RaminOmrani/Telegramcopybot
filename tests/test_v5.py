@@ -299,7 +299,7 @@ def _stub_watermark(monkeypatch, tmp_path):
 
     monkeypatch.setattr(copier_module, "classify_media", lambda m: "photo")
     monkeypatch.setattr(
-        copier_module, "add_text_watermark", lambda src, *args, **kwargs: str(src)
+        copier_module, "apply_watermark", lambda src, *args, **kwargs: str(src)
     )
 
 
@@ -328,6 +328,61 @@ async def test_watermark_uses_plan_quota_before_credit(tmp_path, monkeypatch):
 
         assert await entitlement.used(1, FEAT_WATERMARK) == 1
         assert await credits.balance(7, CREDIT_WATERMARK) == 5   # دست‌نخورده
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_logo_watermark_without_text_still_consumes_quota(tmp_path, monkeypatch):
+    """واترمارک لوگویی بدون متن هم باید فعال شود و سهمیه بردارد."""
+    from PIL import Image
+
+    logo = tmp_path / "logo.png"
+    Image.new("RGBA", (100, 100), (0, 0, 255, 255)).save(logo)
+    settings = {
+        "watermark_enabled": True,
+        "watermark_kind": "logo",
+        "watermark_logo": str(logo),
+        "watermark_text": "",            # عمداً خالی
+    }
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings=settings)
+    try:
+        from telkap.plans import FEAT_WATERMARK, MONTH
+        from telkap.services import entitlement
+        from telkap.services.copier import Copier
+
+        _stub_watermark(monkeypatch, tmp_path)
+        _use_plan(monkeypatch, MONTH)
+
+        copier = Copier(FakeManager(PhotoClient(tmp_path)))
+        assert await _copy_photo(copier, task_id, 1) is True
+        assert await entitlement.used(1, FEAT_WATERMARK) == 1
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_missing_logo_file_disables_watermark(tmp_path, monkeypatch):
+    """اگر فایل لوگو پاک شده باشد، پست می‌رود ولی سهمیه مصرف نمی‌شود."""
+    settings = {
+        "watermark_enabled": True,
+        "watermark_kind": "logo",
+        "watermark_logo": str(tmp_path / "gone.png"),
+    }
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings=settings)
+    try:
+        from telkap.plans import FEAT_WATERMARK, MONTH
+        from telkap.services import entitlement
+        from telkap.services.copier import Copier
+
+        _stub_watermark(monkeypatch, tmp_path)
+        _use_plan(monkeypatch, MONTH)
+
+        client = PhotoClient(tmp_path)
+        copier = Copier(FakeManager(client))
+        assert await _copy_photo(copier, task_id, 1) is True
+        assert len(client.sent) == 1
+        assert await entitlement.used(1, FEAT_WATERMARK) == 0
     finally:
         await db_module.close_db()
 
