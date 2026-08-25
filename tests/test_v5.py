@@ -401,3 +401,75 @@ def test_force_join_channel_url_prefers_invite_link():
 
     private = ForceJoinChannel(ref="-100123", invite_link="https://t.me/+abcdef")
     assert private.url == "https://t.me/+abcdef"
+
+
+# ------------------------------------------------------------- راهنما
+def test_guide_sections_fit_in_a_telegram_message():
+    """هر بخش راهنما باید در یک پیام تلگرام جا شود (سقف ۴۰۹۶ نویسه)."""
+    from telkap.handlers import guide
+
+    for key, (title, builder) in guide.SECTIONS.items():
+        body = builder()
+        assert body, f"بخش {key} خالی است"
+        assert len(body) < 4000, f"بخش {key} خیلی بلند است: {len(body)}"
+        assert title.strip()
+    assert len(guide._home()) < 4000
+
+
+def test_guide_layout_covers_every_section_exactly_once():
+    from telkap.handlers import guide
+
+    placed = [key for row in guide.LAYOUT for key in row]
+    assert sorted(placed) == sorted(guide.SECTIONS)
+    assert len(placed) == len(set(placed))
+
+
+def test_guide_rows_never_exceed_two_buttons():
+    """بیش از دو دکمه در یک ردیف روی موبایل بریده می‌شود."""
+    from telkap.handlers import guide
+
+    for row in guide.LAYOUT:
+        assert 1 <= len(row) <= 2
+
+
+def test_guide_html_tags_are_balanced():
+    """تلگرام با تگ بازِ بسته‌نشده پیام را رد می‌کند."""
+    import re
+
+    from telkap.handlers import guide
+
+    for key, (_title, builder) in list(guide.SECTIONS.items()) + [
+        ("home", ("", guide._home))
+    ]:
+        body = builder()
+        for tag in ("b", "i", "code"):
+            opens = len(re.findall(rf"<{tag}>", body))
+            closes = len(re.findall(rf"</{tag}>", body))
+            assert opens == closes, f"تگ <{tag}> در بخش {key} متوازن نیست"
+
+
+def test_guide_quotes_live_prices_from_plans():
+    """راهنما باید قیمت‌ها را از plans.py بخواند، نه سفت‌کد شده."""
+    from telkap.handlers import guide
+    from telkap.plans import CUSTOM, MONTH
+
+    plans_text = guide.SECTIONS["plans"][1]()
+    assert MONTH.price_label in plans_text
+    assert CUSTOM.price_label in plans_text
+    assert MONTH.daily_label in plans_text
+
+
+def test_guide_next_button_walks_every_section():
+    """دکمه‌ی «بعدی» باید از بخش اول تا آخر همه را پوشش دهد."""
+    from telkap.handlers import guide
+
+    keys = list(guide.SECTIONS)
+    for key in keys[:-1]:
+        markup = guide._section_keyboard(key).as_markup()
+        targets = [b.callback_data for row in markup.inline_keyboard for b in row]
+        assert "guide:home" in targets
+        assert any(t.startswith("guide:") and t != "guide:home" for t in targets)
+    # بخش آخر فقط دکمه‌ی بازگشت دارد
+    last = guide._section_keyboard(keys[-1]).as_markup()
+    targets = [b.callback_data for row in last.inline_keyboard for b in row]
+    assert targets == ["guide:home"]

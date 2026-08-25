@@ -9,10 +9,10 @@ from sqlalchemy import select
 
 from telkap.db import get_session
 from telkap.handlers.common import get_or_create_user
-from telkap.keyboards import BTN_HELP, BTN_LOGS, main_menu
+from telkap.keyboards import BTN_LOGS, main_menu
 from telkap.models import ActivityLog
 from telkap.services.userbot import manager
-from telkap.texts import CANCELLED, HELP, START, fa_num
+from telkap.texts import CANCELLED, START, fa_num
 
 router = Router(name="start")
 
@@ -24,12 +24,6 @@ async def cmd_start(message: Message, state: FSMContext) -> None:
     await state.clear()
     await get_or_create_user(message.from_user)
     await message.answer(START, reply_markup=main_menu())
-
-
-@router.message(Command("help"))
-@router.message(F.text == BTN_HELP)
-async def cmd_help(message: Message) -> None:
-    await message.answer(HELP, reply_markup=main_menu())
 
 
 @router.message(Command("cancel"))

@@ -11,6 +11,7 @@ from telkap.handlers import (
     clone,
     destinations,
     forward,
+    guide,
     history,
     preview,
     settings,
@@ -22,6 +23,7 @@ from telkap.handlers import (
 def build_router() -> Router:
     root = Router(name="root")
     root.include_router(start.router)
+    root.include_router(guide.router)
     root.include_router(admin.router)
     root.include_router(admin_users.router)
     root.include_router(admin_channels.router)
