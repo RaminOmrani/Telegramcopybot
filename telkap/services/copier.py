@@ -34,8 +34,8 @@ from telethon.tl.types import (
 from telkap.config import get_settings
 from telkap.db import get_session, log_activity
 from telkap.models import DailyStat, Destination, MessageMap, RetryItem, Task, utcnow
-from telkap.plans import CREDIT_WATERMARK, FEAT_WATERMARK
-from telkap.services import cache, credits
+from telkap.plans import FEAT_WATERMARK
+from telkap.services import cache, entitlement
 from telkap.services.filters import MessageFacts, content_hash, should_copy
 from telkap.services.ratelimit import RateLimiter, daily_quota, hourly_quota
 from telkap.services.transform import apply_transforms, drop_custom_emoji, remap_entities
@@ -298,20 +298,18 @@ class Copier:
         if delay > 0:
             await asyncio.sleep(min(delay, 3600))
 
-        # واترمارک یا در پلن هست، یا با اعتبار خریداری‌شده انجام می‌شود
-        allow_watermark = plan.has(FEAT_WATERMARK)
-        charge_watermark = False
+        # واترمارک: اول از سهمیه‌ی روزانه‌ی طرح، بعد از اعتبار خریداری‌شده.
+        # هر تصویر یک واحد می‌برد و آلبوم چند تصویر دارد، پس به ازای هر
+        # مقصد جداگانه برداشت می‌شود.
         wanted_watermark = bool(
             cfg.get("watermark_enabled")
             and cfg.get("watermark_text")
             and not cfg.get("caption_only")
         )
-        # هر تصویر یک واحد اعتبار می‌برد؛ آلبوم چند تصویر دارد
         wm_units = sum(1 for m in messages if classify_media(m) == "photo")
-        if wanted_watermark and not allow_watermark and wm_units:
-            if await credits.balance(user_id, CREDIT_WATERMARK) >= wm_units:
-                allow_watermark = True
-                charge_watermark = True
+        want_wm = wanted_watermark and bool(wm_units)
+        day = today_key()
+        watermark_open = True   # تا وقتی سهمیه و اعتبار تمام نشده
         any_sent = False
 
         for spec in targets:
@@ -323,6 +321,18 @@ class Copier:
                 dest_entities = remap_entities(facts.text, dest_text, src_entities)
             else:
                 dest_cfg, dest_text, dest_entities = cfg, text, entities
+
+            # سهمیه/اعتبار واترمارک پیش از ارسال کنار گذاشته می‌شود و اگر
+            # ارسال شکست بخورد برمی‌گردد
+            grant = None
+            if want_wm and watermark_open:
+                grant = await entitlement.reserve(
+                    user_id, FEAT_WATERMARK, wm_units, plan, day
+                )
+                if grant is None:
+                    watermark_open = False
+                    await self._warn_out_of_watermark(user_id, task_id)
+            allow_watermark = grant is not None
 
             await self.limiter.acquire(str(target))
             try:
@@ -352,6 +362,7 @@ class Copier:
                         entities=plain or None,
                     )
             except ChatWriteForbiddenError:
+                await entitlement.release(user_id, grant, day)
                 # فقط اگر مقصد اصلی مشکل دارد کار را متوقف می‌کنیم
                 if spec is targets[0]:
                     await self._pause_task(task_id, "دسترسی ارسال به کانال مقصد وجود ندارد")
@@ -365,19 +376,19 @@ class Copier:
                 await self._disable_destination(task_id, target)
                 continue
             except FloodWaitError:
+                await entitlement.release(user_id, grant, day)
                 raise
             except Exception as exc:
+                await entitlement.release(user_id, grant, day)
                 log.exception("ارسال به مقصد %s ناموفق بود؛ در صف تلاش مجدد", target)
                 await self._enqueue_retry(
                     task_id, user_id, src_chat_id, src_ids, str(target), str(exc)
                 )
                 continue
 
-            if sent and charge_watermark and allow_watermark:
-                # اعتبار پس از ارسال موفق کم می‌شود، نه قبلش
-                if not await credits.consume(user_id, CREDIT_WATERMARK, wm_units):
-                    allow_watermark = False
-                    await self._warn_out_of_credit(user_id, task_id)
+            if not sent:
+                # چیزی ارسال نشد (مثلاً متن خالی)؛ سهمیه نباید سوخته شود
+                await entitlement.release(user_id, grant, day)
 
             if sent:
                 any_sent = True
@@ -791,9 +802,9 @@ class Copier:
 
     async def _daily_quota_ok(self, user_id: int, task_id: int, plan) -> bool:
         """سقف روزانه‌ی پلن کاربر را بررسی و یکی از آن کم می‌کند."""
-        limit = int(getattr(plan, "daily_messages", 0) or 0)
-        if limit <= 0:
-            return True  # پلن نامحدود
+        limit = int(getattr(plan, "daily_messages", 0))
+        if limit < 0:
+            return True  # طرح نامحدود
 
         day = today_key()
         if day != self._quota_day:
@@ -831,24 +842,26 @@ class Copier:
                 )
         return False
 
-    async def _warn_out_of_credit(self, user_id: int, task_id: int) -> None:
-        """یک بار به کاربر می‌گوید اعتبار واترمارکش تمام شده است."""
+    async def _warn_out_of_watermark(self, user_id: int, task_id: int) -> None:
+        """یک بار به کاربر می‌گوید سهمیه و اعتبار واترمارکش تمام شده است."""
         if user_id in self._credit_warned:
             return
         self._credit_warned.add(user_id)
         await log_activity(
             user_id=user_id,
             task_id=task_id,
-            event="credit_empty",
-            detail="اعتبار واترمارک تمام شد",
+            event="watermark_empty",
+            detail="سهمیه و اعتبار واترمارک تمام شد",
             level="warning",
         )
         if self.notifier:
             await self.notifier(
                 user_id,
-                "💧 اعتبار واترمارک شما تمام شد و پست‌ها بدون واترمارک ارسال می‌شوند.\n\n"
-                "از «💳 خرید اشتراک» → «🎫 خرید اعتبار» می‌توانید اعتبار تازه بگیرید، "
-                "یا پلنی بگیرید که واترمارک در خودش هست.",
+                "💧 سهمیه‌ی واترمارک امروز شما تمام شد و پست‌ها بدون واترمارک "
+                "ارسال می‌شوند.\n\n"
+                "سهمیه از نیمه‌شب دوباره پر می‌شود. اگر همین حالا لازم دارید، "
+                "از «💳 خرید اشتراک» → «🎫 خرید اعتبار» اعتبار بگیرید یا طرح "
+                "بالاتری تهیه کنید.",
             )
 
     async def _warn_no_premium(self, user_id: int, task_id: int) -> None:

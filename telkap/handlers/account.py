@@ -26,8 +26,9 @@ from telkap.plans import (
     FEAT_PRIVATE,
     FEAT_VIP,
     FEAT_WATERMARK,
+    UNLIMITED,
 )
-from telkap.services import credits
+from telkap.services import credits, entitlement
 from telkap.services.copier import today_key
 from telkap.services.subscription import active_plan_for, remaining_days
 from telkap.services.userbot import LoginError, manager
@@ -64,18 +65,25 @@ async def _account_text(user: User) -> str:
             if plan.daily_messages
             else f"{fa_num(used)} (نامحدود)"
         )
+        day = today_key()
+        wm_used = await entitlement.used_today(user.id, FEAT_WATERMARK, day)
+        hist_used = await entitlement.used_today(user.id, FEAT_HISTORY, day)
         lines += [
             f"💎 طرح: <b>{plan.title}</b>",
             f"📅 باقی‌مانده: <b>{fa_num(days)} روز</b>",
-            f"📨 پیام امروز: {quota}",
             f"📋 سقف کار کپی: {fa_num(plan.max_tasks)}",
             f"📤 سقف مقصد هر کار: {fa_num(plan.max_destinations)}",
             "",
+            "<b>سهمیه‌های امروز</b>",
+            f"  📨 پیام: {quota}",
+            f"  💧 واترمارک: {_usage(wm_used, plan.watermark_daily)}",
+            f"  🕓 پیام گذشته: {_usage(hist_used, plan.history_daily)}",
+            "",
             "<b>امکانات طرح شما</b>",
             f"  {_mark(plan.has(FEAT_PRIVATE))} کپی از کانال خصوصی",
-            f"  {_mark(plan.has(FEAT_WATERMARK))} واترمارک تصاویر",
-            f"  {_mark(plan.has(FEAT_HISTORY))} کپی پیام‌های گذشته",
             f"  {_mark(plan.has(FEAT_VIP))} پشتیبانی ویژه",
+            "",
+            "<i>سهمیه‌ها هر شب نیمه‌شب دوباره پر می‌شوند.</i>",
         ]
     else:
         lines.append("💎 طرح: ⛔️ اشتراک فعالی ندارید")
@@ -94,6 +102,15 @@ async def _account_text(user: User) -> str:
 
 def _mark(flag: bool) -> str:
     return "✅" if flag else "➖"
+
+
+def _usage(used: int, limit: int) -> str:
+    """مصرف امروز از سهمیه، به شکل «۳ از ۲۰»."""
+    if limit == UNLIMITED:
+        return f"{fa_num(used)} (نامحدود)"
+    if limit == 0:
+        return "در طرح شما نیست"
+    return f"{fa_num(used)} از {fa_num(limit)}"
 
 
 async def today_usage(user_id: int) -> int:

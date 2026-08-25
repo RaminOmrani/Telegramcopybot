@@ -25,10 +25,8 @@ from telkap.keyboards import (
 from telkap.models import PaymentRequest
 from telkap.plans import (
     CREDIT_KINDS,
-    FEAT_HISTORY,
     FEAT_PRIVATE,
     FEAT_VIP,
-    FEAT_WATERMARK,
     POPULAR_CODE,
     PURCHASABLE,
     WATERMARK_UNIT_TOMAN,
@@ -60,9 +58,9 @@ def _plans_text() -> str:
             lines.append(f"   ✓ {perk}")
     lines.append(f"\n{RULE}")
     lines.append(
-        "🎫 <b>اعتبار جداگانه</b> — اگر فقط گاهی به واترمارک یا کپی پیام‌های "
-        f"گذشته نیاز دارید، به‌جای پلن بالاتر می‌توانید واحدی بخرید "
-        f"(هر واحد {toman(WATERMARK_UNIT_TOMAN)})."
+        "🎫 <b>اعتبار جداگانه</b> — سهمیه‌ی روزانه‌ی واترمارک و پیام‌های گذشته "
+        "هر شب پر می‌شود. اگر بیشتر لازم داشتید، به‌جای طرح بالاتر می‌توانید "
+        f"واحدی بخرید (هر واحد {toman(WATERMARK_UNIT_TOMAN)}، بدون انقضا)."
     )
     lines.append("\nبرای خرید، یکی از گزینه‌های زیر را بزنید 👇")
     return "\n".join(lines)
@@ -79,9 +77,9 @@ def _compare_text() -> str:
         ("📨 پیام روزانه", lambda p: p.daily_label),
         ("📋 کار کپی", lambda p: fa_num(p.max_tasks)),
         ("📤 مقصد هر کار", lambda p: fa_num(p.max_destinations)),
+        ("💧 واترمارک روزانه", lambda p: p.watermark_label),
+        ("🕓 پیام گذشته روزانه", lambda p: p.history_label),
         ("🔒 کانال خصوصی", lambda p: mark(p.has(FEAT_PRIVATE))),
-        ("💧 واترمارک", lambda p: mark(p.has(FEAT_WATERMARK))),
-        ("🕓 پیام‌های گذشته", lambda p: mark(p.has(FEAT_HISTORY))),
         ("👑 پشتیبانی ویژه", lambda p: mark(p.has(FEAT_VIP))),
     ]
 
@@ -93,8 +91,9 @@ def _compare_text() -> str:
             blocks.append(f"   {label}: {getter(plan)}")
     blocks.append(f"\n{RULE}")
     blocks.append(
-        "<i>واترمارک و کپی پیام‌های گذشته در طرح‌هایی که ➖ دارند، با خرید "
-        "اعتبار واحدی هم در دسترس است.</i>"
+        "<i>سهمیه‌ها هر شبانه‌روز از نو پر می‌شوند. اگر سهمیه‌ی روزتان تمام "
+        "شد یا طرحتان آن را ندارد، می‌توانید اعتبار واحدی بخرید — اعتبار "
+        "انقضا و سقف روزانه ندارد.</i>"
     )
     return "\n".join(blocks)
 

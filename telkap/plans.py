@@ -35,6 +35,25 @@ CREDIT_KINDS: dict[str, tuple[str, str, int]] = {
 CREDIT_PACKS: tuple[int, ...] = (50, 100, 500, 1000)
 
 
+# مقدار سهمیه‌ها: UNLIMITED یعنی بی‌نهایت، ۰ یعنی اصلاً در طرح نیست.
+UNLIMITED = -1
+
+_FA_DIGITS = str.maketrans("0123456789", "۰۱۲۳۴۵۶۷۸۹")
+
+
+def _fa(value: int) -> str:
+    """عدد با ارقام فارسی و جداکننده‌ی هزارگان."""
+    return f"{value:,}".replace(",", "،").translate(_FA_DIGITS)
+
+
+def quota_label(value: int) -> str:
+    if value < 0:
+        return "نامحدود"
+    if value == 0:
+        return "ندارد"
+    return _fa(value)
+
+
 @dataclass(frozen=True)
 class Plan:
     code: str
@@ -44,22 +63,38 @@ class Plan:
     tagline: str
     max_tasks: int              # چند کار کپی همزمان
     max_destinations: int       # چند کانال مقصد برای هر کار (شامل مقصد اصلی)
-    daily_messages: int         # سقف پیام در شبانه‌روز (۰ = نامحدود)
+    daily_messages: int         # سقف پیام در شبانه‌روز
+    watermark_daily: int        # چند تصویر در روز رایگان واترمارک می‌خورد
+    history_daily: int          # چند پیام قدیمی در روز رایگان کپی می‌شود
     features: frozenset[str]
     perks: tuple[str, ...] = field(default_factory=tuple)
 
     def has(self, feature: str) -> bool:
         return feature in self.features
 
+    def quota(self, feature: str) -> int:
+        """سهمیه‌ی روزانه‌ی یک قابلیت مصرفی."""
+        if feature == FEAT_WATERMARK:
+            return self.watermark_daily
+        if feature == FEAT_HISTORY:
+            return self.history_daily
+        return UNLIMITED
+
     @property
     def price_label(self) -> str:
-        return f"{self.price_toman:,} تومان".replace(",", "،")
+        return f"{_fa(self.price_toman)} تومان"
 
     @property
     def daily_label(self) -> str:
-        if self.daily_messages <= 0:
-            return "نامحدود"
-        return f"{self.daily_messages:,}".replace(",", "،")
+        return quota_label(self.daily_messages)
+
+    @property
+    def watermark_label(self) -> str:
+        return quota_label(self.watermark_daily)
+
+    @property
+    def history_label(self) -> str:
+        return quota_label(self.history_daily)
 
     @property
     def extra_destinations(self) -> int:
@@ -76,6 +111,8 @@ TRIAL = Plan(
     max_tasks=1,
     max_destinations=1,
     daily_messages=50,
+    watermark_daily=0,
+    history_daily=0,
     features=frozenset({FEAT_PUBLIC}),
     perks=(
         "۱ کار کپی فعال",
@@ -94,13 +131,15 @@ WEEK = Plan(
     max_tasks=3,
     max_destinations=3,
     daily_messages=500,
-    features=frozenset({FEAT_PUBLIC}),
+    watermark_daily=10,
+    history_daily=0,
+    features=frozenset({FEAT_PUBLIC, FEAT_WATERMARK}),
     perks=(
         "۳ کار کپی فعال",
         "تا ۳ کانال مقصد برای هر کار",
         "۵۰۰ پیام در روز",
+        "۱۰ واترمارک در روز",
         "کپی از کانال‌های عمومی",
-        "فیلتر، جایگزینی کلمات، هدر و فوتر",
     ),
 )
 
@@ -109,17 +148,20 @@ TWO_WEEK = Plan(
     title="اشتراک ۱۴ روزه",
     days=14,
     price_toman=229_000,
-    tagline="پلن محبوب، با کانال خصوصی و واترمارک",
+    tagline="پلن محبوب، با کانال خصوصی و پیام‌های گذشته",
     max_tasks=6,
     max_destinations=5,
     daily_messages=1_500,
-    features=frozenset({FEAT_PUBLIC, FEAT_PRIVATE, FEAT_WATERMARK}),
+    watermark_daily=20,
+    history_daily=50,
+    features=frozenset({FEAT_PUBLIC, FEAT_PRIVATE, FEAT_WATERMARK, FEAT_HISTORY}),
     perks=(
         "۶ کار کپی فعال",
         "تا ۵ کانال مقصد برای هر کار",
         "۱٬۵۰۰ پیام در روز",
+        "۲۰ واترمارک در روز",
+        "۵۰ پیام گذشته در روز",
         "کپی از کانال‌های عمومی و خصوصی",
-        "واترمارک تصاویر (بدون هزینه‌ی جداگانه)",
     ),
 )
 
@@ -128,18 +170,20 @@ MONTH = Plan(
     title="اشتراک ۳۰ روزه",
     days=30,
     price_toman=429_000,
-    tagline="پلن حرفه‌ای با همه‌ی امکانات",
+    tagline="پلن حرفه‌ای با سهمیه‌های بالا",
     max_tasks=20,
     max_destinations=10,
     daily_messages=4_000,
+    watermark_daily=50,
+    history_daily=100,
     features=frozenset({FEAT_PUBLIC, FEAT_PRIVATE, FEAT_WATERMARK, FEAT_HISTORY, FEAT_VIP}),
     perks=(
         "۲۰ کار کپی فعال",
         "تا ۱۰ کانال مقصد برای هر کار",
         "۴٬۰۰۰ پیام در روز",
+        "۵۰ واترمارک در روز",
+        "۱۰۰ پیام گذشته در روز",
         "کپی از کانال‌های عمومی و خصوصی",
-        "واترمارک تصاویر",
-        "کپی پیام‌های گذشته",
         "پشتیبانی ویژه (VIP)",
     ),
 )
@@ -149,18 +193,20 @@ CUSTOM = Plan(
     title="طرح اختصاصی",
     days=30,
     price_toman=890_000,
-    tagline="بدون سقف پیام، همه‌ی امکانات باز",
+    tagline="بدون هیچ سقفی، همه‌ی امکانات باز",
     max_tasks=100,
     max_destinations=20,
-    daily_messages=0,  # نامحدود
+    daily_messages=UNLIMITED,
+    watermark_daily=UNLIMITED,
+    history_daily=UNLIMITED,
     features=frozenset({FEAT_PUBLIC, FEAT_PRIVATE, FEAT_WATERMARK, FEAT_HISTORY, FEAT_VIP}),
     perks=(
         "🚀 پیام نامحدود در روز",
+        "💧 واترمارک نامحدود",
+        "🕓 پیام‌های گذشته نامحدود",
         "۱۰۰ کار کپی فعال",
         "تا ۲۰ کانال مقصد برای هر کار",
         "کپی از کانال‌های عمومی و خصوصی",
-        "واترمارک نامحدود",
-        "کپی پیام‌های گذشته بدون هزینه‌ی اضافه",
         "پشتیبانی ویژه (VIP)",
     ),
 )
@@ -183,4 +229,4 @@ def credit_price(kind: str, quantity: int) -> int:
 
 
 def toman(amount: int) -> str:
-    return f"{amount:,} تومان".replace(",", "،")
+    return f"{_fa(amount)} تومان"

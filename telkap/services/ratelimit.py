@@ -84,15 +84,18 @@ class DailyQuota:
         self._counts.setdefault(user_id, max(0, used))
 
     def remaining(self, user_id: int, day: str, limit: int) -> int:
-        """چند پیام دیگر مجاز است؛ برای نامحدود عدد بزرگ برمی‌گرداند."""
-        if limit <= 0:
+        """چند پیام دیگر مجاز است؛ برای نامحدود (عدد منفی) عدد بزرگ."""
+        if limit < 0:
             return 1 << 30
         self._roll(day)
         return max(0, limit - self._counts.get(user_id, 0))
 
     def allow(self, user_id: int, day: str, limit: int) -> bool:
-        """اگر جا باشد یکی به شمارنده اضافه می‌کند و True می‌دهد."""
-        if limit <= 0:
+        """اگر جا باشد یکی به شمارنده اضافه می‌کند و True می‌دهد.
+
+        عدد منفی یعنی نامحدود؛ صفر یعنی هیچ پیامی مجاز نیست.
+        """
+        if limit < 0:
             return True  # نامحدود
         self._roll(day)
         used = self._counts.get(user_id, 0)

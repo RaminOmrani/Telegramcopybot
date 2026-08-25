@@ -10,8 +10,15 @@ from telkap.db import get_session
 from telkap.handlers.common import Flow, parse_int
 from telkap.keyboards import credit_offer_menu, main_menu
 from telkap.models import Task
-from telkap.plans import CREDIT_HISTORY, FEAT_HISTORY, HISTORY_UNIT_TOMAN, toman
-from telkap.services import credits
+from telkap.plans import (
+    CREDIT_HISTORY,
+    FEAT_HISTORY,
+    HISTORY_UNIT_TOMAN,
+    UNLIMITED,
+    toman,
+)
+from telkap.services import credits, entitlement
+from telkap.services.copier import today_key
 from telkap.services.subscription import active_plan_for
 from telkap.texts import ASK_HISTORY_COUNT, INVALID_NUMBER, fa_num
 
@@ -40,17 +47,23 @@ async def cb_start(call: CallbackQuery, state: FSMContext) -> None:
         await call.answer("اشتراک فعالی ندارید.", show_alert=True)
         return
 
-    included = plan.has(FEAT_HISTORY)
+    day = today_key()
+    quota = await entitlement.quota_left(call.from_user.id, FEAT_HISTORY, plan, day)
     available = await credits.balance(call.from_user.id, CREDIT_HISTORY)
-    if not included and available <= 0:
+    if quota + available <= 0:
         await call.answer()
         await call.message.answer(
             "🕓 <b>کپی پیام‌های گذشته</b>\n\n"
-            f"این قابلیت در پلن «{plan.title}» شما نیست.\n\n"
-            "دو راه دارید:\n"
-            "۱) پلن ۳۰ روزه یا اختصاصی بگیرید (بدون هزینه‌ی اضافه)\n"
-            f"۲) اعتبار بخرید — هر پیام {toman(HISTORY_UNIT_TOMAN)}؛ "
-            "خودتان تعداد را انتخاب می‌کنید.",
+            + (
+                f"سهمیه‌ی امروز طرح «{plan.title}» شما تمام شده است.\n"
+                "سهمیه از نیمه‌شب دوباره پر می‌شود.\n\n"
+                if plan.history_daily > 0
+                else f"این قابلیت در طرح «{plan.title}» شما نیست.\n\n"
+            )
+            + "دو راه دارید:\n"
+            "۱) طرح بالاتری بگیرید (سهمیه‌ی روزانه بیشتر می‌شود)\n"
+            f"۲) اعتبار بخرید — هر پیام {toman(HISTORY_UNIT_TOMAN)}، "
+            "بدون انقضا و بدون سقف روزانه.",
             reply_markup=credit_offer_menu(CREDIT_HISTORY),
         )
         return
@@ -62,7 +75,12 @@ async def cb_start(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
     await state.set_state(Flow.history_count)
     await state.update_data(task_id=task_id)
-    await call.message.answer(ASK_HISTORY_COUNT)
+    budget = (
+        "نامحدود"
+        if plan.history_daily == UNLIMITED
+        else f"{fa_num(quota)} از سهمیه‌ی امروز + {fa_num(available)} اعتبار"
+    )
+    await call.message.answer(f"{ASK_HISTORY_COUNT}\n\n🎫 در دسترس شما: <b>{budget}</b>")
 
 
 @router.message(Flow.history_count)
@@ -89,42 +107,46 @@ async def got_count(message: Message, state: FSMContext) -> None:
         await message.answer("⚠️ این قابلیت در حال حاضر در دسترس نیست.")
         return
 
-    # اگر پلن این قابلیت را ندارد، به‌اندازه‌ی همین تعداد اعتبار کم می‌شود
+    # اول از سهمیه‌ی روزانه‌ی طرح، بعد از اعتبار خریداری‌شده
     plan = await active_plan_for(message.from_user.id)
     if plan is None:
         await message.answer("اشتراک فعالی ندارید.")
         return
-    charged = 0
-    if not plan.has(FEAT_HISTORY):
-        if not await credits.consume(message.from_user.id, CREDIT_HISTORY, count):
-            available = await credits.balance(message.from_user.id, CREDIT_HISTORY)
-            await message.answer(
-                f"⚠️ اعتبار شما {fa_num(available)} پیام است و برای "
-                f"{fa_num(count)} پیام کافی نیست.\n\n"
-                f"هر پیام {toman(HISTORY_UNIT_TOMAN)}.",
-                reply_markup=credit_offer_menu(CREDIT_HISTORY),
-            )
-            return
-        charged = count
+
+    day = today_key()
+    grant = await entitlement.reserve(
+        message.from_user.id, FEAT_HISTORY, count, plan, day
+    )
+    if grant is None:
+        quota = await entitlement.quota_left(
+            message.from_user.id, FEAT_HISTORY, plan, day
+        )
+        available = await credits.balance(message.from_user.id, CREDIT_HISTORY)
+        await message.answer(
+            f"⚠️ برای {fa_num(count)} پیام کافی نیست.\n\n"
+            f"سهمیه‌ی امروز: {fa_num(quota)} پیام\n"
+            f"اعتبار شما: {fa_num(available)} پیام\n"
+            f"مجموع در دسترس: <b>{fa_num(quota + available)}</b>\n\n"
+            f"یا عدد کمتری بفرستید، یا اعتبار بخرید (هر پیام "
+            f"{toman(HISTORY_UNIT_TOMAN)}).",
+            reply_markup=credit_offer_menu(CREDIT_HISTORY),
+        )
+        return
 
     try:
         await history_copier.start(message.from_user.id, task_id, count)
     except RuntimeError as exc:
-        if charged:
-            # کار شروع نشد، پس اعتبار برمی‌گردد
-            await credits.add(
-                message.from_user.id, CREDIT_HISTORY, charged, note="بازگشت؛ کار شروع نشد"
-            )
+        # کار شروع نشد، پس سهمیه و اعتبار برمی‌گردند
+        await entitlement.release(message.from_user.id, grant, day)
         await message.answer(f"⚠️ {exc}")
         return
 
     note = ""
-    if charged:
-        left = await credits.balance(message.from_user.id, CREDIT_HISTORY)
-        note = (
-            f"\n\n🎫 {fa_num(charged)} واحد از اعتبار شما کم شد "
-            f"(مانده: {fa_num(left)} پیام)."
-        )
+    if not grant.unlimited:
+        note = f"\n\n🎫 برداشت: {fa_num(grant.note)}"
+        if grant.from_credits:
+            left = await credits.balance(message.from_user.id, CREDIT_HISTORY)
+            note += f"\nمانده‌ی اعتبار: {fa_num(left)} پیام"
     await message.answer(
         f"🕓 شروع شد: {fa_num(count)} پیام آخر «{task.source_title or task.source_ref}» "
         f"با تنظیمات همین کار در کانال مقصد کپی می‌شود.{note}\n\n"

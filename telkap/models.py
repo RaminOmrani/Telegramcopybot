@@ -293,6 +293,23 @@ class DailyStat(Base):
     failed: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class DailyUsage(Base):
+    """مصرف روزانه‌ی سهمیه‌های طرح، به ازای هر کاربر.
+
+    در دیتابیس نگه داشته می‌شود نه در حافظه، تا با ری‌استارت ربات سهمیه‌ی
+    کسی صفر نشود.
+    """
+
+    __tablename__ = "daily_usage"
+    __table_args__ = (UniqueConstraint("user_id", "day", "kind", name="uq_daily_usage"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    day: Mapped[str] = mapped_column(String(10))   # YYYY-MM-DD به وقت محلی
+    kind: Mapped[str] = mapped_column(String(16))  # watermark | history
+    used: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class ReminderState(Base):
     """جلوگیری از ارسال تکراری یادآوری انقضای اشتراک."""
 

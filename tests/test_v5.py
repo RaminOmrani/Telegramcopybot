@@ -8,14 +8,19 @@ from tests.test_copier import FakeClient, FakeManager, FakeMessage, _setup
 
 # ------------------------------------------------------------- طرح‌ها
 def test_every_plan_is_self_consistent():
-    from telkap.plans import PLANS, PURCHASABLE
+    from telkap.plans import FEAT_HISTORY, FEAT_WATERMARK, PLANS, PURCHASABLE, UNLIMITED
 
     for plan in PLANS.values():
         assert plan.days > 0
         assert plan.max_tasks >= 1
         assert plan.max_destinations >= 1
-        assert plan.daily_messages >= 0        # ۰ یعنی نامحدود
+        assert plan.daily_messages > 0 or plan.daily_messages == UNLIMITED
         assert plan.extra_destinations == plan.max_destinations - 1
+        # داشتن قابلیت و داشتن سهمیه باید با هم بخوانند
+        for feature in (FEAT_WATERMARK, FEAT_HISTORY):
+            assert plan.has(feature) == (plan.quota(feature) != 0), (
+                f"{plan.code}: {feature}"
+            )
     # طرح‌های قابل خرید باید قیمت داشته باشند و آزمایشی نباشند
     for plan in PURCHASABLE:
         assert plan.price_toman > 0
@@ -23,13 +28,26 @@ def test_every_plan_is_self_consistent():
 
 
 def test_plan_prices_and_quota_match_the_price_list():
-    from telkap.plans import CUSTOM, MONTH, TWO_WEEK, WEEK
+    from telkap.plans import CUSTOM, MONTH, TWO_WEEK, UNLIMITED, WEEK
 
     assert (WEEK.price_toman, TWO_WEEK.price_toman) == (129_000, 229_000)
     assert (MONTH.price_toman, CUSTOM.price_toman) == (429_000, 890_000)
     assert MONTH.daily_messages == 4_000
-    assert CUSTOM.daily_messages == 0          # نامحدود
+    assert CUSTOM.daily_messages == UNLIMITED
     assert CUSTOM.daily_label == "نامحدود"
+
+
+def test_watermark_and_history_quotas_match_the_price_list():
+    from telkap.plans import CUSTOM, MONTH, TRIAL, TWO_WEEK, UNLIMITED, WEEK
+
+    assert [p.watermark_daily for p in (WEEK, TWO_WEEK, MONTH)] == [10, 20, 50]
+    assert [p.history_daily for p in (TWO_WEEK, MONTH)] == [50, 100]
+    assert WEEK.history_daily == 0              # در این طرح نیست
+    assert (TRIAL.watermark_daily, TRIAL.history_daily) == (0, 0)
+    assert CUSTOM.watermark_daily == UNLIMITED
+    assert CUSTOM.history_daily == UNLIMITED
+    assert TRIAL.watermark_label == "ندارد"
+    assert MONTH.history_label == "۱۰۰"
 
 
 def test_higher_plans_are_never_worse():
@@ -41,6 +59,8 @@ def test_higher_plans_are_never_worse():
         assert higher.max_tasks >= lower.max_tasks
         assert higher.max_destinations >= lower.max_destinations
         assert higher.daily_messages >= lower.daily_messages
+        assert higher.watermark_daily >= lower.watermark_daily
+        assert higher.history_daily >= lower.history_daily
         assert lower.features <= higher.features
 
 
@@ -97,6 +117,7 @@ async def test_unlimited_plan_has_no_daily_ceiling(tmp_path, monkeypatch):
     try:
         from dataclasses import replace
 
+        from telkap.plans import UNLIMITED
         from telkap.services import cache
         from telkap.services.copier import Copier
         from telkap.services.ratelimit import daily_quota
@@ -104,7 +125,7 @@ async def test_unlimited_plan_has_no_daily_ceiling(tmp_path, monkeypatch):
         daily_quota.forget(7)
         plan = await cache.get_plan(7)
         monkeypatch.setattr(
-            cache, "get_plan", lambda uid: _async(replace(plan, daily_messages=0))
+            cache, "get_plan", lambda uid: _async(replace(plan, daily_messages=UNLIMITED))
         )
 
         client = FakeClient()
@@ -242,89 +263,235 @@ def _stub_watermark(monkeypatch, tmp_path):
     )
 
 
-@pytest.mark.asyncio
-async def test_watermark_credit_not_charged_when_plan_includes_it(tmp_path, monkeypatch):
-    """پلن ۳۰ روزه واترمارک دارد، پس اعتبار نباید مصرف شود."""
-    db_module, task_id = await _setup(
-        tmp_path,
-        monkeypatch,
-        settings={"watermark_enabled": True, "watermark_text": "@me"},
+WM_SETTINGS = {"watermark_enabled": True, "watermark_text": "@me"}
+
+
+def _use_plan(monkeypatch, plan, **overrides):
+    """پلن کاربر را برای این تست عوض می‌کند."""
+    from dataclasses import replace
+
+    from telkap.services import cache
+
+    monkeypatch.setattr(
+        cache, "get_plan", lambda uid: _async(replace(plan, **overrides))
     )
+
+
+async def _copy_photo(copier, task_id, msg_id):
+    # متن هر پست متفاوت است تا فیلتر «پست تکراری» جلویش را نگیرد
+    return await copier.process(
+        7, task_id, [FakeMessage(id=msg_id, message=f"عکس {msg_id}", media=object())]
+    )
+
+
+@pytest.mark.asyncio
+async def test_watermark_uses_plan_quota_before_credit(tmp_path, monkeypatch):
+    """سهمیه‌ی رایگان طرح اول مصرف می‌شود، اعتبار دست‌نخورده می‌ماند."""
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings=WM_SETTINGS)
     try:
-        from telkap.plans import CREDIT_WATERMARK
+        from telkap.plans import CREDIT_WATERMARK, FEAT_WATERMARK, WEEK
+        from telkap.services import credits, entitlement
+        from telkap.services.copier import Copier, today_key
+
+        _stub_watermark(monkeypatch, tmp_path)
+        _use_plan(monkeypatch, WEEK)          # سهمیه‌ی ۱۰ تایی روزانه
+        await credits.add(7, CREDIT_WATERMARK, 5)
+
+        copier = Copier(FakeManager(PhotoClient(tmp_path)))
+        assert await _copy_photo(copier, task_id, 1) is True
+
+        day = today_key()
+        assert await entitlement.used_today(7, FEAT_WATERMARK, day) == 1
+        assert await credits.balance(7, CREDIT_WATERMARK) == 5   # دست‌نخورده
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_watermark_falls_back_to_credit_when_quota_is_gone(tmp_path, monkeypatch):
+    """با تمام شدن سهمیه‌ی روزانه، از اعتبار خریداری‌شده برداشته می‌شود."""
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings=WM_SETTINGS)
+    try:
+        from telkap.plans import CREDIT_WATERMARK, FEAT_WATERMARK, WEEK
+        from telkap.services import credits, entitlement
+        from telkap.services.copier import Copier, today_key
+
+        _stub_watermark(monkeypatch, tmp_path)
+        _use_plan(monkeypatch, WEEK, watermark_daily=1)   # فقط یک سهمیه
+        await credits.add(7, CREDIT_WATERMARK, 5)
+
+        copier = Copier(FakeManager(PhotoClient(tmp_path)))
+        assert await _copy_photo(copier, task_id, 1) is True
+        assert await _copy_photo(copier, task_id, 2) is True
+
+        day = today_key()
+        assert await entitlement.used_today(7, FEAT_WATERMARK, day) == 1
+        assert await credits.balance(7, CREDIT_WATERMARK) == 4   # دومی از اعتبار
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_watermark_stops_when_quota_and_credit_run_out(tmp_path, monkeypatch):
+    """پست‌ها می‌روند ولی بدون واترمارک، و کاربر یک بار خبردار می‌شود."""
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings=WM_SETTINGS)
+    try:
+        from telkap.plans import CREDIT_WATERMARK, WEEK
         from telkap.services import credits
         from telkap.services.copier import Copier
 
         _stub_watermark(monkeypatch, tmp_path)
-        await credits.add(7, CREDIT_WATERMARK, 10)
+        _use_plan(monkeypatch, WEEK, watermark_daily=1)
+
+        warnings: list[tuple[int, str]] = []
+
+        async def notifier(user_id, text):
+            warnings.append((user_id, text))
 
         client = PhotoClient(tmp_path)
-        copier = Copier(FakeManager(client))
-        msg = FakeMessage(id=1, message="عکس", media=object())
-        assert await copier.process(7, task_id, [msg]) is True
-        assert await credits.balance(7, CREDIT_WATERMARK) == 10
+        copier = Copier(FakeManager(client), notifier=notifier)
+        assert await _copy_photo(copier, task_id, 1) is True
+        assert await _copy_photo(copier, task_id, 2) is True   # ارسال شد، بدون واترمارک
+
+        assert len(client.sent) == 2
+        assert await credits.balance(7, CREDIT_WATERMARK) == 0  # منفی نمی‌شود
+        assert warnings and "واترمارک" in warnings[0][1]
     finally:
         await db_module.close_db()
 
 
 @pytest.mark.asyncio
-async def test_watermark_credit_is_charged_when_plan_lacks_it(tmp_path, monkeypatch):
-    """پلن ۷ روزه واترمارک ندارد؛ باید از اعتبار خریداری‌شده کم شود."""
-    db_module, task_id = await _setup(
-        tmp_path,
-        monkeypatch,
-        settings={"watermark_enabled": True, "watermark_text": "@me"},
-    )
+async def test_unlimited_plan_never_touches_quota_or_credit(tmp_path, monkeypatch):
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings=WM_SETTINGS)
     try:
-        from dataclasses import replace
-
-        from telkap.plans import CREDIT_WATERMARK, WEEK
-        from telkap.services import cache, credits
-        from telkap.services.copier import Copier
+        from telkap.plans import CREDIT_WATERMARK, CUSTOM, FEAT_WATERMARK
+        from telkap.services import credits, entitlement
+        from telkap.services.copier import Copier, today_key
 
         _stub_watermark(monkeypatch, tmp_path)
-        # پلن کاربر را به هفتگی (بدون واترمارک) عوض می‌کنیم
-        monkeypatch.setattr(
-            cache, "get_plan", lambda uid: _async(replace(WEEK, daily_messages=0))
-        )
+        _use_plan(monkeypatch, CUSTOM)
         await credits.add(7, CREDIT_WATERMARK, 3)
 
-        client = PhotoClient(tmp_path)
-        copier = Copier(FakeManager(client))
-        assert await copier.process(
-            7, task_id, [FakeMessage(id=1, message="عکس", media=object())]
-        ) is True
-        assert await credits.balance(7, CREDIT_WATERMARK) == 2
+        copier = Copier(FakeManager(PhotoClient(tmp_path)))
+        for index in range(4):
+            assert await _copy_photo(copier, task_id, index + 1) is True
+
+        day = today_key()
+        assert await entitlement.used_today(7, FEAT_WATERMARK, day) == 0
+        assert await credits.balance(7, CREDIT_WATERMARK) == 3
+    finally:
+        await db_module.close_db()
+
+
+# ------------------------------------------------- سهمیه + اعتبار با هم
+@pytest.mark.asyncio
+async def test_reserve_splits_between_quota_and_credit(tmp_path, monkeypatch):
+    db_module, _task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.plans import CREDIT_HISTORY, FEAT_HISTORY, TWO_WEEK
+        from telkap.services import credits, entitlement
+
+        await credits.add(7, CREDIT_HISTORY, 30)
+        day = "2026-01-01"
+
+        # سهمیه ۵۰ است؛ درخواست ۷۰ یعنی ۵۰ از سهمیه و ۲۰ از اعتبار
+        grant = await entitlement.reserve(7, FEAT_HISTORY, 70, TWO_WEEK, day)
+        assert grant is not None
+        assert (grant.from_quota, grant.from_credits) == (50, 20)
+        assert grant.total == 70
+        assert await credits.balance(7, CREDIT_HISTORY) == 10
+        assert await entitlement.used_today(7, FEAT_HISTORY, day) == 50
     finally:
         await db_module.close_db()
 
 
 @pytest.mark.asyncio
-async def test_no_watermark_without_plan_or_credit(tmp_path, monkeypatch):
-    """نه پلن دارد نه اعتبار: پست می‌رود ولی بدون واترمارک، و اعتبار منفی نمی‌شود."""
-    db_module, task_id = await _setup(
-        tmp_path,
-        monkeypatch,
-        settings={"watermark_enabled": True, "watermark_text": "@me"},
-    )
+async def test_reserve_takes_nothing_when_total_is_short(tmp_path, monkeypatch):
+    """اگر مجموع سهمیه و اعتبار کم باشد، هیچ‌کدام نباید کم شوند."""
+    db_module, _task_id = await _setup(tmp_path, monkeypatch, settings={})
     try:
-        from dataclasses import replace
+        from telkap.plans import CREDIT_HISTORY, FEAT_HISTORY, TWO_WEEK
+        from telkap.services import credits, entitlement
 
-        from telkap.plans import CREDIT_WATERMARK, WEEK
-        from telkap.services import cache, credits
-        from telkap.services.copier import Copier
+        await credits.add(7, CREDIT_HISTORY, 5)
+        day = "2026-01-01"
 
-        _stub_watermark(monkeypatch, tmp_path)
-        monkeypatch.setattr(
-            cache, "get_plan", lambda uid: _async(replace(WEEK, daily_messages=0))
-        )
+        assert await entitlement.reserve(7, FEAT_HISTORY, 100, TWO_WEEK, day) is None
+        assert await credits.balance(7, CREDIT_HISTORY) == 5
+        assert await entitlement.used_today(7, FEAT_HISTORY, day) == 0
+    finally:
+        await db_module.close_db()
 
-        client = PhotoClient(tmp_path)
-        copier = Copier(FakeManager(client))
-        assert await copier.process(
-            7, task_id, [FakeMessage(id=1, message="عکس", media=object())]
-        ) is True
-        assert await credits.balance(7, CREDIT_WATERMARK) == 0
+
+@pytest.mark.asyncio
+async def test_release_gives_quota_and_credit_back(tmp_path, monkeypatch):
+    db_module, _task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.plans import CREDIT_HISTORY, FEAT_HISTORY, TWO_WEEK
+        from telkap.services import credits, entitlement
+
+        await credits.add(7, CREDIT_HISTORY, 30)
+        day = "2026-01-01"
+
+        grant = await entitlement.reserve(7, FEAT_HISTORY, 70, TWO_WEEK, day)
+        await entitlement.release(7, grant, day)
+
+        assert await credits.balance(7, CREDIT_HISTORY) == 30
+        assert await entitlement.used_today(7, FEAT_HISTORY, day) == 0
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_quota_is_per_day_not_per_subscription(tmp_path, monkeypatch):
+    db_module, _task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.plans import FEAT_HISTORY, TWO_WEEK
+        from telkap.services import entitlement
+
+        assert await entitlement.reserve(7, FEAT_HISTORY, 50, TWO_WEEK, "2026-01-01")
+        assert await entitlement.quota_left(7, FEAT_HISTORY, TWO_WEEK, "2026-01-01") == 0
+        # روز بعد سهمیه دوباره کامل است
+        assert await entitlement.quota_left(7, FEAT_HISTORY, TWO_WEEK, "2026-01-02") == 50
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_plan_without_the_feature_uses_credit_only(tmp_path, monkeypatch):
+    db_module, _task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.plans import CREDIT_HISTORY, FEAT_HISTORY, WEEK
+        from telkap.services import credits, entitlement
+
+        day = "2026-01-01"
+        assert await entitlement.quota_left(7, FEAT_HISTORY, WEEK, day) == 0
+        assert await entitlement.reserve(7, FEAT_HISTORY, 10, WEEK, day) is None
+
+        await credits.add(7, CREDIT_HISTORY, 10)
+        grant = await entitlement.reserve(7, FEAT_HISTORY, 10, WEEK, day)
+        assert grant is not None
+        assert (grant.from_quota, grant.from_credits) == (0, 10)
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_affordable_reports_without_charging(tmp_path, monkeypatch):
+    db_module, _task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.plans import CREDIT_HISTORY, FEAT_HISTORY, TWO_WEEK
+        from telkap.services import credits, entitlement
+
+        day = "2026-01-01"
+        assert await entitlement.affordable(7, FEAT_HISTORY, 50, TWO_WEEK, day) is True
+        assert await entitlement.affordable(7, FEAT_HISTORY, 60, TWO_WEEK, day) is False
+
+        await credits.add(7, CREDIT_HISTORY, 10)
+        assert await entitlement.affordable(7, FEAT_HISTORY, 60, TWO_WEEK, day) is True
+        # هیچ‌چیز مصرف نشده است
+        assert await credits.balance(7, CREDIT_HISTORY) == 10
+        assert await entitlement.used_today(7, FEAT_HISTORY, day) == 0
     finally:
         await db_module.close_db()
 
