@@ -293,6 +293,14 @@ class PaymentRequest(Base):
     kind: Mapped[str] = mapped_column(String(16), default=KIND_PLAN)
     quantity: Mapped[int] = mapped_column(Integer, default=0)
     amount_toman: Mapped[int] = mapped_column(Integer, default=0)
+    # کد تخفیف اعمال‌شده و اثرش؛ برای صورتحساب و حسابرسی نگه داشته می‌شوند
+    coupon_code: Mapped[str] = mapped_column(String(32), default="")
+    discount_toman: Mapped[int] = mapped_column(Integer, default=0)
+    # ارزش باقی‌مانده‌ی اشتراک قبلی که هنگام ارتقا کسر شده است
+    credit_toman: Mapped[int] = mapped_column(Integer, default=0)
+    # قیمت فهرست پیش از هر کسری
+    list_toman: Mapped[int] = mapped_column(Integer, default=0)
+
     receipt_file_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     receipt_kind: Mapped[str] = mapped_column(String(16), default="photo")  # photo | document | text
     note: Mapped[str] = mapped_column(String(400), default="")
@@ -415,7 +423,7 @@ class WalletEntry(Base):
     REASON_REFERRAL = "referral"     # پاداش دعوت
     REASON_TOPUP = "topup"           # شارژ توسط کاربر
     REASON_PURCHASE = "purchase"     # خرید از موجودی
-    REASON_REFUND = "refund"         # عودت
+    REASON_REFUND = "refund"         # اصلاح برداشتی که چیزی نخرید
     REASON_ADMIN = "admin"           # تنظیم دستی ادمین
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -455,6 +463,52 @@ class ReferralReward(Base):
     amount_toman: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(16), default=STATUS_PAID, index=True)
     note: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Coupon(Base):
+    """کد تخفیف. یک کد، چند قانون: چه کسی، چند بار، روی کدام طرح، تا کی."""
+
+    __tablename__ = "coupons"
+
+    KIND_PERCENT = "percent"
+    KIND_FIXED = "fixed"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    kind: Mapped[str] = mapped_column(String(16), default=KIND_PERCENT)
+    value: Mapped[int] = mapped_column(Integer, default=0)       # درصد یا تومان
+
+    max_uses: Mapped[int] = mapped_column(Integer, default=0)    # ۰ = بی‌نهایت
+    used_count: Mapped[int] = mapped_column(Integer, default=0)
+    per_user_limit: Mapped[int] = mapped_column(Integer, default=1)
+
+    # فقط روی این طرح‌ها؛ خالی یعنی همه
+    plan_codes: Mapped[list] = mapped_column(JSON, default=list)
+    min_toman: Mapped[int] = mapped_column(Integer, default=0)
+
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    note: Mapped[str] = mapped_column(String(160), default="")
+    created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CouponUse(Base):
+    """هر بار استفاده از یک کد؛ برای سقف «هر کاربر چند بار» و گزارش کمپین."""
+
+    __tablename__ = "coupon_uses"
+    __table_args__ = (Index("ix_coupon_use_pair", "coupon_id", "user_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    coupon_id: Mapped[int] = mapped_column(
+        ForeignKey("coupons.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    payment_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    discount_toman: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

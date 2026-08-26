@@ -173,7 +173,9 @@ async def activate(reseller_id: int, customer_id: int, plan_code: str) -> Resell
             reason=WalletEntry.REASON_REFUND,
             note="فعال‌سازی ناموفق بود",
         )
-        raise ResellerError("فعال‌سازی اشتراک ناموفق بود؛ مبلغ به کیف پولتان برگشت.")
+        raise ResellerError(
+            "فعال‌سازی اشتراک ناموفق بود؛ مبلغ به موجودی کیف پولتان برگشت."
+        )
 
     async with get_session() as db:
         sale = ResellerSale(

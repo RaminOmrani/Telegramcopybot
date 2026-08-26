@@ -38,6 +38,7 @@ class Flow(StatesGroup):
 
     receipt = State()
     credit_amount = State()
+    coupon_code = State()
     dest_add = State()
     dest_override = State()
     import_settings = State()
@@ -58,6 +59,8 @@ class Flow(StatesGroup):
     admin_referral_value = State()
     admin_wallet = State()
     admin_reseller = State()
+    admin_chatid = State()
+    admin_coupon = State()
 
     reseller_customer = State()
 

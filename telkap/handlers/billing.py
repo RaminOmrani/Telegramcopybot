@@ -115,6 +115,56 @@ async def show_plans(message: Message) -> None:
     await message.answer(header + _plans_text(), reply_markup=plans_menu())
 
 
+async def _quote_screen(target: Message, user_id: int, plan_code: str, coupon: str):
+    """صفحه‌ی «قبل از پرداخت»: ریز قیمت با همه‌ی کسری‌ها."""
+    priced = await payments.quote(user_id, plan_code, coupon)
+    if priced is None:
+        await target.answer("این پلن وجود ندارد.")
+        return
+
+    plan = priced["plan"]
+    lines = [
+        f"🧾 <b>{plan.title}</b>",
+        f"مدت: {fa_num(plan.days)} روز",
+        "",
+        f"قیمت طرح: {toman(priced['list_toman'])}",
+    ]
+    if priced["credit_toman"]:
+        lines.append(
+            f"اعتبار اشتراک فعلی شما: <b>−{toman(priced['credit_toman'])}</b>"
+        )
+    if priced["discount_toman"]:
+        lines.append(
+            f"کد <code>{priced['coupon_code']}</code>: "
+            f"<b>−{toman(priced['discount_toman'])}</b>"
+        )
+    lines += ["━━━━━━━━━━", f"<b>قابل پرداخت: {toman(priced['payable'])}</b>"]
+
+    if priced["coupon_error"]:
+        lines += ["", f"⚠️ {priced['coupon_error']}"]
+    if priced["is_upgrade"]:
+        lines += [
+            "",
+            "<i>این یک ارتقا است: ارزش روزهای باقی‌مانده‌ی طرح فعلی‌تان کسر "
+            "شد و طرح تازه از همین حالا شروع می‌شود.</i>",
+        ]
+
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        InlineKeyboardButton(
+            text="💳 پرداخت", callback_data=f"pay:go:{plan.code}"
+        )
+    )
+    kb.row(
+        InlineKeyboardButton(
+            text="🎟 کد تخفیف دارم" if not priced["coupon_code"] else "🎟 تغییر کد",
+            callback_data=f"pay:cpn:{plan.code}",
+        )
+    )
+    kb.row(InlineKeyboardButton(text="🔙 طرح‌ها", callback_data="credit:plans"))
+    await target.answer("\n".join(lines), reply_markup=kb.as_markup())
+
+
 @router.callback_query(F.data.startswith("plan:"))
 async def cb_plan(call: CallbackQuery, state: FSMContext) -> None:
     plan = get_plan(call.data.split(":")[1])
@@ -123,9 +173,44 @@ async def cb_plan(call: CallbackQuery, state: FSMContext) -> None:
         return
     await call.answer()
     await get_or_create_user(call.from_user)
+    await state.update_data(coupon="")
+    await _quote_screen(call.message, call.from_user.id, plan.code, "")
 
+
+@router.callback_query(F.data.startswith("pay:cpn:"))
+async def cb_coupon_ask(call: CallbackQuery, state: FSMContext) -> None:
+    plan_code = call.data.split(":")[2]
+    await call.answer()
+    await state.set_state(Flow.coupon_code)
+    await state.update_data(plan_code=plan_code)
+    await call.message.answer(
+        "🎟 کد تخفیف را بفرستید.\n\n"
+        "<i>اگر کد ندارید یا پشیمان شدید، /cancel بزنید.</i>"
+    )
+
+
+@router.message(Flow.coupon_code)
+async def got_coupon(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    plan_code = data.get("plan_code", "")
+    code = (message.text or "").strip()
+    await state.set_state(None)
+    await state.update_data(coupon=code)
+    await _quote_screen(message, message.from_user.id, plan_code, code)
+
+
+@router.callback_query(F.data.startswith("pay:go:"))
+async def cb_pay(call: CallbackQuery, state: FSMContext) -> None:
+    plan_code = call.data.split(":")[2]
+    plan = get_plan(plan_code)
+    if plan is None:
+        await call.answer("این پلن وجود ندارد.", show_alert=True)
+        return
+    await call.answer()
+
+    coupon = (await state.get_data()).get("coupon", "")
     cfg = get_settings()
-    request = await payments.create_request(call.from_user.id, plan.code)
+    request = await payments.create_request(call.from_user.id, plan_code, coupon)
     if request is None:
         await call.message.answer("⚠️ ثبت درخواست ناموفق بود. دوباره تلاش کنید.")
         return
@@ -133,7 +218,7 @@ async def cb_plan(call: CallbackQuery, state: FSMContext) -> None:
     if not cfg.card_number:
         support = f"@{cfg.support_username}" if cfg.support_username else "پشتیبانی"
         await call.message.answer(
-            f"🧾 <b>{plan.title}</b> — {plan.price_label}\n\n"
+            f"🧾 <b>{plan.title}</b> — {toman(request.amount_toman)}\n\n"
             f"برای فعال‌سازی با {support} در تماس باشید.\n"
             f"شناسه‌ی شما: <code>{call.from_user.id}</code>"
         )
@@ -143,11 +228,13 @@ async def cb_plan(call: CallbackQuery, state: FSMContext) -> None:
     kb.row(InlineKeyboardButton(text="❌ انصراف", callback_data="pay:cancel"))
 
     holder = f"\nبه نام: <b>{cfg.card_holder}</b>" if cfg.card_holder else ""
+    saved = int(request.discount_toman or 0) + int(request.credit_toman or 0)
+    saving = f"\n<i>({toman(saved)} کسر شد)</i>" if saved else ""
     await state.set_state(Flow.receipt)
     await state.update_data(request_id=request.id)
     await call.message.answer(
         f"🧾 <b>{plan.title}</b>\n"
-        f"مبلغ قابل پرداخت: <b>{plan.price_label}</b>\n"
+        f"مبلغ قابل پرداخت: <b>{toman(request.amount_toman)}</b>{saving}\n"
         f"مدت: {fa_num(plan.days)} روز\n\n"
         f"💳 شماره کارت:\n<code>{cfg.card_number}</code>{holder}\n\n"
         "پس از واریز، <b>تصویر رسید</b> را همین‌جا بفرستید.\n"

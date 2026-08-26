@@ -59,22 +59,78 @@ async def active_entitlement(user_id: int) -> tuple[Plan | None, int | None]:
     return await effective_plan(sub.plan_code, user_id), sub.id
 
 
+async def remaining_value(user_id: int) -> int:
+    """ارزش ریالی روزهای باقی‌مانده‌ی اشتراک فعلی.
+
+    اگر کسی روز پنجم از یک طرح ۳۰ روزه‌ی ۴۲۹ هزار تومانی بخواهد ارتقا
+    بدهد، منصفانه نیست پول ۲۵ روز استفاده‌نشده‌اش بسوزد.
+    """
+    sub = await active_subscription(user_id)
+    if sub is None:
+        return 0
+    plan = get_plan(sub.plan_code)
+    if plan is None or plan.price_toman <= 0 or plan.days <= 0:
+        return 0
+
+    expires = sub.expires_at
+    if expires.tzinfo is None:
+        expires = expires.replace(tzinfo=UTC)
+    left_days = max(0, (expires - utcnow()).days)
+    # سقف روی مدت خود طرح، تا تمدیدهای انباشته ارزش غیرواقعی نسازند
+    left_days = min(left_days, plan.days)
+    return (plan.price_toman * left_days) // plan.days
+
+
+async def upgrade_quote(user_id: int, plan_code: str) -> tuple[int, bool]:
+    """(اعتبار قابل کسر، آیا این خرید ارتقا است).
+
+    ارتقا فقط وقتی معنی دارد که طرح تازه گران‌تر از طرح فعلی باشد؛ در
+    غیر این صورت خرید مثل همیشه از انتهای اشتراک فعلی تمدید می‌شود.
+    """
+    target = get_plan(plan_code)
+    if target is None:
+        return 0, False
+    sub = await active_subscription(user_id)
+    if sub is None:
+        return 0, False
+    current = get_plan(sub.plan_code)
+    if current is None or target.price_toman <= current.price_toman:
+        return 0, False
+
+    credit = await remaining_value(user_id)
+    # اعتبار هرگز از قیمت طرح تازه بیشتر نمی‌شود
+    return min(credit, target.price_toman), credit > 0
+
+
 async def grant(
     user_id: int,
     plan_code: str,
     *,
     granted_by: int | None = None,
     note: str = "",
+    replace: bool = False,
 ) -> Subscription | None:
-    """اشتراک می‌دهد. اگر اشتراک فعالی باشد، از انتهای آن تمدید می‌شود."""
+    """اشتراک می‌دهد. اگر اشتراک فعالی باشد، از انتهای آن تمدید می‌شود.
+
+    `replace=True` برای ارتقا: طرح تازه همین حالا شروع می‌شود و اشتراک
+    قبلی بسته می‌گردد (ارزش باقی‌مانده‌اش قبلاً از قیمت کسر شده است).
+    """
     plan = get_plan(plan_code)
     if plan is None:
         return None
     current = await active_subscription(user_id)
-    start = current.expires_at if current else utcnow()
+    start = utcnow() if (replace or current is None) else current.expires_at
     if start.tzinfo is None:
-
         start = start.replace(tzinfo=UTC)
+
+    if replace and current is not None:
+        # وگرنه اشتراک قدیمی که انقضای دورتری دارد همچنان برنده می‌شود
+        async with get_session() as db:
+            old = await db.get(Subscription, current.id)
+            if old is not None:
+                old.expires_at = utcnow()
+                await db.commit()
+
     async with get_session() as db:
         sub = Subscription(
             user_id=user_id,

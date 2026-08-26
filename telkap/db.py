@@ -96,6 +96,10 @@ def _add_missing_columns(conn) -> None:
             ("kind", "VARCHAR(16) DEFAULT 'plan'"),
             ("quantity", "INTEGER DEFAULT 0"),
             ("amount_toman", "INTEGER DEFAULT 0"),
+            ("coupon_code", "VARCHAR(32) DEFAULT ''"),
+            ("discount_toman", "INTEGER DEFAULT 0"),
+            ("credit_toman", "INTEGER DEFAULT 0"),
+            ("list_toman", "INTEGER DEFAULT 0"),
         ],
     }
     for table, columns in additions.items():

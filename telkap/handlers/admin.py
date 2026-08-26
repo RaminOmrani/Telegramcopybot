@@ -44,6 +44,7 @@ def admin_menu(pending: int = 0, tickets: int = 0) -> InlineKeyboardBuilder:
         InlineKeyboardButton(text="🧩 طرح‌ها و قیمت‌ها", callback_data="adm:plans"),
         InlineKeyboardButton(text="🎁 دعوت دوستان", callback_data="adm:ref"),
     )
+    kb.row(InlineKeyboardButton(text="🎟 کدهای تخفیف", callback_data="adm:coupons"))
     kb.row(InlineKeyboardButton(text="📢 عضویت اجباری", callback_data="adm:join"))
     kb.row(InlineKeyboardButton(text=f"🧾 رسیدهای در انتظار{badge}", callback_data="adm:pay"))
     kb.row(
@@ -246,6 +247,68 @@ async def cb_retry(call: CallbackQuery) -> None:
             f"  تلاش: {fa_num(item.attempts)} | {item.last_error[:70]}"
         )
     await call.message.edit_text("\n".join(lines), reply_markup=_back().as_markup())
+
+
+# ------------------------------------------------- پیدا کردن شناسه‌ی چت
+@router.message(Command("chatid"))
+async def cmd_chatid(message: Message, state: FSMContext) -> None:
+    """شناسه‌ی عددی یک کانال خصوصی را با فوروارد کردن یک پیام می‌دهد.
+
+    پیدا کردن این عدد به‌صورت دستی برای کانال خصوصی دردسر دارد؛ اینطور
+    فقط یک فوروارد لازم است.
+    """
+    if not _is_admin(message.from_user.id):
+        return
+    await state.set_state(Flow.admin_chatid)
+    await message.answer(
+        "🆔 <b>پیدا کردن شناسه‌ی کانال</b>\n\n"
+        "یک پیام از آن کانال را برای من <b>فوروارد</b> کنید تا شناسه‌اش "
+        "را بگویم.\n\n"
+        "<i>اگر کانال «فوروارد» را بسته باشد، به‌جایش ربات را در کانال "
+        "ادمین کنید و یک پیام آنجا بفرستید — بعد همان را فوروارد کنید. یا "
+        "کانال را موقتاً عمومی کنید و آیدی‌اش را بدهید.</i>\n\n"
+        "انصراف: /cancel"
+    )
+
+
+@router.message(Flow.admin_chatid)
+async def got_chatid(message: Message, state: FSMContext) -> None:
+    if not _is_admin(message.from_user.id):
+        await state.clear()
+        return
+
+    origin = getattr(message, "forward_from_chat", None)
+    if origin is None:
+        # روی نسخه‌های تازه‌ی Bot API منبع فوروارد در forward_origin است
+        forward_origin = getattr(message, "forward_origin", None)
+        origin = getattr(forward_origin, "chat", None)
+
+    if origin is None:
+        text = (message.text or "").strip()
+        if text.startswith("@") or text.lstrip("-").isdigit():
+            await state.clear()
+            await message.answer(
+                f"🆔 مقداری که فرستادید:\n<code>{text}</code>\n\n"
+                "اگر کانال خصوصی است، شناسه باید عددی و با <code>-100</code> "
+                "شروع شود. برای گرفتنش یک پیام از کانال را فوروارد کنید."
+            )
+            return
+        await message.answer(
+            "این یک پیام فورواردشده از کانال نیست.\n"
+            "یک پیام از خود کانال را فوروارد کنید یا /cancel بزنید."
+        )
+        return
+
+    await state.clear()
+    title = getattr(origin, "title", "") or "—"
+    await message.answer(
+        f"🆔 <b>{title}</b>\n\n"
+        f"شناسه: <code>{origin.id}</code>\n\n"
+        "برای کانال پشتیبان، همین عدد را در فایل <code>.env</code> بگذارید:\n"
+        f"<code>BACKUP_CHAT_ID={origin.id}</code>\n\n"
+        "<i>یادتان باشد ربات باید در آن کانال ادمین باشد و اجازه‌ی ارسال "
+        "داشته باشد.</i>"
+    )
 
 
 # ------------------------------------------------------- پشتیبان‌گیری

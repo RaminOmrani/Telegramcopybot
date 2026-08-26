@@ -8,11 +8,14 @@ from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
+from sqlalchemy import select
 
+from telkap.db import get_session
 from telkap.handlers.common import get_or_create_user
 from telkap.keyboards import BTN_WALLET
+from telkap.models import PaymentRequest
 from telkap.plans import toman
-from telkap.services import referral, reseller, wallet
+from telkap.services import payments, referral, reseller, wallet
 from telkap.texts import fa_num
 
 log = logging.getLogger(__name__)
@@ -28,7 +31,10 @@ def _menu(has_history: bool, is_reseller: bool = False) -> InlineKeyboardBuilder
     kb.row(InlineKeyboardButton(text="🎁 دعوت دوستان", callback_data="wal:invite"))
     if has_history:
         kb.row(InlineKeyboardButton(text="📜 تاریخچه تراکنش‌ها", callback_data="wal:history"))
-    kb.row(InlineKeyboardButton(text="💳 خرید اشتراک", callback_data="credit:plans"))
+    kb.row(
+        InlineKeyboardButton(text="🧾 صورتحساب‌ها", callback_data="wal:bills"),
+        InlineKeyboardButton(text="💳 خرید اشتراک", callback_data="credit:plans"),
+    )
     return kb
 
 
@@ -102,6 +108,49 @@ async def cb_history(call: CallbackQuery) -> None:
         )
         if entry.note:
             lines.append(f"<i>{entry.note}</i>")
+        lines.append("")
+
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="🔙 کیف پول", callback_data="wal:home"))
+    await call.message.edit_text("\n".join(lines), reply_markup=kb.as_markup())
+
+
+@router.callback_query(F.data == "wal:bills")
+async def cb_bills(call: CallbackQuery) -> None:
+    """تاریخچه‌ی پرداخت‌ها با ریز هر صورتحساب."""
+    await call.answer()
+    async with get_session() as db:
+        rows = await db.execute(
+            select(PaymentRequest)
+            .where(
+                PaymentRequest.user_id == call.from_user.id,
+                PaymentRequest.status != PaymentRequest.STATUS_PENDING,
+            )
+            .order_by(PaymentRequest.id.desc())
+            .limit(12)
+        )
+        bills = list(rows.scalars())
+
+    lines = ["🧾 <b>صورتحساب‌ها</b>", RULE, ""]
+    if not bills:
+        lines.append("هنوز خرید تأییدشده‌ای ندارید.")
+    for bill in bills:
+        approved = bill.status == PaymentRequest.STATUS_APPROVED
+        icon = "✅" if approved else "❌"
+        stamp = bill.created_at.strftime("%Y/%m/%d")
+        title = payments.describe(bill)
+        lines.append(f"{icon} <b>#{fa_num(bill.id)}</b> — {title}")
+        lines.append(f"<code>{fa_num(stamp)}</code>")
+
+        listed = int(bill.list_toman or 0)
+        if listed and listed != bill.amount_toman:
+            lines.append(f"   قیمت طرح: {toman(listed)}")
+            if bill.credit_toman:
+                lines.append(f"   اعتبار اشتراک قبلی: −{toman(bill.credit_toman)}")
+            if bill.discount_toman:
+                code = f" ({bill.coupon_code})" if bill.coupon_code else ""
+                lines.append(f"   تخفیف{code}: −{toman(bill.discount_toman)}")
+        lines.append(f"   <b>پرداختی: {toman(bill.amount_toman)}</b>")
         lines.append("")
 
     kb = InlineKeyboardBuilder()
