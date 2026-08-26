@@ -10,7 +10,12 @@
 """
 from __future__ import annotations
 
+import re
+
 RULE = "━━━━━━━━━━━━━━━━━━"
+
+# جای خالیِ متن‌های ترجمه‌شده: `{{table}}`، `{{custom}}` و مانند آن‌ها
+_FIELD = re.compile(r"\{\{(\w+)\}\}")
 
 # کلید بخش → {زبان: عنوان دکمه}
 TITLES: dict[str, dict[str, str]] = {
@@ -770,9 +775,18 @@ def title(key: str, lang: str) -> str | None:
     return TITLES.get(key, {}).get(lang)
 
 
-def body(key: str, lang: str) -> str | None:
-    """متن یک بخش به این زبان، یا None اگر ترجمه نشده."""
-    return BODIES.get(key, {}).get(lang)
+def body(key: str, lang: str, **fields: str) -> str | None:
+    """متن یک بخش به این زبان، یا None اگر ترجمه نشده.
+
+    جاهای خالیِ وابسته به قیمت و سقف طرح‌ها با `{{نام}}` نوشته می‌شوند و
+    اینجا پر می‌گردند. دو آکولاد است نه یکی، چون متنِ بخش «کانفیگ پروکسی»
+    خودش `{tag}` و `{name}` دارد که باید دست‌نخورده به کاربر نشان داده
+    شوند؛ با `str.format` آن‌ها هم قربانی می‌شدند.
+    """
+    text = BODIES.get(key, {}).get(lang)
+    if text is None or not fields:
+        return text
+    return _FIELD.sub(lambda m: fields.get(m.group(1), m.group(0)), text)
 
 
 def coverage(lang: str) -> int:

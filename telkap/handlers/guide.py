@@ -19,17 +19,82 @@ from telkap.plans import (
     CREDIT_HISTORY,
     CREDIT_WATERMARK,
     CUSTOM,
+    DEFAULT_PLANS,
     TRIAL,
     TWO_WEEK,
+    Plan,
     credit_unit,
     purchasable,
-    toman,
 )
-from telkap.texts import fa_num
 
 router = Router(name="guide")
 
 RULE = "━━━━━━━━━━━━━━━━━━"
+
+
+# --------------------------------------------- عددها و نام‌ها به هر زبان
+# جدول طرح‌ها از روی مقادیر زنده ساخته می‌شود، پس نمی‌شود ترجمه‌اش کرد؛
+# به‌جایش این چند کمکی هر تکه را به زبان کاربر درمی‌آورند و جدول یک بار
+# برای همه‌ی زبان‌ها ساخته می‌شود.
+def _plan_title(plan: Plan, lang: str) -> str:
+    """نام طرح به این زبان.
+
+    اگر ادمین نام طرح را از پنل عوض کرده باشد، همان نام دست‌ساز می‌ماند —
+    ترجمه‌ی ما نباید انتخاب او را بی‌صدا کنار بزند.
+    """
+    factory = DEFAULT_PLANS.get(plan.code)
+    if factory is None or plan.title != factory.title:
+        return plan.title
+    return i18n.t(f"plan.{plan.code}", lang)
+
+
+def _money(amount: int, lang: str) -> str:
+    return i18n.t("money.toman", lang, amount=i18n.num(amount, lang))
+
+
+def _quota(value: int, lang: str) -> str:
+    if value < 0:
+        return i18n.t("quota.unlimited", lang)
+    if value == 0:
+        return i18n.t("quota.none", lang)
+    return i18n.num(value, lang)
+
+
+def _plan_row(icon: str, plan: Plan, lang: str, *, price: str) -> str:
+    n = i18n.num
+    return (
+        f"{icon} <b>{_plan_title(plan, lang)}</b> — {price} · "
+        f"{n(plan.days, lang)} {i18n.t('unit.days', lang)}\n"
+        f"    📨 {_quota(plan.period_messages, lang)} {i18n.t('unit.messages', lang)}"
+        f" | 📋 {n(plan.max_tasks, lang)} {i18n.t('unit.jobs', lang)}"
+        f" | 📤 {n(plan.max_destinations, lang)} {i18n.t('unit.dests', lang)}\n"
+        f"    💧 {_quota(plan.watermark_quota, lang)} {i18n.t('unit.watermarks', lang)}"
+        f" | 🕓 {_quota(plan.history_quota, lang)} {i18n.t('unit.history', lang)}"
+    )
+
+
+def _wm_price(lang: str) -> str:
+    return _money(credit_unit(CREDIT_WATERMARK), lang)
+
+
+def _hist_price(lang: str) -> str:
+    return _money(credit_unit(CREDIT_HISTORY), lang)
+
+
+def _plans_table(lang: str) -> str:
+    """جدول طرح‌ها: آزمایشی، بعد طرح‌های قابل خرید."""
+    trial = (
+        f"🎁 <b>{_plan_title(TRIAL, lang)}</b> — {i18n.t('quota.free', lang)} · "
+        f"{i18n.num(TRIAL.days, lang)} {i18n.t('unit.days', lang)}\n"
+        f"    📨 {_quota(TRIAL.period_messages, lang)} {i18n.t('unit.messages', lang)}"
+        f" | 📋 {i18n.num(TRIAL.max_tasks, lang)} {i18n.t('unit.jobs', lang)}"
+        f" | 📤 {i18n.num(TRIAL.max_destinations, lang)} {i18n.t('unit.dests', lang)}"
+    )
+    rows = "\n".join(
+        _plan_row(icon, plan, lang, price=_money(plan.price_toman, lang))
+        for icon, plan in zip("🥉🥈🥇💎", purchasable(), strict=False)
+    )
+    return f"{trial}\n\n{rows}"
 
 
 def _home_fa() -> str:
@@ -298,23 +363,13 @@ def _extras() -> str:
 
 
 def _plans() -> str:
-    rows = "\n".join(
-        f"{icon} <b>{plan.title}</b> — {plan.price_label} · {fa_num(plan.days)} روز\n"
-        f"    📨 {plan.messages_label} پیام | 📋 {fa_num(plan.max_tasks)} کار | "
-        f"📤 {fa_num(plan.max_destinations)} مقصد\n"
-        f"    💧 {plan.watermark_label} واترمارک | 🕓 {plan.history_label} پیام گذشته"
-        for icon, plan in zip("🥉🥈🥇💎", purchasable(), strict=False)
-    )
     return (
         "💎 <b>طرح‌ها و سقف‌ها</b>\n"
         f"{RULE}\n\n"
-        f"🎁 <b>{TRIAL.title}</b> — رایگان، {fa_num(TRIAL.days)} روز\n"
-        f"    📨 {TRIAL.messages_label} پیام | 📋 {fa_num(TRIAL.max_tasks)} کار | "
-        f"📤 {fa_num(TRIAL.max_destinations)} مقصد\n\n"
-        f"{rows}\n\n"
+        f"{_plans_table('fa')}\n\n"
         f"{RULE}\n"
         "<b>این سقف‌ها یعنی چه؟</b>\n\n"
-"⚠️ <b>همه‌ی سهمیه‌ها برای کل دوره‌ی اشتراک‌اند، نه روزانه.</b> یعنی "
+        "⚠️ <b>همه‌ی سهمیه‌ها برای کل دوره‌ی اشتراک‌اند، نه روزانه.</b> یعنی "
         "«۲٬۰۰۰ پیام» یعنی ۲٬۰۰۰ پیام در کل ۳۰ روز.\n\n"
         "<b>📨 پیام</b> — مجموع پست‌هایی که در کل دوره برای شما کپی می‌شود "
         "(روی همه‌ی کارهایتان با هم).\n\n"
@@ -338,9 +393,9 @@ def _credits() -> str:
         "هر طرح یک <b>سهمیه‌ی رایگان</b> برای واترمارک و کپی پیام‌های گذشته "
         "دارد که برای کل دوره است. اگر وسط دوره تمام شد یا طرحتان آن قابلیت "
         "را ندارد، می‌توانید <b>به‌اندازه‌ی نیازتان</b> اعتبار بخرید:\n\n"
-        f"💧 <b>اعتبار واترمارک</b> — هر واحد {toman(credit_unit(CREDIT_WATERMARK))}\n"
+        f"💧 <b>اعتبار واترمارک</b> — هر واحد {_wm_price('fa')}\n"
         "    یک واحد = یک تصویری که واترمارک می‌خورد\n\n"
-        f"🕓 <b>اعتبار پیام گذشته</b> — هر واحد {toman(credit_unit(CREDIT_HISTORY))}\n"
+        f"🕓 <b>اعتبار پیام گذشته</b> — هر واحد {_hist_price('fa')}\n"
         "    یک واحد = یک پیام قدیمی که کپی می‌شود\n\n"
         "<b>خرید:</b> «💳 خرید اشتراک» ← «🎫 خرید اعتبار»\n"
         "بسته‌های آماده (۵۰ / ۱۰۰ / ۵۰۰ / ۱۰۰۰) یا عدد دلخواه خودتان.\n\n"
@@ -672,9 +727,28 @@ def _title(key: str, lang: str | None = None) -> str:
     return guide_texts.title(key, i18n.normalize(lang or i18n.current())) or SECTIONS[key][0]
 
 
+def _fields(key: str, lang: str) -> dict[str, str]:
+    """جاهای خالیِ وابسته به قیمت و سقف، برای متنِ ترجمه‌شده‌ی این بخش.
+
+    این چند بخش را نمی‌شود دربست ترجمه کرد: عددهایشان از `plans.py` می‌آید
+    و ادمین می‌تواند از پنل عوضشان کند. پس متن ترجمه می‌شود و عددها هر بار
+    تازه جاشان می‌نشینند.
+    """
+    if key == "plans":
+        return {"table": _plans_table(lang), "custom": _plan_title(CUSTOM, lang)}
+    if key == "credits":
+        return {"wm_price": _wm_price(lang), "hist_price": _hist_price(lang)}
+    if key == "faq":
+        return {"two_week": _plan_title(TWO_WEEK, lang)}
+    if key == "faqpay":
+        return {"custom": _plan_title(CUSTOM, lang)}
+    return {}
+
+
 def _body(key: str, lang: str | None = None) -> str:
     """متن بخش؛ اگر ترجمه نشده باشد فارسی می‌ماند."""
-    return guide_texts.body(key, i18n.normalize(lang or i18n.current())) or SECTIONS[key][1]()
+    code = i18n.normalize(lang or i18n.current())
+    return guide_texts.body(key, code, **_fields(key, code)) or SECTIONS[key][1]()
 
 
 def _home(lang: str | None = None) -> str:

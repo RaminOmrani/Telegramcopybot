@@ -265,6 +265,65 @@ def test_every_translated_section_has_a_button_title():
             assert guide_texts.title(key, lang), f"عنوان {key}/{lang} نیست"
 
 
+# ------------------------------------------- جدول طرح‌ها به هر زبان
+def test_the_plan_table_is_built_in_the_readers_language():
+    from telkap.handlers import guide
+
+    english = guide._plans_table("en")
+    assert "7-day plan" in english
+    assert "toman" in english
+    assert "129,000" in english          # ارقام لاتین، نه فارسی
+    assert "۱۲۹" not in english
+
+    persian = guide._plans_table("fa")
+    assert "اشتراک ۷ روزه" in persian
+    assert "۱۲۹،۰۰۰ تومان" in persian
+
+
+def test_a_plan_renamed_by_the_admin_keeps_its_name():
+    """ترجمه‌ی ما نباید انتخاب ادمین را بی‌صدا کنار بزند."""
+    from dataclasses import replace
+
+    from telkap import plans
+    from telkap.handlers import guide
+
+    renamed = replace(plans.WEEK, title="اشتراک ویژه‌ی نوروز")
+    assert guide._plan_title(renamed, "en") == "اشتراک ویژه‌ی نوروز"
+    # دست‌نخورده که باشد، ترجمه می‌شود
+    assert guide._plan_title(plans.WEEK, "en") == "7-day plan"
+
+
+def test_an_unlimited_quota_reads_as_words_not_a_negative_number():
+    from telkap.handlers import guide
+
+    assert guide._quota(-1, "en") == "Unlimited"
+    assert guide._quota(0, "en") == "None"
+    assert guide._quota(1500, "en") == "1,500"
+    assert guide._quota(-1, "fa") == "نامحدود"
+
+
+# --------------------------------------- جای خالی در متن‌های ترجمه‌شده
+def test_a_placeholder_is_filled_in_the_translated_guide():
+    from telkap import guide_texts
+
+    guide_texts.BODIES["_test"] = {"en": "price: {{p}} · left: {{gone}}"}
+    try:
+        assert guide_texts.body("_test", "en", p="9") == "price: 9 · left: {{gone}}"
+    finally:
+        guide_texts.BODIES.pop("_test")
+
+
+def test_the_proxy_filename_braces_survive_substitution():
+    """متن «کانفیگ پروکسی» خودش {tag} و {name} دارد و باید سالم بماند."""
+    from telkap import guide_texts
+
+    guide_texts.BODIES["_test"] = {"en": "{tag}_{name} — {{who}}"}
+    try:
+        assert guide_texts.body("_test", "en", who="Ali") == "{tag}_{name} — Ali"
+    finally:
+        guide_texts.BODIES.pop("_test")
+
+
 # ------------------------------------------------- ذخیره‌ی زبان کاربر
 @pytest.mark.asyncio
 async def test_the_chosen_language_is_remembered(tmp_path, monkeypatch):

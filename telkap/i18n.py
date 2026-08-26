@@ -642,4 +642,80 @@ CATALOG: dict[str, dict[str, str]] = {
         "ru": "Выберите тариф:", "tr": "Bir plan seçin:", "uz": "Tarifni tanlang:",
         "hi": "एक प्लान चुनें:", "id": "Pilih paket:", "pt": "Escolha um plano:",
     },
+    # ------------------------------------------------------- نام طرح‌ها
+    # فقط وقتی استفاده می‌شوند که ادمین نام طرح را از پنل عوض نکرده باشد؛
+    # نام دست‌ساز ادمین به هر زبانی همان‌طور که نوشته شده می‌ماند.
+    "plan.trial": {
+        "fa": "اشتراک آزمایشی", "en": "Trial plan", "ar": "الاشتراك التجريبي",
+        "ru": "Пробный тариф", "tr": "Deneme planı", "uz": "Sinov tarifi",
+        "hi": "ट्रायल प्लान", "id": "Paket coba", "pt": "Plano de teste",
+    },
+    "plan.week": {
+        "fa": "اشتراک ۷ روزه", "en": "7-day plan", "ar": "اشتراك ٧ أيام",
+        "ru": "Тариф на 7 дней", "tr": "7 günlük plan", "uz": "7 kunlik tarif",
+        "hi": "7-दिन प्लान", "id": "Paket 7 hari", "pt": "Plano de 7 dias",
+    },
+    "plan.two_week": {
+        "fa": "اشتراک ۱۴ روزه", "en": "14-day plan", "ar": "اشتراك ١٤ يوماً",
+        "ru": "Тариф на 14 дней", "tr": "14 günlük plan", "uz": "14 kunlik tarif",
+        "hi": "14-दिन प्लान", "id": "Paket 14 hari", "pt": "Plano de 14 dias",
+    },
+    "plan.month": {
+        "fa": "اشتراک ۳۰ روزه", "en": "30-day plan", "ar": "اشتراك ٣٠ يوماً",
+        "ru": "Тариф на 30 дней", "tr": "30 günlük plan", "uz": "30 kunlik tarif",
+        "hi": "30-दिन प्लान", "id": "Paket 30 hari", "pt": "Plano de 30 dias",
+    },
+    "plan.custom": {
+        "fa": "طرح اختصاصی", "en": "Custom plan", "ar": "الخطة المخصصة",
+        "ru": "Индивидуальный тариф", "tr": "Özel plan", "uz": "Maxsus tarif",
+        "hi": "कस्टम प्लान", "id": "Paket khusus", "pt": "Plano personalizado",
+    },
+    # -------------------------------------------------- سهمیه و واحدها
+    "quota.unlimited": {
+        "fa": "نامحدود", "en": "Unlimited", "ar": "غير محدود", "ru": "Без лимита",
+        "tr": "Sınırsız", "uz": "Cheksiz", "hi": "असीमित", "id": "Tanpa batas",
+        "pt": "Ilimitado",
+    },
+    "quota.free": {
+        "fa": "رایگان", "en": "free", "ar": "مجاناً", "ru": "бесплатно",
+        "tr": "ücretsiz", "uz": "bepul", "hi": "मुफ़्त", "id": "gratis",
+        "pt": "grátis",
+    },
+    "quota.none": {
+        "fa": "ندارد", "en": "None", "ar": "لا يوجد", "ru": "Нет", "tr": "Yok",
+        "uz": "Yoʻq", "hi": "नहीं", "id": "Tidak ada", "pt": "Nenhum",
+    },
+    "money.toman": {
+        "fa": "{amount} تومان", "en": "{amount} toman", "ar": "{amount} تومان",
+        "ru": "{amount} туманов", "tr": "{amount} tümen", "uz": "{amount} tuman",
+        "hi": "{amount} तोमान", "id": "{amount} toman", "pt": "{amount} tomans",
+    },
+    "unit.days": {
+        "fa": "روز", "en": "days", "ar": "يوم", "ru": "дней", "tr": "gün",
+        "uz": "kun", "hi": "दिन", "id": "hari", "pt": "dias",
+    },
+    "unit.messages": {
+        "fa": "پیام", "en": "messages", "ar": "رسالة", "ru": "сообщений",
+        "tr": "mesaj", "uz": "xabar", "hi": "संदेश", "id": "pesan",
+        "pt": "mensagens",
+    },
+    "unit.jobs": {
+        "fa": "کار", "en": "jobs", "ar": "مهمة", "ru": "задач", "tr": "iş",
+        "uz": "vazifa", "hi": "कार्य", "id": "tugas", "pt": "tarefas",
+    },
+    "unit.dests": {
+        "fa": "مقصد", "en": "destinations", "ar": "وجهة", "ru": "каналов",
+        "tr": "hedef", "uz": "manzil", "hi": "गंतव्य", "id": "tujuan",
+        "pt": "destinos",
+    },
+    "unit.watermarks": {
+        "fa": "واترمارک", "en": "watermarks", "ar": "علامة مائية",
+        "ru": "водяных знаков", "tr": "filigran", "uz": "suv belgisi",
+        "hi": "वॉटरमार्क", "id": "watermark", "pt": "marcas d'água",
+    },
+    "unit.history": {
+        "fa": "پیام گذشته", "en": "older posts", "ar": "منشور سابق",
+        "ru": "старых постов", "tr": "eski gönderi", "uz": "eski post",
+        "hi": "पुरानी पोस्ट", "id": "postingan lama", "pt": "posts antigos",
+    },
 }
