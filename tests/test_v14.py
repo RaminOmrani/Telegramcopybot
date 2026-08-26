@@ -185,6 +185,69 @@ def test_the_first_question_is_asked_in_every_language():
     assert "اختر لغتك" in everyone
 
 
+# ----------------------------------------------------- راهنمای چندزبانه
+def test_an_untranslated_guide_section_stays_persian():
+    """راهنما باید ناقص بماند، نه خالی."""
+    from telkap.handlers import guide
+
+    # «filters» هنوز ترجمه نشده
+    assert "فیلترها" in guide._body("filters", "en")
+
+
+def test_a_translated_guide_section_uses_the_chosen_language():
+    from telkap.handlers import guide
+
+    assert "Quick start" in guide._body("start", "en")
+    assert "Быстрый старт" in guide._body("start", "ru")
+    assert "Tez boshlash" in guide._body("start", "uz")
+
+
+def test_the_guide_home_and_menu_follow_the_language():
+    from telkap.handlers import guide
+
+    assert "Bot guide" in guide._home("en")
+    titles = [b.text for r in guide._menu("en").as_markup().inline_keyboard for b in r]
+    assert "🚀 Quick start" in titles
+
+
+def test_the_guide_language_comes_from_the_context():
+    """میدل‌ور زبان را می‌گذارد؛ هندلرها لازم نیست پاسش بدهند."""
+    from telkap import i18n
+    from telkap.handlers import guide
+
+    i18n.set_current("ru")
+    try:
+        assert "Быстрый старт" in guide._body("start")
+    finally:
+        i18n.set_current(i18n.DEFAULT)
+
+
+def test_translated_guide_sections_are_real_translations():
+    """بخشی که ترجمه‌اش با فارسی یکی باشد، یعنی ترجمه نشده."""
+    from telkap import guide_texts, i18n
+
+    for key, entry in guide_texts.BODIES.items():
+        for lang in i18n.LANGS:
+            if lang == i18n.DEFAULT:
+                continue
+            text = entry.get(lang)
+            assert text, f"{key}/{lang} خالی است"
+            assert len(text) > 100, f"{key}/{lang} خیلی کوتاه است"
+
+
+def test_every_translated_section_has_a_button_title():
+    """بخشی که متنش ترجمه شده ولی دکمه‌اش فارسی مانده، ناجور دیده می‌شود."""
+    from telkap import guide_texts, i18n
+
+    for key in guide_texts.BODIES:
+        if key == "home":
+            continue
+        for lang in i18n.LANGS:
+            if lang == i18n.DEFAULT:
+                continue
+            assert guide_texts.title(key, lang), f"عنوان {key}/{lang} نیست"
+
+
 # ------------------------------------------------- ذخیره‌ی زبان کاربر
 @pytest.mark.asyncio
 async def test_the_chosen_language_is_remembered(tmp_path, monkeypatch):

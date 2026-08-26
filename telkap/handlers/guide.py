@@ -13,6 +13,7 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from telkap import guide_texts, i18n
 from telkap.keyboards import menu_texts
 from telkap.plans import (
     CREDIT_HISTORY,
@@ -31,7 +32,7 @@ router = Router(name="guide")
 RULE = "━━━━━━━━━━━━━━━━━━"
 
 
-def _home() -> str:
+def _home_fa() -> str:
     return (
         "📚 <b>راهنمای ربات</b>\n"
         f"{RULE}\n\n"
@@ -666,19 +667,33 @@ LAYOUT: tuple[tuple[str, ...], ...] = (
 )
 
 
-def _menu() -> InlineKeyboardBuilder:
+def _title(key: str, lang: str | None = None) -> str:
+    """عنوان دکمه‌ی بخش؛ اگر ترجمه نشده باشد فارسی می‌ماند."""
+    return guide_texts.title(key, i18n.normalize(lang or i18n.current())) or SECTIONS[key][0]
+
+
+def _body(key: str, lang: str | None = None) -> str:
+    """متن بخش؛ اگر ترجمه نشده باشد فارسی می‌ماند."""
+    return guide_texts.body(key, i18n.normalize(lang or i18n.current())) or SECTIONS[key][1]()
+
+
+def _home(lang: str | None = None) -> str:
+    return guide_texts.body("home", i18n.normalize(lang or i18n.current())) or _home_fa()
+
+
+def _menu(lang: str | None = None) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     for row in LAYOUT:
         kb.row(
             *[
-                InlineKeyboardButton(text=SECTIONS[key][0], callback_data=f"guide:{key}")
+                InlineKeyboardButton(text=_title(key, lang), callback_data=f"guide:{key}")
                 for key in row
             ]
         )
     return kb
 
 
-def _section_keyboard(current: str) -> InlineKeyboardBuilder:
+def _section_keyboard(current: str, lang: str | None = None) -> InlineKeyboardBuilder:
     """پایین هر بخش: رفتن به بخش بعد و بازگشت به فهرست."""
     keys = list(SECTIONS)
     index = keys.index(current)
@@ -687,10 +702,14 @@ def _section_keyboard(current: str) -> InlineKeyboardBuilder:
         nxt = keys[index + 1]
         kb.row(
             InlineKeyboardButton(
-                text=f"➡️ بعدی: {SECTIONS[nxt][0]}", callback_data=f"guide:{nxt}"
+                text=f"➡️ {_title(nxt, lang)}", callback_data=f"guide:{nxt}"
             )
         )
-    kb.row(InlineKeyboardButton(text="📚 فهرست راهنما", callback_data="guide:home"))
+    kb.row(
+        InlineKeyboardButton(
+            text=i18n.t("menu.help", lang), callback_data="guide:home"
+        )
+    )
     return kb
 
 
@@ -718,7 +737,7 @@ async def cb_section(call: CallbackQuery) -> None:
         await call.answer()
         return
     await call.answer()
-    text = section[1]()
+    text = _body(key)
     markup = _section_keyboard(key).as_markup()
     try:
         await call.message.edit_text(text, reply_markup=markup)
