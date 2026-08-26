@@ -204,11 +204,20 @@ def test_the_language_question_does_not_become_a_wall_of_text():
 
 # ----------------------------------------------------- راهنمای چندزبانه
 def test_an_untranslated_guide_section_stays_persian():
-    """راهنما باید ناقص بماند، نه خالی."""
+    """راهنما باید ناقص بماند، نه خالی.
+
+    ترجمه‌ی یک بخش را موقتاً برمی‌داریم به‌جای اینکه به بخشی که هنوز ترجمه
+    نشده تکیه کنیم؛ وگرنه این تست با کامل شدن ترجمه‌ها بی‌معنا می‌شد.
+    """
+    from telkap import guide_texts
     from telkap.handlers import guide
 
-    # «filters» هنوز ترجمه نشده
-    assert "فیلترها" in guide._body("filters", "en")
+    original = guide_texts.BODIES
+    guide_texts.BODIES = {k: v for k, v in original.items() if k != "filters"}
+    try:
+        assert "فیلترها" in guide._body("filters", "en")
+    finally:
+        guide_texts.BODIES = original
 
 
 def test_a_translated_guide_section_uses_the_chosen_language():
