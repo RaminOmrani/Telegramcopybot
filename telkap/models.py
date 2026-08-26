@@ -595,4 +595,44 @@ class ActivityLog(Base):
     level: Mapped[str] = mapped_column(String(16), default="info")
     event: Mapped[str] = mapped_column(String(64))
     detail: Mapped[str] = mapped_column(String(600), default="")
+    # چه کسی این کار را کرد. برای کارهای ادمین با user_id (که هدفِ کار است)
+    # فرق دارد؛ بدون این ستون، لاگ حسابرسی قابل اتکا نیست.
+    actor_id: Mapped[int | None] = mapped_column(BigInteger, index=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class AdminRole(Base):
+    """نقش هر ادمین. ادمین‌های داخل .env همیشه دسترسی کامل دارند.
+
+    وقتی کسی را برای پشتیبانی می‌آورید، نباید بتواند قیمت‌ها را عوض کند.
+    """
+
+    __tablename__ = "admin_roles"
+
+    ROLE_OWNER = "owner"        # همه‌چیز
+    ROLE_FINANCE = "finance"    # پرداخت، طرح‌ها، کدهای تخفیف، گزارش درآمد
+    ROLE_SUPPORT = "support"    # تیکت‌ها، کاربران، پیام همگانی
+
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    role: Mapped[str] = mapped_column(String(16), default=ROLE_SUPPORT)
+    note: Mapped[str] = mapped_column(String(120), default="")
+    added_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ChurnFeedback(Base):
+    """چرا کاربر تمدید نکرد.
+
+    ارزشمندترین داده‌ای که می‌شود جمع کرد و ارزان‌ترین راه گرفتنش: یک
+    سؤال تک‌دکمه‌ای در همان پیام انقضا.
+    """
+
+    __tablename__ = "churn_feedback"
+    __table_args__ = (UniqueConstraint("user_id", "sub_id", name="uq_churn_once"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    sub_id: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(32), index=True)
+    note: Mapped[str] = mapped_column(String(400), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

@@ -36,7 +36,7 @@ from telkap.config import get_settings
 from telkap.db import get_session, log_activity
 from telkap.models import DailyStat, Destination, MessageMap, RetryItem, Task, utcnow
 from telkap.plans import FEAT_MESSAGES, FEAT_WATERMARK
-from telkap.services import cache, entitlement, health
+from telkap.services import alerts, cache, entitlement, health
 from telkap.services.filters import MessageFacts, content_hash, should_copy
 from telkap.services.ratelimit import RateLimiter, daily_quota, hourly_quota
 from telkap.services.transform import apply_transforms, drop_custom_emoji, remap_entities
@@ -236,6 +236,7 @@ class Copier:
                 "اکانت کاربر %s محدود شد (%s)؛ %s کار متوقف شد",
                 user_id, diagnosis.state, paused,
             )
+            await alerts.account_failed(user_id, diagnosis.state)
         return True
 
     async def _pause_all_tasks(self, user_id: int, reason: str) -> int:

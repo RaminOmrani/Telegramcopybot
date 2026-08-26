@@ -63,8 +63,12 @@ class Flow(StatesGroup):
     admin_reseller = State()
     admin_chatid = State()
     admin_coupon = State()
+    admin_role = State()
+    admin_maint_note = State()
 
     reseller_customer = State()
+
+    churn_note = State()
 
     support_message = State()
     support_reply = State()

@@ -93,6 +93,9 @@ def _add_missing_columns(conn) -> None:
             ("account_note", "VARCHAR(120) DEFAULT ''"),
             ("account_checked_at", "TIMESTAMP"),
         ],
+        "activity_log": [
+            ("actor_id", "BIGINT"),
+        ],
         "payment_requests": [
             ("kind", "VARCHAR(16) DEFAULT 'plan'"),
             ("quantity", "INTEGER DEFAULT 0"),
@@ -169,8 +172,14 @@ async def log_activity(
     event: str,
     detail: str = "",
     level: str = "info",
+    actor_id: int | None = None,
 ) -> None:
-    """ثبت رویداد در جدول لاگ فعالیت‌ها (قابلیت «لاگ فعالیت‌ها»)."""
+    """ثبت رویداد در جدول لاگ فعالیت‌ها (قابلیت «لاگ فعالیت‌ها»).
+
+    `user_id` هدفِ رویداد است و `actor_id` کسی که انجامش داده. برای کار
+    خودِ کاربر هر دو یکی‌اند؛ برای کار ادمین فرق می‌کنند و همین تفاوت،
+    لاگ حسابرسی را قابل اتکا می‌کند.
+    """
     try:
         async with get_session() as session:
             session.add(
@@ -180,6 +189,7 @@ async def log_activity(
                     event=event,
                     detail=detail[:600],
                     level=level,
+                    actor_id=actor_id,
                 )
             )
             await session.commit()

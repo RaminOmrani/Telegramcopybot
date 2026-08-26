@@ -151,6 +151,65 @@ async def run_once(notify) -> int:
     return sent
 
 
+# ------------------------------------------------- پرسش پس از انقضا
+# پنجره‌ی پرسیدن «چرا تمدید نکردید؟». زودتر از این، کاربر شاید همان
+# ساعت تمدید کند؛ دیرتر، دیگر یادش نیست چرا رفته.
+CHURN_AFTER_HOURS = 6
+CHURN_BEFORE_HOURS = 96
+
+
+def _churn_markup(sub_id: int):
+    from aiogram.types import InlineKeyboardButton
+    from aiogram.utils.keyboard import InlineKeyboardBuilder
+
+    from telkap.services.analytics import REASONS
+
+    kb = InlineKeyboardBuilder()
+    for key, label in REASONS.items():
+        kb.row(
+            InlineKeyboardButton(text=label, callback_data=f"churn:{sub_id}:{key}")
+        )
+    return kb.as_markup()
+
+
+async def ask_churn(notify) -> int:
+    """از کاربرانی که اشتراکشان تازه تمام شده می‌پرسد چرا تمدید نکردند.
+
+    فقط از کسانی که اشتراک فعال دیگری ندارند؛ وگرنه از کسی که همان روز
+    تمدید کرده می‌پرسیدیم چرا نرفته — که هم بی‌معنی است و هم آزاردهنده.
+    """
+    now = utcnow()
+    async with get_session() as db:
+        rows = await db.execute(select(Subscription))
+        subs = list(rows.scalars())
+
+    active_users = {
+        sub.user_id for sub in subs if _aware(sub.expires_at) > now
+    }
+    asked = 0
+    for sub in subs:
+        if sub.user_id in active_users:
+            continue
+        gone = (now - _aware(sub.expires_at)).total_seconds() / 3600
+        if not CHURN_AFTER_HOURS <= gone <= CHURN_BEFORE_HOURS:
+            continue
+        if await _already_sent(sub.user_id, "churn_ask", sub.id):
+            continue
+        try:
+            await notify(
+                sub.user_id,
+                "🙏 <b>یک سؤال کوتاه</b>\n\n"
+                "اشتراک شما تمام شد و تمدید نکردید. اگر یک دکمه بزنید و "
+                "بگویید چرا، خیلی کمک می‌کند تا ربات را بهتر کنیم.",
+                _churn_markup(sub.id),
+            )
+            asked += 1
+        except Exception:
+            log.debug("پرسش ریزش به %s نرسید", sub.user_id, exc_info=True)
+        await _mark_sent(sub.user_id, "churn_ask", sub.id)
+    return asked
+
+
 async def run_forever(notify) -> None:
     while True:
         try:
@@ -158,6 +217,9 @@ async def run_forever(notify) -> None:
             count = await run_once(notify)
             if count:
                 log.info("%d یادآوری انقضا ارسال شد", count)
+            asked = await ask_churn(notify)
+            if asked:
+                log.info("%d پرسش دلیل ریزش ارسال شد", asked)
         except asyncio.CancelledError:
             raise
         except Exception:

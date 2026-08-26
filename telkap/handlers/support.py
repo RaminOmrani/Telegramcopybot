@@ -17,7 +17,7 @@ from telkap.config import get_settings
 from telkap.handlers.common import Flow, get_or_create_user
 from telkap.keyboards import BTN_SUPPORT, main_menu
 from telkap.models import SupportTicket
-from telkap.services import support
+from telkap.services import roles, support
 from telkap.texts import fa_num
 
 log = logging.getLogger(__name__)
@@ -26,8 +26,6 @@ router = Router(name="support")
 RULE = "━━━━━━━━━━━━━━━━━━"
 
 
-def _is_admin(user_id: int) -> bool:
-    return get_settings().is_admin(user_id)
 
 
 # ============================================================ سمت کاربر
@@ -188,7 +186,7 @@ def _ticket_keyboard(ticket: SupportTicket) -> InlineKeyboardBuilder:
 
 @router.callback_query(F.data == "adm:tickets")
 async def cb_list(call: CallbackQuery) -> None:
-    if not _is_admin(call.from_user.id):
+    if not await roles.can(call.from_user.id, roles.CAP_TICKETS):
         await call.answer("دسترسی ندارید", show_alert=True)
         return
     await call.answer()
@@ -221,7 +219,7 @@ async def cb_list(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("supa:view:"))
 async def cb_admin_view(call: CallbackQuery) -> None:
-    if not _is_admin(call.from_user.id):
+    if not await roles.can(call.from_user.id, roles.CAP_TICKETS):
         await call.answer("دسترسی ندارید", show_alert=True)
         return
     ticket_id = int(call.data.split(":")[2])
@@ -256,7 +254,7 @@ async def cb_admin_view(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("supa:reply:"))
 async def cb_admin_reply(call: CallbackQuery, state: FSMContext) -> None:
-    if not _is_admin(call.from_user.id):
+    if not await roles.can(call.from_user.id, roles.CAP_TICKETS):
         await call.answer("دسترسی ندارید", show_alert=True)
         return
     ticket_id = int(call.data.split(":")[2])
@@ -272,7 +270,7 @@ async def cb_admin_reply(call: CallbackQuery, state: FSMContext) -> None:
 
 @router.message(Flow.support_reply)
 async def got_reply(message: Message, state: FSMContext) -> None:
-    if not _is_admin(message.from_user.id):
+    if not await roles.can(message.from_user.id, roles.CAP_TICKETS):
         await state.clear()
         return
     body = (message.text or "").strip()
@@ -307,7 +305,7 @@ async def got_reply(message: Message, state: FSMContext) -> None:
 @router.callback_query(F.data.startswith("supa:close:"))
 @router.callback_query(F.data.startswith("supa:open:"))
 async def cb_admin_toggle(call: CallbackQuery) -> None:
-    if not _is_admin(call.from_user.id):
+    if not await roles.can(call.from_user.id, roles.CAP_TICKETS):
         await call.answer("دسترسی ندارید", show_alert=True)
         return
     _, action, raw = call.data.split(":")

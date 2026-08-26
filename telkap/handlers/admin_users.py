@@ -14,7 +14,6 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import func, select
 
-from telkap.config import get_settings
 from telkap.db import get_session
 from telkap.handlers.common import Flow, parse_int
 from telkap.models import Subscription, Task, User, utcnow
@@ -32,6 +31,7 @@ from telkap.services import (
     limits,
     referral,
     reseller,
+    roles,
     subscription,
     wallet,
 )
@@ -57,7 +57,8 @@ DAY_STEPS = (1, 7, 30)
 
 
 def _is_admin(user_id: int) -> bool:
-    return get_settings().is_admin(user_id)
+    # دسترسی این روتر روی خودِ روتر قفل شده؛ این گارد لایه‌ی دوم است
+    return roles.can_cached(user_id, roles.CAP_USERS)
 
 
 async def _guard(call: CallbackQuery) -> bool:

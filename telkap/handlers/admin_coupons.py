@@ -8,11 +8,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from telkap.config import get_settings
 from telkap.handlers.common import Flow, parse_int
 from telkap.models import Coupon
 from telkap.plans import PLANS, toman
-from telkap.services import coupons, giftcodes, reminders
+from telkap.services import coupons, giftcodes, reminders, roles
 from telkap.texts import fa_num
 
 log = logging.getLogger(__name__)
@@ -22,7 +21,8 @@ RULE = "━━━━━━━━━━━━━━━━━━"
 
 
 def _is_admin(user_id: int) -> bool:
-    return get_settings().is_admin(user_id)
+    # دسترسی این روتر روی خودِ روتر قفل شده؛ این گارد لایه‌ی دوم است
+    return roles.can_cached(user_id, roles.CAP_MONEY)
 
 
 async def _render_list(target: Message, *, edit: bool = True) -> None:

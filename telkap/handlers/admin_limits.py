@@ -13,10 +13,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from telkap.config import get_settings
 from telkap.handlers.common import Flow, parse_int
 from telkap.plans import get_plan, quota_label
-from telkap.services import limits
+from telkap.services import limits, roles
 from telkap.services.limits import USER_FIELDS, feature_key
 from telkap.services.planstore import FEATURE_FIELDS, field_spec
 from telkap.services.subscription import active_plan_for, active_subscription
@@ -28,7 +27,8 @@ RULE = "━━━━━━━━━━━━━━━━━━"
 
 
 def _is_admin(user_id: int) -> bool:
-    return get_settings().is_admin(user_id)
+    # دسترسی این روتر روی خودِ روتر قفل شده؛ این گارد لایه‌ی دوم است
+    return roles.can_cached(user_id, roles.CAP_MONEY)
 
 
 async def _guard(call: CallbackQuery) -> bool:

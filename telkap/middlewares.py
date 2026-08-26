@@ -18,9 +18,37 @@ from aiogram.types import (
 from telkap.config import get_settings
 from telkap.db import get_session
 from telkap.models import User
-from telkap.services import forcejoin
+from telkap.services import forcejoin, maintenance, roles
 
 log = logging.getLogger(__name__)
+
+
+class MaintenanceMiddleware(BaseMiddleware):
+    """در حالت تعمیر، فقط ادمین‌ها اجازه‌ی کار دارند.
+
+    کاربر به‌جای خطای مبهم، دلیل و یک پیام محترمانه می‌بیند.
+    """
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        on, note = await maintenance.mode()
+        if not on:
+            return await handler(event, data)
+
+        tg_user = data.get("event_from_user")
+        if tg_user is not None and await roles.is_staff(tg_user.id):
+            return await handler(event, data)
+
+        text = f"🛠 <b>در دست تعمیر</b>\n\n{note}"
+        if isinstance(event, Message):
+            await event.answer(text)
+        elif isinstance(event, CallbackQuery):
+            await event.answer(note[:190], show_alert=True)
+        return None
 
 
 class BanMiddleware(BaseMiddleware):
@@ -43,6 +71,31 @@ class BanMiddleware(BaseMiddleware):
                     await event.answer("⛔️ دسترسی شما مسدود شده است.", show_alert=True)
                 return None
         return await handler(event, data)
+
+
+class CapMiddleware(BaseMiddleware):
+    """کل یک روتر را پشت یک دسترسی قفل می‌کند.
+
+    بخش‌هایی مثل «طرح‌ها» یا «کاربران» یکدست‌اند و همه‌ی هندلرهایشان یک
+    دسترسی می‌خواهند؛ گذاشتن گارد در تک‌تکِ آن‌ها هم تکراری است و هم
+    دیر یا زود یکی‌اش جا می‌ماند.
+    """
+
+    def __init__(self, cap: str) -> None:
+        self.cap = cap
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        tg_user = data.get("event_from_user")
+        if tg_user is not None and await roles.can(tg_user.id, self.cap):
+            return await handler(event, data)
+        if isinstance(event, CallbackQuery):
+            await event.answer("به این بخش دسترسی ندارید", show_alert=True)
+        return None
 
 
 class ForceJoinMiddleware(BaseMiddleware):

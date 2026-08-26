@@ -9,9 +9,12 @@ from telkap.handlers import (
     admin_limits,
     admin_plans,
     admin_referral,
+    admin_reports,
+    admin_system,
     admin_users,
     billing,
     chatpicker,
+    churn,
     clone,
     destinations,
     forward,
@@ -26,6 +29,27 @@ from telkap.handlers import (
     wallet,
     watermark_wizard,
 )
+from telkap.middlewares import CapMiddleware
+from telkap.services import roles
+
+# بخش‌هایی که همه‌ی هندلرهایشان یک دسترسی می‌خواهند. قفل روی خودِ روتر
+# می‌نشیند تا با اضافه شدن هندلر تازه، گارد جا نماند.
+LOCKED: tuple[tuple[Router, str], ...] = (
+    (admin_users.router, roles.CAP_USERS),
+    (admin_channels.router, roles.CAP_SYSTEM),
+    (admin_plans.router, roles.CAP_MONEY),
+    (admin_limits.router, roles.CAP_MONEY),
+    (admin_referral.router, roles.CAP_MONEY),
+    (admin_coupons.router, roles.CAP_MONEY),
+    (admin_reports.router, roles.CAP_REPORTS),
+    (admin_system.router, roles.CAP_SYSTEM),
+)
+
+
+for _router, _cap in LOCKED:
+    _guard = CapMiddleware(_cap)
+    _router.message.middleware(_guard)
+    _router.callback_query.middleware(_guard)
 
 
 def build_router() -> Router:
@@ -39,6 +63,8 @@ def build_router() -> Router:
     root.include_router(admin_limits.router)
     root.include_router(admin_referral.router)
     root.include_router(admin_coupons.router)
+    root.include_router(admin_reports.router)
+    root.include_router(admin_system.router)
     root.include_router(support.router)
     root.include_router(account.router)
     root.include_router(tasks.router)
@@ -52,6 +78,7 @@ def build_router() -> Router:
     root.include_router(wallet.router)
     root.include_router(reseller.router)
     root.include_router(billing.router)
+    root.include_router(churn.router)
     # فوروارد آخر ثبت می‌شود چون هندلر پیام فورواردشده‌اش فیلتر حالت ندارد
     root.include_router(forward.router)
     return root

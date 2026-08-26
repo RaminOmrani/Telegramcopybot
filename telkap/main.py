@@ -18,9 +18,15 @@ from telkap.config import get_settings
 from telkap.db import close_db, get_session, init_db
 from telkap.handlers import build_router
 from telkap.handlers import history as history_handlers
-from telkap.middlewares import BanMiddleware, ErrorLogMiddleware, ForceJoinMiddleware
+from telkap.middlewares import (
+    BanMiddleware,
+    ErrorLogMiddleware,
+    ForceJoinMiddleware,
+    MaintenanceMiddleware,
+)
 from telkap.models import Task
 from telkap.services import (
+    alerts,
     backup,
     forcejoin,
     maintenance,
@@ -50,9 +56,9 @@ def setup_logging(level: str) -> None:
 
 
 def make_notifier(bot: Bot):
-    async def notify(user_id: int, text: str) -> None:
+    async def notify(user_id: int, text: str, markup=None) -> None:
         try:
-            await bot.send_message(user_id, text)
+            await bot.send_message(user_id, text, reply_markup=markup)
         except Exception:
             log.debug("ارسال اعلان به کاربر %s ناموفق بود", user_id, exc_info=True)
 
@@ -124,6 +130,8 @@ async def main() -> None:
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     notify = make_notifier(bot)
+    # تا بخش‌هایی که Bot ندارند (مثل موتور کپی) هم بتوانند به ادمین هشدار بدهند
+    alerts.bind(bot)
 
     copier = Copier(manager, notifier=notify)
     manager.bind_copier(copier)
@@ -138,6 +146,7 @@ async def main() -> None:
     for observer in (dispatcher.message, dispatcher.callback_query):
         observer.middleware(ErrorLogMiddleware())
         observer.middleware(BanMiddleware())
+        observer.middleware(MaintenanceMiddleware())
         observer.middleware(ForceJoinMiddleware())
     dispatcher.include_router(build_router())
 
@@ -153,6 +162,7 @@ async def main() -> None:
         asyncio.create_task(backup.run_forever(bot), name="backup"),
         asyncio.create_task(renewal.run_forever(notify), name="renewal"),
         asyncio.create_task(maintenance.run_forever(), name="maintenance"),
+        asyncio.create_task(alerts.run_forever(bot), name="alerts"),
     ]
 
     try:

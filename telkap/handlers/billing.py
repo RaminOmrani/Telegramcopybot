@@ -35,7 +35,7 @@ from telkap.plans import (
     purchasable,
     toman,
 )
-from telkap.services import credits, payments
+from telkap.services import credits, payments, roles
 from telkap.services.subscription import active_subscription, remaining_days
 from telkap.texts import fa_num
 
@@ -462,7 +462,7 @@ async def _notify_admins(message: Message, request: PaymentRequest) -> None:
 
 @router.callback_query(F.data.startswith("pay:ok:"))
 async def cb_approve(call: CallbackQuery) -> None:
-    if not get_settings().is_admin(call.from_user.id):
+    if not await roles.can(call.from_user.id, roles.CAP_MONEY):
         await call.answer("دسترسی ندارید", show_alert=True)
         return
     request_id = int(call.data.split(":")[2])
@@ -497,7 +497,7 @@ async def cb_approve(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data.startswith("pay:no:"))
 async def cb_reject(call: CallbackQuery) -> None:
-    if not get_settings().is_admin(call.from_user.id):
+    if not await roles.can(call.from_user.id, roles.CAP_MONEY):
         await call.answer("دسترسی ندارید", show_alert=True)
         return
     request_id = int(call.data.split(":")[2])
