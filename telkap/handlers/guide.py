@@ -649,6 +649,7 @@ def _commands() -> str:
         "<code>/plans</code> — طرح‌ها و خرید\n"
         "<code>/progress</code> — پیشرفت کپی پیام‌های گذشته\n"
         "<code>/logs</code> — گزارش فعالیت‌های شما\n"
+        "<code>/language</code> — تغییر زبان\n"
         "<code>/cancel</code> — لغو عملیات نیمه‌کاره\n\n"
         "<i>اگر جایی گیر کردید، /cancel بزنید و از منو دوباره شروع کنید.</i>"
     )

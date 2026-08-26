@@ -261,6 +261,32 @@ def test_translated_guide_sections_are_real_translations():
             assert len(text) > 100, f"{key}/{lang} خیلی کوتاه است"
 
 
+def test_the_whole_guide_is_translated_into_every_language():
+    """هر بخشی که به راهنما اضافه شود باید ترجمه‌اش هم بیاید."""
+    from telkap import guide_texts, i18n
+    from telkap.handlers.guide import SECTIONS
+
+    assert [key for key in SECTIONS if key not in guide_texts.BODIES] == []
+    assert [key for key in SECTIONS if key not in guide_texts.TITLES] == []
+    for lang in i18n.LANGS:
+        if lang != i18n.DEFAULT:
+            assert guide_texts.coverage(lang) == len(guide_texts.BODIES), lang
+
+
+def test_no_section_is_left_with_an_unfilled_placeholder():
+    """جای خالیِ پرنشده یعنی کاربر «{{table}}» را روی صفحه می‌بیند."""
+    import re
+
+    from telkap import i18n
+    from telkap.handlers import guide
+    from telkap.handlers.guide import SECTIONS
+
+    for key in SECTIONS:
+        for lang in i18n.LANGS:
+            left = re.findall(r"\{\{\w+\}\}", guide._body(key, lang))
+            assert left == [], f"{key}/{lang}: {left}"
+
+
 def test_no_translation_leaks_a_foreign_alphabet():
     """جمله‌ای از یک زبان که اشتباهی در متن زبان دیگر جا مانده باشد.
 
