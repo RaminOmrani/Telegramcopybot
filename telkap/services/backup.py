@@ -85,9 +85,63 @@ def compress(source: Path) -> Path | None:
     return target
 
 
-async def send_offsite(bot, path: Path, *, chat_id: str | int | None = None) -> bool:
+CHAT_KEY = "backup_chat_id"
+
+# در هر چرخه‌ی پشتیبان‌گیری خوانده می‌شود؛ یک بار از دیتابیس می‌آید
+_chat_cache: str | None = None
+
+
+def invalidate_chat() -> None:
+    global _chat_cache
+    _chat_cache = None
+
+
+async def chat_id() -> str:
+    """شناسه‌ی کانال پشتیبان: اول از پنل، بعد از `.env`.
+
+    گذاشتنش در پنل یعنی با یک فوروارد کار تمام می‌شود — بدون ویرایش فایل
+    و بدون ری‌استارت. مقدار `.env` به‌عنوان پیش‌فرض می‌ماند تا نصب‌های
+    قبلی چیزی از دست ندهند.
+    """
+    global _chat_cache
+    if _chat_cache is None:
+        from telkap.db import get_session
+        from telkap.models import AppSetting
+
+        value = ""
+        try:
+            async with get_session() as db:
+                row = await db.get(AppSetting, CHAT_KEY)
+            if row is not None and isinstance(row.value, dict):
+                value = str(row.value.get("chat_id") or "")
+        except Exception:
+            log.debug("خواندن کانال پشتیبان از دیتابیس ناموفق بود", exc_info=True)
+        _chat_cache = value or get_settings().backup_chat_id
+    return _chat_cache
+
+
+async def set_chat_id(value: str, *, by: int | None = None) -> str:
+    """کانال پشتیبان را از پنل تنظیم می‌کند. خالی یعنی برگشت به `.env`."""
+    from telkap.db import get_session
+    from telkap.models import AppSetting
+
+    cleaned = (value or "").strip()
+    async with get_session() as db:
+        row = await db.get(AppSetting, CHAT_KEY)
+        if row is None:
+            row = AppSetting(key=CHAT_KEY)
+            db.add(row)
+        row.value = {"chat_id": cleaned}
+        row.updated_by = by
+        row.updated_at = utcnow()
+        await db.commit()
+    invalidate_chat()
+    return await chat_id()
+
+
+async def send_offsite(bot, path: Path, *, to: str | int | None = None) -> bool:
     """نسخه را به کانال پشتیبان می‌فرستد تا بیرون از سرور هم باشد."""
-    target = chat_id if chat_id is not None else get_settings().backup_chat_id
+    target = to if to is not None else await chat_id()
     if not target:
         return False
 
@@ -129,7 +183,7 @@ async def run_once(bot=None) -> tuple[Path | None, bool]:
     local = await asyncio.to_thread(make_backup)
     if local is None:
         return None, False
-    if bot is None or not get_settings().backup_chat_id:
+    if bot is None or not await chat_id():
         return local, False
 
     packed = await asyncio.to_thread(compress, local)

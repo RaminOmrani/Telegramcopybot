@@ -11,7 +11,7 @@ from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import func, select
 
-from telkap.db import get_session
+from telkap.db import get_session, log_activity
 from telkap.handlers.common import Flow, parse_int
 from telkap.models import DailyStat, PaymentRequest, RetryItem, Subscription, Task, User, utcnow
 from telkap.plans import PLANS, toman
@@ -323,13 +323,60 @@ async def got_chatid(message: Message, state: FSMContext) -> None:
 
     await state.clear()
     title = getattr(origin, "title", "") or "—"
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        InlineKeyboardButton(
+            text="💾 همین را کانال پشتیبان کن",
+            callback_data=f"adm:setbk:{origin.id}",
+        )
+    )
     await message.answer(
         f"🆔 <b>{title}</b>\n\n"
         f"شناسه: <code>{origin.id}</code>\n\n"
-        "برای کانال پشتیبان، همین عدد را در فایل <code>.env</code> بگذارید:\n"
-        f"<code>BACKUP_CHAT_ID={origin.id}</code>\n\n"
-        "<i>یادتان باشد ربات باید در آن کانال ادمین باشد و اجازه‌ی ارسال "
-        "داشته باشد.</i>"
+        "اگر می‌خواهید نسخه‌های پشتیبان به همین کانال بروند، دکمه‌ی زیر را "
+        "بزنید — همین‌جا ذخیره می‌شود و نیازی به ویرایش فایل یا ری‌استارت "
+        "نیست.\n\n"
+        "<i>ربات باید در آن کانال ادمین باشد و اجازه‌ی ارسال داشته باشد.</i>",
+        reply_markup=kb.as_markup(),
+    )
+
+
+@router.callback_query(F.data.startswith("adm:setbk:"))
+async def cb_set_backup_chat(call: CallbackQuery) -> None:
+    if not await roles.can(call.from_user.id, roles.CAP_SYSTEM):
+        await call.answer("دسترسی ندارید", show_alert=True)
+        return
+    target = call.data.split(":")[-1]
+
+    # پیش از ذخیره امتحان می‌کنیم؛ وگرنه تازه موقع فاجعه می‌فهمیدیم نمی‌شود
+    try:
+        probe = await call.bot.send_message(
+            int(target),
+            "✅ این کانال به‌عنوان مقصد نسخه‌های پشتیبان تنظیم شد.",
+            disable_notification=True,
+        )
+    except Exception as exc:
+        log.warning("تنظیم کانال پشتیبان ناموفق بود: %s", exc)
+        await call.answer()
+        await call.message.answer(
+            "⚠️ نتوانستم در آن کانال پیام بفرستم.\n\n"
+            "ربات را در کانال <b>ادمین</b> کنید و اجازه‌ی «ارسال پیام» بدهید، "
+            "بعد دوباره تلاش کنید."
+        )
+        return
+
+    await backup.set_chat_id(target, by=call.from_user.id)
+    await log_activity(
+        actor_id=call.from_user.id,
+        event="backup_channel_set",
+        detail=target,
+        level="warning",
+    )
+    await call.answer("کانال پشتیبان تنظیم شد")
+    await call.message.answer(
+        f"💾 کانال پشتیبان روی <code>{target}</code> تنظیم شد.\n"
+        f"یک پیام آزمایشی همان‌جا فرستادم (شماره {probe.message_id}).\n\n"
+        "از این پس هر نسخه‌ی پشتیبان به‌صورت خودکار آنجا بایگانی می‌شود."
     )
 
 
@@ -347,11 +394,12 @@ async def cb_backup(call: CallbackQuery) -> None:
 
     size_kb = path.stat().st_size // 1024
     note = (
-        "\n☁️ نسخه‌ای هم به کانال پشتیبان فرستاده شد."
+        f"\n☁️ نسخه‌ای هم به کانال پشتیبان (<code>{await backup.chat_id()}</code>) رفت."
         if offsite
         else "\n⚠️ کانال پشتیبان تنظیم نشده؛ این نسخه فقط روی همین سرور است.\n"
-        "<i>برای امنیت واقعی، یک کانال خصوصی بسازید، ربات را در آن ادمین کنید "
-        "و شناسه‌اش را در <code>BACKUP_CHAT_ID</code> بگذارید.</i>"
+        "<i>یک کانال خصوصی بسازید، ربات را در آن ادمین کنید، بعد /chatid را "
+        "بزنید و یک پیام از آن کانال را فوروارد کنید — با یک دکمه تمام "
+        "می‌شود.</i>"
     )
     try:
         from aiogram.types import FSInputFile

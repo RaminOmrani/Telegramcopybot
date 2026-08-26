@@ -435,6 +435,50 @@ async def test_maintenance_mode_is_off_by_default_and_survives_a_restart(
         await db_module.close_db()
 
 
+# --------------------------------------------------- کانال پشتیبان
+@pytest.mark.asyncio
+async def test_backup_channel_can_be_set_from_the_panel(tmp_path, monkeypatch):
+    monkeypatch.setenv("BACKUP_CHAT_ID", "")
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import backup
+
+        backup.invalidate_chat()
+        assert await backup.chat_id() == ""      # نه در .env، نه در پنل
+
+        assert await backup.set_chat_id("-1001234567890", by=7) == "-1001234567890"
+        assert await backup.chat_id() == "-1001234567890"
+
+        # از دیتابیس هم همان درمی‌آید، پس ری‌استارت لازم نیست
+        backup.invalidate_chat()
+        assert await backup.chat_id() == "-1001234567890"
+
+        # خالی کردن یعنی برگشت به مقدار .env
+        await backup.set_chat_id("")
+        assert await backup.chat_id() == ""
+    finally:
+        backup.invalidate_chat()
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_env_backup_channel_still_works_when_panel_is_empty(tmp_path, monkeypatch):
+    monkeypatch.setenv("BACKUP_CHAT_ID", "-100999")
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import backup
+
+        backup.invalidate_chat()
+        assert await backup.chat_id() == "-100999"
+
+        # پنل بر .env اولویت دارد
+        await backup.set_chat_id("-100111")
+        assert await backup.chat_id() == "-100111"
+    finally:
+        backup.invalidate_chat()
+        await db_module.close_db()
+
+
 # ------------------------------------------------------- لاگ حسابرسی
 @pytest.mark.asyncio
 async def test_admin_actions_record_who_did_them(tmp_path, monkeypatch):

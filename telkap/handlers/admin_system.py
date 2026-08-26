@@ -12,7 +12,7 @@ from telkap.config import get_settings
 from telkap.db import log_activity
 from telkap.handlers.admin_reports import guard
 from telkap.handlers.common import Flow, parse_int
-from telkap.services import maintenance, roles
+from telkap.services import backup, maintenance, roles
 
 log = logging.getLogger(__name__)
 router = Router(name="admin-system")
@@ -24,6 +24,7 @@ def _menu_kb() -> InlineKeyboardBuilder:
         InlineKeyboardButton(text="👮 نقش ادمین‌ها", callback_data="sys:roles"),
         InlineKeyboardButton(text="🛠 حالت تعمیر", callback_data="sys:maint"),
     )
+    kb.row(InlineKeyboardButton(text="🆔 گرفتن شناسه‌ی کانال", callback_data="sys:chatid"))
     kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm:home"))
     return kb
 
@@ -41,11 +42,34 @@ async def cb_system(call: CallbackQuery) -> None:
     if await guard(call, roles.CAP_SYSTEM):
         return
     on, _note = await maintenance.mode()
-    state = "🔴 روشن" if on else "🟢 خاموش"
+    channel = await backup.chat_id()
     await _show(
         call,
-        f"⚙️ <b>سیستم</b>\n\nحالت تعمیر: <b>{state}</b>",
+        "⚙️ <b>سیستم</b>\n\n"
+        f"حالت تعمیر: <b>{'🔴 روشن' if on else '🟢 خاموش'}</b>\n"
+        + (
+            f"کانال پشتیبان: <code>{channel}</code>"
+            if channel
+            else "کانال پشتیبان: <b>⚠️ تنظیم نشده</b> — نسخه‌ها فقط روی همین "
+            "سرورند. «🆔 گرفتن شناسه‌ی کانال» را بزنید."
+        ),
         _menu_kb(),
+    )
+
+
+@router.callback_query(F.data == "sys:chatid")
+async def cb_chatid(call: CallbackQuery, state: FSMContext) -> None:
+    if await guard(call, roles.CAP_SYSTEM):
+        return
+    await call.answer()
+    await state.set_state(Flow.admin_chatid)
+    await call.message.answer(
+        "🆔 <b>گرفتن شناسه‌ی کانال</b>\n\n"
+        "یک پیام از آن کانال را برای من <b>فوروارد</b> کنید تا شناسه‌اش را "
+        "بگویم و بتوانید با یک دکمه کانال پشتیبانش کنید.\n\n"
+        "<i>اگر کانال فوروارد را بسته، ربات را همان‌جا ادمین کنید، یک پیام "
+        "بفرستید و همان را فوروارد کنید.</i>\n\n"
+        "انصراف: /cancel"
     )
 
 

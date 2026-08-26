@@ -256,7 +256,7 @@ async def test_offsite_upload_sends_the_file(tmp_path, monkeypatch):
                 sent.append((chat, kwargs.get("caption", "")))
 
         path = backup.make_backup()
-        assert await backup.send_offsite(FakeBot(), path, chat_id="-1001234567890") is True
+        assert await backup.send_offsite(FakeBot(), path, to="-1001234567890") is True
         assert sent and sent[0][0] == -1001234567890
         assert "پشتیبان" in sent[0][1]
     finally:
@@ -277,6 +277,6 @@ async def test_oversized_backup_is_refused_not_truncated(tmp_path, monkeypatch):
             async def send_document(self, *a, **k):
                 raise AssertionError("نباید ارسال می‌شد")
 
-        assert await backup.send_offsite(FakeBot(), big, chat_id="-100123") is False
+        assert await backup.send_offsite(FakeBot(), big, to="-100123") is False
     finally:
         await db_module.close_db()
