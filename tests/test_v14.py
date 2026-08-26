@@ -261,6 +261,32 @@ def test_translated_guide_sections_are_real_translations():
             assert len(text) > 100, f"{key}/{lang} خیلی کوتاه است"
 
 
+def test_no_translation_leaks_a_foreign_alphabet():
+    """جمله‌ای از یک زبان که اشتباهی در متن زبان دیگر جا مانده باشد.
+
+    موقع نوشتن نُه ترجمه کنار هم، پیش می‌آید که یک کلمه از ترجمه‌ی قبلی
+    سر جایش بماند. اگر خط‌ها فرق داشته باشند، همین‌جا گیر می‌افتد.
+    """
+    import re
+
+    from telkap import guide_texts
+
+    scripts = [
+        ("سیریلیک", re.compile(r"[Ѐ-ӿ]"), {"ru"}),
+        ("عربی", re.compile(r"[؀-ۿ]"), {"ar", "fa"}),
+        ("دیوناگری", re.compile(r"[ऀ-ॿ]"), {"hi"}),
+        ("شرق آسیا", re.compile(r"[　-鿿]"), set()),
+    ]
+    leaks = [
+        (key, lang, name, "".join(pattern.findall(text)[:12]))
+        for key, entry in guide_texts.BODIES.items()
+        for lang, text in entry.items()
+        for name, pattern, allowed in scripts
+        if lang not in allowed and pattern.search(text)
+    ]
+    assert leaks == []
+
+
 def test_every_translated_section_has_a_button_title():
     """بخشی که متنش ترجمه شده ولی دکمه‌اش فارسی مانده، ناجور دیده می‌شود."""
     from telkap import guide_texts, i18n
@@ -287,6 +313,48 @@ def test_the_plan_table_is_built_in_the_readers_language():
     persian = guide._plans_table("fa")
     assert "اشتراک ۷ روزه" in persian
     assert "۱۲۹،۰۰۰ تومان" in persian
+
+
+def test_the_plan_table_is_grammatical_at_every_count():
+    """«۱ days» و «None watermarks» همان‌قدر بد است که ترجمه‌ی غلط."""
+    from telkap.handlers import guide
+
+    assert "1 day" in guide._plans_table("en")     # نه «1 days»
+    assert "1 days" not in guide._plans_table("en")
+    assert "7 days" in guide._plans_table("en")
+
+    russian = guide._plans_table("ru")
+    assert "1 день" in russian
+    assert "7 дней" in russian
+    assert "1 дней" not in russian
+
+    # واحد پیش از عدد می‌آید، پس مفرد و جمع اصلاً درگیر نمی‌شوند
+    assert "jobs: 1" in guide._plans_table("en")
+    assert "watermarks: None" in guide._plans_table("en")
+
+
+def test_the_arabic_plural_follows_its_own_rule():
+    """عربی برای ۳ تا ۱۰ جمع قِلّه می‌گیرد و بعد از آن مفردِ منصوب."""
+    from telkap import i18n
+
+    assert i18n.plural(1, "unit.days", "ar") == "يوم"
+    assert i18n.plural(7, "unit.days", "ar") == "أيام"
+    assert i18n.plural(30, "unit.days", "ar") == "يوماً"
+
+
+def test_a_language_without_plurals_gets_one_form():
+    from telkap import i18n
+
+    for code in ("fa", "tr", "uz", "id"):
+        assert i18n.plural(1, "unit.days", code) == i18n.plural(30, "unit.days", code)
+
+
+def test_thousands_are_separated_the_local_way():
+    from telkap import i18n
+
+    assert i18n.num(129_000, "ru") == "129 000"     # روسی با فاصله
+    assert i18n.num(129_000, "pt") == "129.000"     # پرتغالی با نقطه
+    assert i18n.num(129_000, "en") == "129,000"
 
 
 def test_a_plan_renamed_by_the_admin_keeps_its_name():

@@ -61,15 +61,51 @@ def pick(telegram_code: str | None) -> str:
     return normalize(telegram_code)
 
 
+# جداکننده‌ی هزارگان هر زبان. هرچه اینجا نباشد ویرگول انگلیسی می‌گیرد.
+GROUP_SEP = {
+    "fa": "،",
+    "ar": "٬",
+    "ru": " ",
+    "uz": " ",
+    "tr": ".",
+    "pt": ".",
+    "id": ".",
+}
+
+
 def num(value, lang: str | None = None) -> str:
     """عدد با ارقام و جداکننده‌ی متناسب با زبان."""
     code = normalize(lang or current())
     text = f"{value:,}" if isinstance(value, int) else str(value)
+    text = text.replace(",", GROUP_SEP.get(code, ","))
     if code == "fa":
-        return text.replace(",", "،").translate(PERSIAN_DIGITS)
+        return text.translate(PERSIAN_DIGITS)
     if code == "ar":
-        return text.replace(",", "٬").translate(ARABIC_DIGITS)
+        return text.translate(ARABIC_DIGITS)
     return text
+
+
+def plural(count: int, key: str, lang: str | None = None) -> str:
+    """واحدِ متناسب با عدد: «۱ day» ولی «۷ days».
+
+    فارسی و ترکی و ازبکی و اندونزیایی بعد از عدد جمع نمی‌بندند، پس برای
+    آن‌ها هر سه حالت یکی است. روسی سه حالت دارد و عربی هم برای ۳ تا ۱۰
+    جمعِ قِلّه می‌گیرد؛ همین دو زبان‌اند که «few» را لازم دارند.
+    """
+    code = normalize(lang or current())
+    n = abs(int(count))
+    if code == "ru":
+        if n % 10 == 1 and n % 100 != 11:
+            form = "one"
+        elif n % 10 in (2, 3, 4) and n % 100 not in (12, 13, 14):
+            form = "few"
+        else:
+            form = "many"
+    elif code == "ar":
+        form = "one" if n == 1 else "few" if 3 <= n % 100 <= 10 else "many"
+    else:
+        form = "one" if n == 1 else "many"
+    return t(f"{key}_{form}", code)
 
 
 def t(key: str, lang: str | None = None, **kwargs) -> str:
@@ -690,32 +726,41 @@ CATALOG: dict[str, dict[str, str]] = {
         "ru": "{amount} туманов", "tr": "{amount} tümen", "uz": "{amount} tuman",
         "hi": "{amount} तोमान", "id": "{amount} toman", "pt": "{amount} tomans",
     },
-    "unit.days": {
-        "fa": "روز", "en": "days", "ar": "يوم", "ru": "дней", "tr": "gün",
+    # سه حالتِ «روز» برای زبان‌هایی که بعد از عدد جمع می‌بندند
+    "unit.days_one": {
+        "fa": "روز", "en": "day", "ar": "يوم", "ru": "день", "tr": "gün",
+        "uz": "kun", "hi": "दिन", "id": "hari", "pt": "dia",
+    },
+    "unit.days_few": {
+        "fa": "روز", "en": "days", "ar": "أيام", "ru": "дня", "tr": "gün",
+        "uz": "kun", "hi": "दिन", "id": "hari", "pt": "dias",
+    },
+    "unit.days_many": {
+        "fa": "روز", "en": "days", "ar": "يوماً", "ru": "дней", "tr": "gün",
         "uz": "kun", "hi": "दिन", "id": "hari", "pt": "dias",
     },
     "unit.messages": {
-        "fa": "پیام", "en": "messages", "ar": "رسالة", "ru": "сообщений",
+        "fa": "پیام", "en": "messages", "ar": "الرسائل", "ru": "сообщения",
         "tr": "mesaj", "uz": "xabar", "hi": "संदेश", "id": "pesan",
         "pt": "mensagens",
     },
     "unit.jobs": {
-        "fa": "کار", "en": "jobs", "ar": "مهمة", "ru": "задач", "tr": "iş",
+        "fa": "کار", "en": "jobs", "ar": "المهام", "ru": "задачи", "tr": "iş",
         "uz": "vazifa", "hi": "कार्य", "id": "tugas", "pt": "tarefas",
     },
     "unit.dests": {
-        "fa": "مقصد", "en": "destinations", "ar": "وجهة", "ru": "каналов",
+        "fa": "مقصد", "en": "destinations", "ar": "الوجهات", "ru": "каналы",
         "tr": "hedef", "uz": "manzil", "hi": "गंतव्य", "id": "tujuan",
         "pt": "destinos",
     },
     "unit.watermarks": {
-        "fa": "واترمارک", "en": "watermarks", "ar": "علامة مائية",
-        "ru": "водяных знаков", "tr": "filigran", "uz": "suv belgisi",
+        "fa": "واترمارک", "en": "watermarks", "ar": "العلامات المائية",
+        "ru": "водяные знаки", "tr": "filigran", "uz": "suv belgisi",
         "hi": "वॉटरमार्क", "id": "watermark", "pt": "marcas d'água",
     },
     "unit.history": {
-        "fa": "پیام گذشته", "en": "older posts", "ar": "منشور سابق",
-        "ru": "старых постов", "tr": "eski gönderi", "uz": "eski post",
+        "fa": "پیام گذشته", "en": "older posts", "ar": "المنشورات السابقة",
+        "ru": "старые посты", "tr": "eski gönderi", "uz": "eski post",
         "hi": "पुरानी पोस्ट", "id": "postingan lama", "pt": "posts antigos",
     },
 }

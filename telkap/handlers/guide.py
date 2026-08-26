@@ -60,16 +60,39 @@ def _quota(value: int, lang: str) -> str:
     return i18n.num(value, lang)
 
 
+def _days(count: int, lang: str) -> str:
+    return f"{i18n.num(count, lang)} {i18n.plural(count, 'unit.days', lang)}"
+
+
+def _stat(icon: str, unit: str, value: str, lang: str) -> str:
+    """یک خانه‌ی جدول: «📨 پیام: ۲٬۰۰۰».
+
+    واحد پیش از عدد می‌آید تا لازم نباشد در نُه زبان مفرد و جمع را با عدد
+    هماهنگ کنیم؛ «۱ jobs» و «None watermarks» همین‌طور درمی‌آمدند.
+    """
+    return f"{icon} {i18n.t(unit, lang)}: {value}"
+
+
 def _plan_row(icon: str, plan: Plan, lang: str, *, price: str) -> str:
     n = i18n.num
     return (
         f"{icon} <b>{_plan_title(plan, lang)}</b> — {price} · "
-        f"{n(plan.days, lang)} {i18n.t('unit.days', lang)}\n"
-        f"    📨 {_quota(plan.period_messages, lang)} {i18n.t('unit.messages', lang)}"
-        f" | 📋 {n(plan.max_tasks, lang)} {i18n.t('unit.jobs', lang)}"
-        f" | 📤 {n(plan.max_destinations, lang)} {i18n.t('unit.dests', lang)}\n"
-        f"    💧 {_quota(plan.watermark_quota, lang)} {i18n.t('unit.watermarks', lang)}"
-        f" | 🕓 {_quota(plan.history_quota, lang)} {i18n.t('unit.history', lang)}"
+        f"{_days(plan.days, lang)}\n"
+        "    "
+        + " | ".join(
+            (
+                _stat("📨", "unit.messages", _quota(plan.period_messages, lang), lang),
+                _stat("📋", "unit.jobs", n(plan.max_tasks, lang), lang),
+                _stat("📤", "unit.dests", n(plan.max_destinations, lang), lang),
+            )
+        )
+        + "\n    "
+        + " | ".join(
+            (
+                _stat("💧", "unit.watermarks", _quota(plan.watermark_quota, lang), lang),
+                _stat("🕓", "unit.history", _quota(plan.history_quota, lang), lang),
+            )
+        )
     )
 
 
@@ -85,10 +108,14 @@ def _plans_table(lang: str) -> str:
     """جدول طرح‌ها: آزمایشی، بعد طرح‌های قابل خرید."""
     trial = (
         f"🎁 <b>{_plan_title(TRIAL, lang)}</b> — {i18n.t('quota.free', lang)} · "
-        f"{i18n.num(TRIAL.days, lang)} {i18n.t('unit.days', lang)}\n"
-        f"    📨 {_quota(TRIAL.period_messages, lang)} {i18n.t('unit.messages', lang)}"
-        f" | 📋 {i18n.num(TRIAL.max_tasks, lang)} {i18n.t('unit.jobs', lang)}"
-        f" | 📤 {i18n.num(TRIAL.max_destinations, lang)} {i18n.t('unit.dests', lang)}"
+        f"{_days(TRIAL.days, lang)}\n    "
+        + " | ".join(
+            (
+                _stat("📨", "unit.messages", _quota(TRIAL.period_messages, lang), lang),
+                _stat("📋", "unit.jobs", i18n.num(TRIAL.max_tasks, lang), lang),
+                _stat("📤", "unit.dests", i18n.num(TRIAL.max_destinations, lang), lang),
+            )
+        )
     )
     rows = "\n".join(
         _plan_row(icon, plan, lang, price=_money(plan.price_toman, lang))
@@ -352,8 +379,11 @@ def _extras() -> str:
         "خواستید از «👤 حساب کاربری ← 🧭 منوها» برگردید به حالت ساده.\n\n"
         "<b>🌍 زبان</b>\n"
         "«👤 حساب کاربری ← 🌍 زبان» یا دستور /language.\n"
-        "فارسی، انگلیسی و عربی. منوها، خوش‌آمد و پیام‌های اصلی ترجمه "
-        "می‌شوند؛ راهنمای کامل و پنل مدیریت فعلاً فارسی‌اند.\n\n"
+        "نُه زبان: فارسی، انگلیسی، عربی، روسی، ترکی، ازبکی، هندی، "
+        "اندونزیایی و پرتغالی. منوها، خوش‌آمد، پیام‌های اصلی و همین "
+        "راهنما ترجمه می‌شوند؛ پنل مدیریت فعلاً فارسی است.\n"
+        "زبان هر کاربر جداگانه ذخیره می‌شود — روی یک ربات، هرکس زبان "
+        "خودش را می‌بیند.\n\n"
         "<b>📬 خلاصه‌ی روزانه</b>\n"
         "«👤 حساب کاربری ← 📬 خلاصه‌ی روزانه» را روشن کنید تا هر روز صبح "
         "یک پیام کوتاه بگیرید: دیروز چند پست رفت، چند تا خطا خورد، چه "
