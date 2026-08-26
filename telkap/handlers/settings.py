@@ -23,9 +23,9 @@ from telkap.keyboards import (
     time_menu,
     watermark_menu,
 )
-from telkap.models import Rule, Task
+from telkap.models import PendingPost, Rule, Task
 from telkap.plans import FEAT_WATERMARK
-from telkap.services import cache
+from telkap.services import cache, pending
 from telkap.services.defaults import merged_settings
 from telkap.services.subscription import active_plan_for
 from telkap.texts import (
@@ -36,6 +36,7 @@ from telkap.texts import (
     ASK_HEADER,
     ASK_MAX_HOUR,
     ASK_MAX_LEN,
+    ASK_MIN_GAP,
     ASK_MIN_LEN,
     ASK_REPLACE_FROM,
     ASK_REPLACE_TO,
@@ -55,8 +56,11 @@ PANELS = {
     "wm": ("💧 <b>واترمارک تصاویر</b>\nروی عکس‌های ارسالی درج می‌شود:", watermark_menu),
     "send": ("⚙️ <b>ارسال و ترافیک</b>\nشیوه و سرعت انتشار:", send_menu),
     "time": (
-        "🕐 <b>زمان‌بندی</b>\nفقط در این بازه کپی انجام می‌شود.\n"
-        "اگر شروع و پایان برابر باشند، کار ۲۴ ساعته است:",
+        "🕐 <b>زمان‌بندی و تأیید</b>\n"
+        "کپی فقط در بازه‌ی زیر انجام می‌شود؛ اگر شروع و پایان برابر باشند "
+        "کار ۲۴ ساعته است.\n\n"
+        "<i>هر سه گزینه‌ی پایین اختیاری‌اند و پیش‌فرض خاموش‌اند — تا "
+        "روشنشان نکنید، هیچ پستی معطل نمی‌ماند.</i>",
         time_menu,
     ),
 }
@@ -69,6 +73,7 @@ ASK_SPECS = {
     "watermark_text": (ASK_WATERMARK_TEXT, "text"),
     "delay_seconds": (ASK_DELAY, "int"),
     "max_per_hour": (ASK_MAX_HOUR, "int"),
+    "min_gap_seconds": (ASK_MIN_GAP, "int"),
     "min_length": (ASK_MIN_LEN, "int"),
     "max_length": (ASK_MAX_LEN, "int"),
 }
@@ -146,6 +151,8 @@ FLAG_PANEL = {
     "sync_edits": "send",
     "sync_deletes": "send",
     "copy_buttons": "send",
+    "approval": "time",
+    "hold_outside_hours": "time",
 }
 
 
@@ -212,7 +219,23 @@ async def cb_flag(call: CallbackQuery) -> None:
 
     cfg[key] = new_value
     await _save_settings(task_id, cfg)
-    await call.answer("روشن شد" if new_value else "خاموش شد")
+
+    note = "روشن شد" if new_value else "خاموش شد"
+    # خاموش کردن نگهدارنده‌ها باید صف را هم آزاد کند، وگرنه پست‌هایی که
+    # منتظر مانده‌اند تا ابد آنجا می‌ماندند و کاربر فکر می‌کرد گم شده‌اند.
+    if key in {"approval", "hold_outside_hours"} and not new_value:
+        cleared = await pending.drop_task(
+            task_id,
+            reason=(
+                PendingPost.REASON_APPROVAL
+                if key == "approval"
+                else PendingPost.REASON_SCHEDULE
+            ),
+        )
+        if cleared:
+            note = f"خاموش شد؛ {cleared} پستِ منتظر از صف پاک شد"
+
+    await call.answer(note)
     await _render(call, FLAG_PANEL[key], task_id)
 
 

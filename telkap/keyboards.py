@@ -86,10 +86,21 @@ def _divider(label: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=f"─── {label} ───", callback_data="noop")
 
 
-def task_menu(task: Task, *, backfill_running: bool = False) -> InlineKeyboardMarkup:
+def task_menu(
+    task: Task, *, backfill_running: bool = False, waiting: int = 0
+) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     toggle = "⏸  توقف این کار" if task.enabled else "▶️  فعال‌سازی این کار"
     kb.row(InlineKeyboardButton(text=toggle, callback_data=f"task:toggle:{task.id}"))
+
+    # فقط وقتی چیزی در صف هست دیده می‌شود؛ منوی خلوت‌تر یعنی گیجی کمتر
+    if waiting:
+        kb.row(
+            InlineKeyboardButton(
+                text=f"⏳ در انتظار تأیید ({fa_num(waiting)})",
+                callback_data=f"pend:list:{task.id}",
+            )
+        )
 
     kb.row(_divider("محتوا"))
     kb.row(
@@ -346,13 +357,47 @@ def time_menu(task_id: int, cfg: dict) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="➕", callback_data=f"hour:to:1:{task_id}"),
     )
     kb.row(InlineKeyboardButton(text="🔄 ۲۴ ساعته", callback_data=f"hour:reset:0:{task_id}"))
+
+    # خارج از ساعت کاری: دور ریختن یا نگه داشتن؟ فقط وقتی ساعت تنظیم
+    # شده باشد معنی دارد، پس در حالت ۲۴ ساعته نشان داده نمی‌شود.
+    if start != end:
+        kb.row(
+            _flag(
+                "پست‌های خارج از ساعت را نگه دار",
+                bool(cfg.get("hold_outside_hours")),
+                f"flag:hold_outside_hours:{task_id}",
+            )
+        )
+
+    gap = int(cfg.get("min_gap_seconds") or 0)
+    kb.row(
+        InlineKeyboardButton(
+            text=(
+                f"🚏 فاصله‌ی بین پست‌ها: {fa_num(gap)} ثانیه"
+                if gap
+                else "🚏 فاصله‌ی بین پست‌ها: بدون فاصله"
+            ),
+            callback_data=f"ask:min_gap_seconds:{task_id}",
+        )
+    )
+    kb.row(
+        _flag(
+            "تأیید دستی پیش از انتشار",
+            bool(cfg.get("approval")),
+            f"flag:approval:{task_id}",
+        )
+    )
     kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"task:open:{task_id}"))
     return kb.as_markup()
 
 
 def destinations_menu(task_id: int, primary: str, extras: list) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text=f"⭐️ {primary[:40]} (اصلی)", callback_data="noop"))
+    kb.row(
+        InlineKeyboardButton(
+            text=f"⭐️ {primary[:34]} (اصلی)", callback_data=f"dmain:{task_id}"
+        )
+    )
     for dest in extras:
         mark = "🟢" if dest.enabled else "🔴"
         has_own = "✍️" if (dest.overrides or {}) else "➕"

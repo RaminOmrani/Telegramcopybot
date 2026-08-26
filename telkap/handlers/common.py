@@ -43,6 +43,8 @@ class Flow(StatesGroup):
     admin_gift = State()
     dest_add = State()
     dest_override = State()
+    dest_route = State()
+    task_route = State()
     import_settings = State()
 
     pin_set = State()

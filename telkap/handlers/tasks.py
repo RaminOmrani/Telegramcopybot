@@ -22,9 +22,9 @@ from telkap.keyboards import (
     task_menu,
     tasks_list,
 )
-from telkap.models import DailyStat, Destination, Task, User
+from telkap.models import DailyStat, Destination, PendingPost, Task, User
 from telkap.plans import FEAT_PRIVATE
-from telkap.services import cache
+from telkap.services import cache, pending
 from telkap.services.copier import today_key
 from telkap.services.defaults import merged_settings
 from telkap.services.subscription import active_plan_for
@@ -82,7 +82,10 @@ async def show_task(target: Message, task_id: int, *, edit: bool = False) -> Non
     copier = history_handlers.history_copier
     running = bool(copier and copier.is_running(task.user_id))
     text = await task_detail_text(task)
-    markup = task_menu(task, backfill_running=running)
+    waiting = await pending.waiting_count(
+        task.user_id, reason=PendingPost.REASON_APPROVAL, task_id=task.id
+    )
+    markup = task_menu(task, backfill_running=running, waiting=waiting)
     if edit:
         try:
             await target.edit_text(text, reply_markup=markup)

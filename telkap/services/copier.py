@@ -34,9 +34,17 @@ from telethon.tl.types import (
 
 from telkap.config import get_settings
 from telkap.db import get_session, log_activity
-from telkap.models import DailyStat, Destination, MessageMap, RetryItem, Task, utcnow
+from telkap.models import (
+    DailyStat,
+    Destination,
+    MessageMap,
+    PendingPost,
+    RetryItem,
+    Task,
+    utcnow,
+)
 from telkap.plans import FEAT_MESSAGES, FEAT_WATERMARK
-from telkap.services import alerts, cache, entitlement, health
+from telkap.services import alerts, cache, entitlement, health, pending, routing
 from telkap.services.filters import MessageFacts, content_hash, should_copy
 from telkap.services.ratelimit import RateLimiter, daily_quota, hourly_quota
 from telkap.services.transform import apply_transforms, drop_custom_emoji, remap_entities
@@ -134,6 +142,27 @@ def within_active_hours(cfg: dict[str, Any], hour: int | None = None) -> bool:
     if start < end:
         return start <= now < end
     return now >= start or now < end
+
+
+def next_window_open(cfg: dict[str, Any]):
+    """لحظه‌ای که بازه‌ی فعال دوباره باز می‌شود (UTC).
+
+    برای پست‌هایی که خارج از ساعت کاری رسیده‌اند و به‌جای دور ریخته شدن
+    نگه داشته می‌شوند.
+    """
+    start = int(cfg.get("active_from_hour") or 0)
+    end = int(cfg.get("active_to_hour") or 0)
+    now = utcnow()
+    if start == end:
+        return now      # ۲۴ ساعته؛ چیزی برای انتظار نیست
+
+    offset = get_settings().timezone_offset
+    local = now + timedelta(hours=offset)
+    # ابتدای ساعتِ شروع، امروز به وقت محلی
+    target = local.replace(hour=start, minute=0, second=0, microsecond=0)
+    if target <= local:
+        target += timedelta(days=1)
+    return target - timedelta(hours=offset)
 
 
 def sender_is_bot(message) -> bool:
@@ -254,8 +283,62 @@ class Copier:
             cache.invalidate_task(task.id)
         return len(tasks)
 
-    async def process(self, user_id: int, task_id: int, messages: Sequence) -> bool:
-        """یک پیام یا آلبوم را برای یک کار پردازش و به همه‌ی مقصدها ارسال می‌کند."""
+    async def _hold(
+        self, snapshot, messages: Sequence, *, reason: str, release_at=None
+    ) -> bool:
+        """پست را در صف می‌گذارد. خروجی True یعنی نگه داشته شد.
+
+        اگر پست از قبل در صف باشد یا نگه داشتن ممکن نباشد، False برمی‌گردد
+        تا مسیر عادی ادامه پیدا کند — پستی نباید بی‌سروصدا گم شود.
+        """
+        first = messages[0]
+        item = await pending.hold(
+            task_id=snapshot.id,
+            user_id=snapshot.user_id,
+            src_chat_id=snapshot.source_id,
+            message_ids=[m.id for m in messages],
+            reason=reason,
+            text=first.message or "",
+            media_kind=classify_media(first),
+            release_at=release_at,
+        )
+        if item is None:
+            return False
+
+        await log_activity(
+            user_id=snapshot.user_id,
+            task_id=snapshot.id,
+            event="pending",
+            detail=pending.REASON_LABELS.get(reason, reason),
+        )
+        if reason == PendingPost.REASON_APPROVAL and self.notifier:
+            waiting = await pending.waiting_count(
+                snapshot.user_id, reason=PendingPost.REASON_APPROVAL
+            )
+            try:
+                await self.notifier(
+                    snapshot.user_id,
+                    f"⏳ یک پست تازه از «{snapshot.title}» منتظر تأیید شماست.\n\n"
+                    f"<i>{item.preview}</i>\n\n"
+                    f"در صف: {waiting} پست — «📋 کارهای کپی» ← «⏳ در انتظار تأیید»",
+                )
+            except Exception:
+                log.debug("اطلاع صف تأیید به کاربر نرسید", exc_info=True)
+        return True
+
+    async def process(
+        self,
+        user_id: int,
+        task_id: int,
+        messages: Sequence,
+        *,
+        held: bool = False,
+    ) -> bool:
+        """یک پیام یا آلبوم را برای یک کار پردازش و به همه‌ی مقصدها ارسال می‌کند.
+
+        `held=True` یعنی این پست از صف آمده و قبلاً منتظر مانده؛ پس دوباره
+        نگه داشته نمی‌شود، وگرنه هرگز منتشر نمی‌شد.
+        """
         snapshot = await cache.get_task(task_id)
         if snapshot is None or not snapshot.enabled:
             return False
@@ -268,6 +351,14 @@ class Copier:
         src_chat_id = snapshot.source_id
 
         if not within_active_hours(cfg):
+            # نگه داشتن، فقط اگر کاربر خواسته باشد؛ وگرنه رفتار قبلی
+            if not held and cfg.get("hold_outside_hours") and src_chat_id:
+                if await self._hold(
+                    snapshot, messages,
+                    reason=PendingPost.REASON_SCHEDULE,
+                    release_at=next_window_open(cfg),
+                ):
+                    return False
             await self._bump(task_id, user_id, skipped=True)
             await log_activity(
                 user_id=user_id, task_id=task_id, event="skip", detail="خارج از ساعت فعال کار"
@@ -306,6 +397,27 @@ class Copier:
                 user_id=user_id, task_id=task_id, event="skip", detail=decision.reason
             )
             return False
+
+        # پست از فیلترها رد شده و نامزد انتشار است. اگر کاربر تأیید دستی
+        # یا فاصله‌ی حداقلی خواسته، اینجا نگه داشته می‌شود — پیش از آنکه
+        # سهمیه‌ای مصرف شود. هنگام انتشار همه‌ی بررسی‌ها دوباره اجرا
+        # می‌شوند، پس چیزی از قلم نمی‌افتد.
+        if not held and src_chat_id:
+            if cfg.get("approval"):
+                if await self._hold(
+                    snapshot, messages, reason=PendingPost.REASON_APPROVAL
+                ):
+                    return False
+            gap = int(cfg.get("min_gap_seconds") or 0)
+            if gap > 0:
+                slot = await pending.next_slot(task_id, gap)
+                if slot > utcnow() and await self._hold(
+                    snapshot,
+                    messages,
+                    reason=PendingPost.REASON_SCHEDULE,
+                    release_at=slot,
+                ):
+                    return False
 
         if not hourly_quota.allow(task_id, int(cfg.get("max_per_hour") or 0)):
             await self._bump(task_id, user_id, skipped=True)
@@ -352,6 +464,7 @@ class Copier:
         sub_id = ent.subscription_id
         watermark_open = True   # تا وقتی سهمیه و اعتبار تمام نشده
         any_sent = False
+        routed_away = 0         # مقصدهایی که کلمه‌ی کلیدی‌شان نخورد
 
         for spec in targets:
             target = spec.target
@@ -362,6 +475,11 @@ class Copier:
                 dest_entities = remap_entities(facts.text, dest_text, src_entities)
             else:
                 dest_cfg, dest_text, dest_entities = cfg, text, entities
+
+            # مسیریابی: این مقصد ممکن است فقط بعضی پست‌ها را بخواهد
+            if not routing.wants(facts.text, dest_cfg):
+                routed_away += 1
+                continue
 
             # سهمیه/اعتبار واترمارک پیش از ارسال کنار گذاشته می‌شود و اگر
             # ارسال شکست بخورد برمی‌گردد
@@ -441,6 +559,15 @@ class Copier:
 
         if any_sent:
             await self._bump(task_id, user_id, skipped=False)
+        elif routed_away:
+            # هیچ مقصدی این پست را نخواست — رد شدن است، نه خطا
+            await self._bump(task_id, user_id, skipped=True)
+            await log_activity(
+                user_id=user_id,
+                task_id=task_id,
+                event="skip",
+                detail="کلمه‌ی کلیدی هیچ مقصدی نخورد",
+            )
         return any_sent
 
     async def _send(

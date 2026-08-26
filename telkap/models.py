@@ -254,6 +254,45 @@ class RetryItem(Base):
         return [int(part) for part in self.src_msg_ids.split(",") if part.strip()]
 
 
+class PendingPost(Base):
+    """پستی که هنوز منتشر نشده — یا منتظر تأیید کاربر است یا منتظر ساعتش.
+
+    مثل صف تلاش مجدد، خود پیام ذخیره نمی‌شود؛ فقط نشانی‌اش. هنگام
+    انتشار دوباره از مبدا خوانده می‌شود، پس اگر پست در این فاصله ویرایش
+    یا حذف شده باشد، نسخه‌ی درست منتشر می‌گردد یا اصلاً نمی‌رود.
+
+    یک جدول برای هر دو حالت است چون سازوکارشان یکی است و فقط شرط آزاد
+    شدنشان فرق می‌کند: یکی کلیک کاربر، دیگری رسیدن زمان.
+    """
+
+    __tablename__ = "pending_posts"
+    __table_args__ = (
+        UniqueConstraint("task_id", "src_msg_ids", name="uq_pending_once"),
+    )
+
+    REASON_APPROVAL = "approval"   # منتظر تأیید کاربر
+    REASON_SCHEDULE = "schedule"   # منتظر رسیدن ساعت انتشار
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    src_chat_id: Mapped[int] = mapped_column(BigInteger)
+    src_msg_ids: Mapped[str] = mapped_column(String(400))  # آیدی‌ها با کاما
+    reason: Mapped[str] = mapped_column(String(16), default=REASON_APPROVAL, index=True)
+    # چند کلمه از خود پست، تا کاربر در فهرست بفهمد کدام است
+    preview: Mapped[str] = mapped_column(String(200), default="")
+    media_kind: Mapped[str] = mapped_column(String(16), default="text")
+    # برای حالت زمان‌بندی؛ در حالت تأیید خالی است
+    release_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    @property
+    def message_ids(self) -> list[int]:
+        return [int(part) for part in self.src_msg_ids.split(",") if part.strip()]
+
+
 class ForceJoinChannel(Base):
     """کانالی که کاربر پیش از استفاده از ربات باید عضو آن باشد.
 

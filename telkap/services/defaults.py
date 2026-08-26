@@ -80,15 +80,31 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
     # --- دکمه‌های شیشه‌ای ---
     "copy_buttons": False,   # دکمه‌های زیر پست هم کپی شوند
+
+    # --- مسیریابی با کلمه‌ی کلیدی ---
+    # روی هر مقصد هم می‌شود جداگانه تنظیم کرد و همین‌ها را بازنویسی کند.
+    "route_words": [],       # خالی = همه‌چیز برود؛ وگرنه فقط پستِ دارای این کلمه‌ها
+    "route_skip": [],        # پستی که یکی از این کلمه‌ها را دارد نرود
+
+    # --- صف تأیید و زمان‌بندی پیشرفته ---
+    "approval": False,          # پیش از انتشار، خودتان تأیید کنید
+    "hold_outside_hours": False,  # خارج از ساعت فعال، به‌جای دور ریختن نگه دار
+    "min_gap_seconds": 0,       # حداقل فاصله بین دو انتشار (۰ = بدون فاصله)
 }
 
 
 def merged_settings(stored: dict[str, Any] | None) -> dict[str, Any]:
-    """تنظیمات ذخیره‌شده را روی پیش‌فرض‌ها سوار می‌کند."""
-    data = dict(DEFAULT_SETTINGS)
-    data["allowed_media"] = list(DEFAULT_SETTINGS["allowed_media"])
+    """تنظیمات ذخیره‌شده را روی پیش‌فرض‌ها سوار می‌کند.
+
+    فهرست‌ها کپی می‌شوند، وگرنه همه‌ی کارها یک شیء مشترک می‌گرفتند و
+    ویرایش تنظیمات یک کار روی بقیه هم اثر می‌گذاشت.
+    """
+    data = {
+        key: list(value) if isinstance(value, list) else value
+        for key, value in DEFAULT_SETTINGS.items()
+    }
     if stored:
         for key, value in stored.items():
             if key in DEFAULT_SETTINGS:
-                data[key] = value
+                data[key] = list(value) if isinstance(value, list) else value
     return data

@@ -16,6 +16,7 @@ from sqlalchemy import select
 from telkap import proxy
 from telkap.config import get_settings
 from telkap.db import close_db, get_session, init_db
+from telkap.handlers import approvals as approval_handlers
 from telkap.handlers import build_router
 from telkap.handlers import history as history_handlers
 from telkap.middlewares import (
@@ -36,6 +37,7 @@ from telkap.services import (
 )
 from telkap.services.copier import Copier
 from telkap.services.history import HistoryCopier
+from telkap.services.pending import ReleaseWorker
 from telkap.services.retry import RetryWorker
 from telkap.services.subscription import active_plan_for
 from telkap.services.userbot import manager
@@ -141,6 +143,9 @@ async def main() -> None:
     history_handlers.bind(history_copier)
 
     retry_worker = RetryWorker(manager, copier, notifier=notify)
+    release_worker = ReleaseWorker(manager, copier, notifier=notify)
+    # تا دکمه‌ی «تأیید» بتواند همان لحظه منتشر کند، نه در چرخه‌ی بعدی
+    approval_handlers.bind(release_worker)
 
     dispatcher = Dispatcher(storage=MemoryStorage())
     for observer in (dispatcher.message, dispatcher.callback_query):
@@ -158,6 +163,7 @@ async def main() -> None:
     background = [
         asyncio.create_task(subscription_watchdog(notify), name="subscriptions"),
         asyncio.create_task(retry_worker.run_forever(), name="retry"),
+        asyncio.create_task(release_worker.run_forever(), name="release"),
         asyncio.create_task(reminders.run_forever(notify), name="reminders"),
         asyncio.create_task(backup.run_forever(bot), name="backup"),
         asyncio.create_task(renewal.run_forever(notify), name="renewal"),

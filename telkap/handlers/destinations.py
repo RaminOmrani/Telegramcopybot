@@ -13,7 +13,8 @@ from telkap.db import get_session, log_activity
 from telkap.handlers.common import Flow
 from telkap.keyboards import destinations_menu
 from telkap.models import Destination, Task
-from telkap.services import cache
+from telkap.services import cache, routing
+from telkap.services.defaults import merged_settings
 from telkap.services.subscription import active_plan_for
 from telkap.services.userbot import manager
 from telkap.texts import NO_LOGIN, fa_num
@@ -200,11 +201,124 @@ async def cb_delete(call: CallbackQuery) -> None:
     await _render(call.message, task, edit=True)
 
 
+# --------------------------------------------- مسیریابی مقصد اصلی
+async def _render_main(target: Message, task: Task, *, edit: bool = False) -> None:
+    cfg = merged_settings(task.settings)
+    kb = InlineKeyboardBuilder()
+    for key, label in ROUTE_FIELDS.items():
+        mark = "✅" if cfg.get(key) else "▫️"
+        kb.row(
+            InlineKeyboardButton(
+                text=f"{mark} {label}", callback_data=f"droute:{key}:{task.id}"
+            )
+        )
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"dest:list:{task.id}"))
+
+    text = (
+        f"⭐️ <b>مقصد اصلی: {task.dest_title or task.dest_ref}</b>\n\n"
+        f"<b>مسیریابی</b>\n{routing.describe(cfg)}\n\n"
+    )
+    if routing.is_filtered(cfg):
+        text += (
+            "<i>این شرط‌ها روی همه‌ی مقصدهایی که شرط خودشان را ندارند هم "
+            "اعمال می‌شوند.</i>"
+        )
+    else:
+        text += (
+            "<i>الان هر پستی که از فیلترهای کار رد شود اینجا منتشر می‌گردد. "
+            "با کلمه‌ی کلیدی می‌توانید محتوا را بین کانال‌هایتان تقسیم کنید — "
+            "مثلاً پست‌های «تخفیف» به یک کانال و بقیه به کانال دیگر.</i>"
+        )
+
+    markup = kb.as_markup()
+    if edit:
+        try:
+            await target.edit_text(text, reply_markup=markup)
+            return
+        except Exception:
+            log.debug("ویرایش صفحه‌ی مقصد اصلی ناموفق بود", exc_info=True)
+    await target.answer(text, reply_markup=markup)
+
+
+@router.callback_query(F.data.startswith("dmain:"))
+async def cb_main(call: CallbackQuery) -> None:
+    task = await _owned(call.from_user.id, int(call.data.split(":")[1]))
+    if task is None:
+        await call.answer("دسترسی ندارید", show_alert=True)
+        return
+    await call.answer()
+    await _render_main(call.message, task, edit=True)
+
+
+@router.callback_query(F.data.startswith("droute:"))
+async def cb_main_route(call: CallbackQuery, state: FSMContext) -> None:
+    _, key, raw_task = call.data.split(":")
+    task = await _owned(call.from_user.id, int(raw_task))
+    if task is None or key not in ROUTE_FIELDS:
+        await call.answer("دسترسی ندارید", show_alert=True)
+        return
+    await call.answer()
+    await state.set_state(Flow.task_route)
+    await state.update_data(task_id=task.id, field=key)
+    sense = (
+        "فقط پستی که <b>یکی از</b> این کلمه‌ها را داشته باشد منتشر می‌شود"
+        if key == "route_words"
+        else "پستی که <b>یکی از</b> این کلمه‌ها را داشته باشد منتشر نمی‌شود"
+    )
+    await call.message.answer(
+        f"{ROUTE_FIELDS[key]} — مقصد اصلی\n\n{sense}.\n\n"
+        "کلمه‌ها را با ویرگول یا در خطهای جدا بنویسید:\n"
+        "<code>فروش، تخفیف، کد هدیه</code>\n\n"
+        "<i>بزرگی و کوچکی حروف مهم نیست و بخشی از کلمه هم کافی است.</i>\n\n"
+        "برای برداشتن این شرط، یک نقطه <code>.</code> بفرستید.\n"
+        "انصراف: /cancel"
+    )
+
+
+@router.message(Flow.task_route)
+async def got_main_route(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    field = data.get("field")
+    task = await _owned(message.from_user.id, int(data.get("task_id", 0)))
+    if task is None or field not in ROUTE_FIELDS:
+        await state.clear()
+        await message.answer("این کار پیدا نشد.")
+        return
+
+    raw = (message.text or "").strip()
+    words = [] if raw == "." else routing.parse_words(raw)
+    if raw != "." and not words:
+        await message.answer("کلمه‌ای پیدا نکردم. دوباره بفرستید یا /cancel بزنید.")
+        return
+
+    async with get_session() as db:
+        row = await db.get(Task, task.id)
+        cfg = merged_settings(row.settings)
+        cfg[field] = words
+        row.settings = cfg
+        await db.commit()
+    cache.invalidate_task(task.id)
+
+    await state.clear()
+    await message.answer(
+        f"✅ ثبت شد: {'، '.join(words)}" if words else "✅ این شرط برداشته شد."
+    )
+    task = await _owned(message.from_user.id, task.id)
+    await _render_main(message, task)
+
+
 # ------------------------------------------------- امضای اختصاصی هر مقصد
 SIG_FIELDS = {
     "footer": "🔻 فوتر",
     "signature": "🖋 امضای جایگزین",
     "header": "🔝 هدر",
+}
+
+
+# مسیریابی: چه پستی به این کانال برسد و چه پستی نه
+ROUTE_FIELDS = {
+    "route_words": "🎯 فقط پست‌های دارای این کلمه‌ها",
+    "route_skip": "🚫 پست‌های دارای این کلمه‌ها را نفرست",
 }
 
 
@@ -216,6 +330,14 @@ def _sig_menu(dest: Destination, task_id: int) -> InlineKeyboardBuilder:
         kb.row(
             InlineKeyboardButton(
                 text=f"{mark} {label}", callback_data=f"dsig:set:{key}:{dest.id}:{task_id}"
+            )
+        )
+    for key, label in ROUTE_FIELDS.items():
+        mark = "✅" if overrides.get(key) else "▫️"
+        kb.row(
+            InlineKeyboardButton(
+                text=f"{mark} {label}",
+                callback_data=f"dsig:route:{key}:{dest.id}:{task_id}",
             )
         )
     if overrides:
@@ -232,13 +354,21 @@ def _sig_menu(dest: Destination, task_id: int) -> InlineKeyboardBuilder:
 def _sig_text(dest: Destination) -> str:
     overrides = dest.overrides or {}
     lines = [
-        f"✍️ <b>متن اختصاصی «{dest.title or dest.ref}»</b>\n",
+        f"⚙️ <b>تنظیمات اختصاصی «{dest.title or dest.ref}»</b>\n",
         "این مقادیر فقط برای همین کانال اعمال می‌شوند و جای تنظیمات کار را می‌گیرند.",
         "بقیه‌ی تنظیمات (فیلترها، جایگزینی‌ها، واترمارک) از خود کار می‌آید.\n",
     ]
     for key, label in SIG_FIELDS.items():
         value = overrides.get(key)
         lines.append(f"{label}: {('<code>' + value + '</code>') if value else '— از تنظیمات کار —'}")
+
+    lines.append(f"\n<b>مسیریابی</b>\n{routing.describe(overrides)}")
+    if not routing.is_filtered(overrides):
+        lines.append(
+            "<i>یعنی هر پستی که از فیلترهای کار رد شود، به این کانال هم "
+            "می‌رود. با کلمه‌ی کلیدی می‌توانید فقط بخشی از پست‌ها را "
+            "به اینجا بفرستید.</i>"
+        )
     return "\n".join(lines)
 
 
@@ -286,6 +416,30 @@ async def cb_sig_action(call: CallbackQuery, state: FSMContext) -> None:
         await _render_sig(call.message, dest_id, task_id)
         return
 
+    if action == "route":
+        if key not in ROUTE_FIELDS:
+            await call.answer()
+            return
+        await call.answer()
+        await state.set_state(Flow.dest_route)
+        await state.update_data(dest_id=dest_id, task_id=task_id, field=key)
+        sense = (
+            "فقط پستی که <b>یکی از</b> این کلمه‌ها را داشته باشد به این "
+            "کانال می‌رود"
+            if key == "route_words"
+            else "پستی که <b>یکی از</b> این کلمه‌ها را داشته باشد به این "
+            "کانال نمی‌رود"
+        )
+        await call.message.answer(
+            f"{ROUTE_FIELDS[key]}\n\n{sense}.\n\n"
+            "کلمه‌ها را با ویرگول یا در خطهای جدا بنویسید:\n"
+            "<code>فروش، تخفیف، کد هدیه</code>\n\n"
+            "<i>بزرگی و کوچکی حروف مهم نیست و بخشی از کلمه هم کافی است.</i>\n\n"
+            "برای برداشتن این شرط، یک نقطه <code>.</code> بفرستید.\n"
+            "انصراف: /cancel"
+        )
+        return
+
     if key not in SIG_FIELDS:
         await call.answer()
         return
@@ -297,6 +451,44 @@ async def cb_sig_action(call: CallbackQuery, state: FSMContext) -> None:
         "برای برگشت به تنظیمات کار، یک نقطه <code>.</code> بفرستید.\n\n"
         "انصراف: /cancel"
     )
+
+
+@router.message(Flow.dest_route)
+async def got_route(message: Message, state: FSMContext) -> None:
+    data = await state.get_data()
+    task_id, dest_id = int(data.get("task_id", 0)), int(data.get("dest_id", 0))
+    field = data.get("field")
+    if await _owned(message.from_user.id, task_id) is None or field not in ROUTE_FIELDS:
+        await state.clear()
+        await message.answer("این مقصد پیدا نشد.")
+        return
+
+    raw = (message.text or "").strip()
+    words = [] if raw == "." else routing.parse_words(raw)
+    if raw != "." and not words:
+        await message.answer("کلمه‌ای پیدا نکردم. دوباره بفرستید یا /cancel بزنید.")
+        return
+
+    async with get_session() as db:
+        dest = await db.get(Destination, dest_id)
+        if dest is None or dest.task_id != task_id:
+            await state.clear()
+            await message.answer("این مقصد پیدا نشد.")
+            return
+        overrides = dict(dest.overrides or {})
+        if words:
+            overrides[field] = words
+        else:
+            overrides.pop(field, None)
+        dest.overrides = overrides
+        await db.commit()
+
+    cache.invalidate_task(task_id)
+    await state.clear()
+    await message.answer(
+        f"✅ ثبت شد: {'، '.join(words)}" if words else "✅ این شرط برداشته شد."
+    )
+    await _render_sig(message, dest_id, task_id)
 
 
 @router.message(Flow.dest_override)
