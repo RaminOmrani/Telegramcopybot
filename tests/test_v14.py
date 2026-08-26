@@ -175,14 +175,31 @@ def test_the_language_picker_marks_the_current_one():
     assert sum(1 for text in rows if text.startswith("🔘")) == 1
 
 
-def test_the_first_question_is_asked_in_every_language():
+def test_the_first_question_is_understandable_without_persian():
     """کسی که فارسی نمی‌داند هم باید بفهمد از او چه می‌پرسند."""
     from telkap.handlers.language import ask_text
 
-    everyone = ask_text()
-    assert "زبان خود را انتخاب کنید" in everyone
-    assert "Choose your language" in everyone
-    assert "اختر لغتك" in everyone
+    default = ask_text()
+    assert "زبان خود را انتخاب کنید" in default
+    assert "Choose your language" in default      # پلِ انگلیسی
+
+    # وقتی زبانی حدس زده شده، همان به‌علاوه‌ی انگلیسی
+    russian = ask_text("ru")
+    assert "Выберите язык" in russian
+    assert "Choose your language" in russian
+    assert "زبان خود را انتخاب کنید" not in russian
+
+
+def test_the_language_question_does_not_become_a_wall_of_text():
+    """با نُه زبان، نوشتن پرسش به همه‌شان دیوار متن می‌ساخت."""
+    from telkap import i18n
+    from telkap.handlers.language import ask_text
+
+    assert len(ask_text().splitlines()) <= 2
+    for code in i18n.LANGS:
+        assert len(ask_text(code).splitlines()) <= 2, code
+    # انگلیسی خودش یک خط می‌ماند، نه دو خط تکراری
+    assert len(ask_text("en").splitlines()) == 1
 
 
 # ----------------------------------------------------- راهنمای چندزبانه

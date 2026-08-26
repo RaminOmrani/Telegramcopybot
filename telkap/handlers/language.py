@@ -28,11 +28,20 @@ def picker(current: str | None = None) -> InlineKeyboardBuilder:
 
 
 def ask_text(lang: str | None = None) -> str:
-    """پرسش را به هر سه زبان می‌آورد — کسی که فارسی نمی‌داند هم بفهمد."""
-    lines = [i18n.t("lang.ask", lang)]
-    if lang is None:
-        lines = [i18n.t("lang.ask", code) for code in i18n.LANGS]
-    return "\n".join(lines)
+    """پرسش انتخاب زبان.
+
+    به زبان حدس‌زده‌شده‌ی کاربر و به انگلیسی نوشته می‌شود. با نُه زبان،
+    نوشتن پرسش به همه‌شان یک دیوار متن می‌ساخت؛ ولی فقط زبان حدسی هم کافی
+    نیست، چون حدس ممکن است غلط باشد و آن‌وقت کاربر جمله‌ای می‌بیند که
+    نمی‌فهمد. انگلیسی نقش پل را دارد.
+    """
+    codes = [i18n.normalize(lang), "en"] if lang else [i18n.DEFAULT, "en"]
+    seen: list[str] = []
+    for code in codes:
+        line = i18n.t("lang.ask", code)
+        if line not in seen:
+            seen.append(line)
+    return "\n".join(seen)
 
 
 @router.message(Command("language"))
