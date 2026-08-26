@@ -20,7 +20,14 @@ from telkap.handlers import build_router
 from telkap.handlers import history as history_handlers
 from telkap.middlewares import BanMiddleware, ErrorLogMiddleware, ForceJoinMiddleware
 from telkap.models import Task
-from telkap.services import backup, forcejoin, maintenance, planstore, reminders
+from telkap.services import (
+    backup,
+    forcejoin,
+    maintenance,
+    planstore,
+    reminders,
+    renewal,
+)
 from telkap.services.copier import Copier
 from telkap.services.history import HistoryCopier
 from telkap.services.retry import RetryWorker
@@ -144,6 +151,7 @@ async def main() -> None:
         asyncio.create_task(retry_worker.run_forever(), name="retry"),
         asyncio.create_task(reminders.run_forever(notify), name="reminders"),
         asyncio.create_task(backup.run_forever(bot), name="backup"),
+        asyncio.create_task(renewal.run_forever(notify), name="renewal"),
         asyncio.create_task(maintenance.run_forever(), name="maintenance"),
     ]
 

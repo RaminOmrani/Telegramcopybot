@@ -64,6 +64,10 @@ class User(Base):
     # می‌شود و هرگز بازنویسی نمی‌گردد، وگرنه پاداش قابل دزدیدن است.
     referred_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
 
+    # تمدید خودکار از موجودی کیف پول. عمداً پیش‌فرض خاموش است: برداشت
+    # خودکار پول باید انتخاب صریح کاربر باشد، نه چیزی که سرش بیاید.
+    auto_renew: Mapped[bool] = mapped_column(Boolean, default=False)
+
     # نمایندگی: اشتراک را با تخفیف از کیف پولش می‌خرد و برای مشتری خودش
     # فعال می‌کند. درصد تخفیف برای هر نماینده جدا تعیین می‌شود.
     is_reseller: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
@@ -509,6 +513,30 @@ class CouponUse(Base):
     user_id: Mapped[int] = mapped_column(BigInteger, index=True)
     payment_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
     discount_toman: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class GiftCode(Base):
+    """کد هدیه یا پیش‌فروش: یک بار مصرف، یک طرح مشخص.
+
+    برخلاف کد تخفیف که روی قیمت اثر می‌گذارد، این کد خودش اشتراک است —
+    کاربر واردش می‌کند و طرح بدون پرداخت فعال می‌شود.
+    """
+
+    __tablename__ = "gift_codes"
+    __table_args__ = (Index("ix_gift_batch", "batch"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    plan_code: Mapped[str] = mapped_column(String(32))
+    batch: Mapped[str] = mapped_column(String(32), default="")
+    note: Mapped[str] = mapped_column(String(160), default="")
+
+    used_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

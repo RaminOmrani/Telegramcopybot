@@ -320,3 +320,238 @@ async def test_the_bill_keeps_every_line_item(tmp_path, monkeypatch):
         )
     finally:
         await db_module.close_db()
+
+
+# ------------------------------------------------------ کد هدیه
+@pytest.mark.asyncio
+async def test_gift_code_activates_a_plan_without_payment(tmp_path, monkeypatch):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.models import User
+        from telkap.services import giftcodes, subscription
+
+        async with db_module.get_session() as db:
+            db.add(User(id=8, first_name="گیرنده"))
+            await db.commit()
+
+        made = await giftcodes.generate("week", 3, batch="TEST")
+        assert len(made) == 3
+        assert len({g.code for g in made}) == 3      # همه یکتا
+
+        plan, sub = await giftcodes.redeem(8, made[0].code.lower())
+        assert plan.code == "week" and sub is not None
+        assert (await subscription.active_plan_for(8)).code == "week"
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_a_gift_code_works_only_once(tmp_path, monkeypatch):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.models import User
+        from telkap.services import giftcodes
+
+        async with db_module.get_session() as db:
+            db.add(User(id=8))
+            await db.commit()
+
+        made = await giftcodes.generate("week", 1)
+        await giftcodes.redeem(7, made[0].code)
+
+        with pytest.raises(giftcodes.GiftError, match="قبلاً"):
+            await giftcodes.redeem(8, made[0].code)
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_unknown_gift_code_is_refused(tmp_path, monkeypatch):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import giftcodes
+
+        with pytest.raises(giftcodes.GiftError, match="وجود ندارد"):
+            await giftcodes.redeem(7, "NOSUCHCODE")
+        with pytest.raises(giftcodes.GiftError):
+            await giftcodes.redeem(7, "   ")
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_gift_batches_report_usage(tmp_path, monkeypatch):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import giftcodes
+
+        made = await giftcodes.generate("month", 4, batch="EID")
+        await giftcodes.redeem(7, made[0].code)
+
+        rows = await giftcodes.batches()
+        batch, plan_code, total, used = rows[0]
+        assert batch == "EID" and plan_code == "month"
+        assert total == 4 and used == 1
+        assert len(await giftcodes.unused_codes("EID")) == 3
+    finally:
+        await db_module.close_db()
+
+
+def test_gift_codes_avoid_confusable_characters():
+    from telkap.services.giftcodes import ALPHABET
+
+    for ch in "O0I1L":
+        assert ch not in ALPHABET
+
+
+@pytest.mark.asyncio
+async def test_oversized_gift_batch_is_refused(tmp_path, monkeypatch):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import giftcodes
+
+        assert isinstance(await giftcodes.generate("week", 0), str)
+        assert isinstance(
+            await giftcodes.generate("week", giftcodes.MAX_BATCH + 1), str
+        )
+        assert isinstance(await giftcodes.generate("no-such-plan", 1), str)
+    finally:
+        await db_module.close_db()
+
+
+# ------------------------------------------------- تمدید خودکار
+@pytest.mark.asyncio
+async def test_auto_renew_is_off_until_the_user_turns_it_on(tmp_path, monkeypatch):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import renewal
+
+        assert await renewal.is_on(7) is False
+        assert await renewal.toggle(7) is True
+        assert await renewal.is_on(7) is True
+        assert await renewal.toggle(7) is False
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_auto_renew_charges_the_wallet_and_extends(tmp_path, monkeypatch):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from datetime import timedelta
+
+        import sqlalchemy
+
+        from telkap.models import Subscription, utcnow
+        from telkap.plans import MONTH
+        from telkap.services import renewal, subscription, wallet
+
+        await renewal.toggle(7)
+        await wallet.credit(7, MONTH.price_toman)
+
+        # اشتراک را به آستانه‌ی انقضا می‌بریم
+        async with db_module.get_session() as db:
+            sub = (await db.execute(
+                sqlalchemy.select(Subscription).where(Subscription.user_id == 7)
+            )).scalars().first()
+            sub.expires_at = utcnow() + timedelta(hours=3)
+            await db.commit()
+
+        notes: list[str] = []
+
+        async def notify(uid, text):
+            notes.append(text)
+
+        assert await renewal.run_once(notify) == 1
+        assert await wallet.balance(7) == 0
+        assert await subscription.remaining_days(7) > 25
+        assert notes and "تمدید" in notes[0]
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_auto_renew_takes_nothing_when_balance_is_short(tmp_path, monkeypatch):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from datetime import timedelta
+
+        import sqlalchemy
+
+        from telkap.models import Subscription, utcnow
+        from telkap.services import renewal, wallet
+
+        await renewal.toggle(7)
+        await wallet.credit(7, 10_000)          # خیلی کمتر از قیمت طرح
+
+        async with db_module.get_session() as db:
+            sub = (await db.execute(
+                sqlalchemy.select(Subscription).where(Subscription.user_id == 7)
+            )).scalars().first()
+            sub.expires_at = utcnow() + timedelta(hours=3)
+            await db.commit()
+
+        notes: list[str] = []
+
+        async def notify(uid, text):
+            notes.append(text)
+
+        assert await renewal.run_once(notify) == 0
+        assert await wallet.balance(7) == 10_000     # هیچ برداشت جزئی نشده
+        assert notes and "کافی نیست" in notes[0]
+
+        # هشدار فقط یک بار می‌رود
+        await renewal.run_once(notify)
+        assert len(notes) == 1
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_auto_renew_skips_users_who_did_not_opt_in(tmp_path, monkeypatch):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from datetime import timedelta
+
+        import sqlalchemy
+
+        from telkap.models import Subscription, utcnow
+        from telkap.plans import MONTH
+        from telkap.services import renewal, wallet
+
+        await wallet.credit(7, MONTH.price_toman)     # پول دارد ولی اجازه نداده
+        async with db_module.get_session() as db:
+            sub = (await db.execute(
+                sqlalchemy.select(Subscription).where(Subscription.user_id == 7)
+            )).scalars().first()
+            sub.expires_at = utcnow() + timedelta(hours=2)
+            await db.commit()
+
+        assert await renewal.run_once() == 0
+        assert await wallet.balance(7) == MONTH.price_toman
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_winback_coupon_rides_along_with_the_reminder(tmp_path, monkeypatch):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.models import Coupon
+        from telkap.services import coupons, reminders
+
+        assert await reminders.winback_note() == ""
+
+        await coupons.create("COMEBACK", Coupon.KIND_PERCENT, 25)
+        await reminders.set_winback("comeback")
+        assert await reminders.current_winback() == "COMEBACK"
+
+        note = await reminders.winback_note()
+        assert "COMEBACK" in note and "۲۵" in note.replace("25", "۲۵")
+
+        # کد خاموش‌شده دیگر پیشنهاد نمی‌شود
+        found = await coupons.find("COMEBACK")
+        await coupons.toggle(found.id)
+        assert await reminders.winback_note() == ""
+    finally:
+        await db_module.close_db()

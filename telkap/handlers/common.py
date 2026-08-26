@@ -39,6 +39,8 @@ class Flow(StatesGroup):
     receipt = State()
     credit_amount = State()
     coupon_code = State()
+    gift_code = State()
+    admin_gift = State()
     dest_add = State()
     dest_override = State()
     import_settings = State()

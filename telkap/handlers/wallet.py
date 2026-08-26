@@ -6,16 +6,24 @@ from urllib.parse import quote
 
 from aiogram import F, Router
 from aiogram.filters import Command
+from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select
 
 from telkap.db import get_session
-from telkap.handlers.common import get_or_create_user
+from telkap.handlers.common import Flow, get_or_create_user
 from telkap.keyboards import BTN_WALLET
 from telkap.models import PaymentRequest
 from telkap.plans import toman
-from telkap.services import payments, referral, reseller, wallet
+from telkap.services import (
+    giftcodes,
+    payments,
+    referral,
+    renewal,
+    reseller,
+    wallet,
+)
 from telkap.texts import fa_num
 
 log = logging.getLogger(__name__)
@@ -24,13 +32,22 @@ router = Router(name="wallet")
 RULE = "━━━━━━━━━━━━━━━━━━"
 
 
-def _menu(has_history: bool, is_reseller: bool = False) -> InlineKeyboardBuilder:
+def _menu(
+    has_history: bool, is_reseller: bool = False, auto_renew: bool = False
+) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
     if is_reseller:
         kb.row(InlineKeyboardButton(text="🏪 پنل نمایندگی", callback_data="rs:home"))
     kb.row(InlineKeyboardButton(text="🎁 دعوت دوستان", callback_data="wal:invite"))
     if has_history:
         kb.row(InlineKeyboardButton(text="📜 تاریخچه تراکنش‌ها", callback_data="wal:history"))
+    kb.row(InlineKeyboardButton(text="🎁 کد هدیه دارم", callback_data="wal:gift"))
+    kb.row(
+        InlineKeyboardButton(
+            text=("🔄 تمدید خودکار: روشن" if auto_renew else "🔄 تمدید خودکار: خاموش"),
+            callback_data="wal:renew",
+        )
+    )
     kb.row(
         InlineKeyboardButton(text="🧾 صورتحساب‌ها", callback_data="wal:bills"),
         InlineKeyboardButton(text="💳 خرید اشتراک", callback_data="credit:plans"),
@@ -70,7 +87,15 @@ async def _wallet_text(user_id: int) -> tuple[str, InlineKeyboardBuilder]:
             f"🏪 شما نماینده‌اید — <b>{fa_num(discount)}٪</b> تخفیف روی همه‌ی طرح‌ها.",
         ]
 
-    return "\n".join(lines), _menu(bool(entries), is_reseller)
+    auto_renew = await renewal.is_on(user_id)
+    if auto_renew:
+        lines += [
+            "",
+            "🔄 <b>تمدید خودکار روشن است</b> — پیش از پایان اشتراک، هزینه از "
+            "همین موجودی برداشت می‌شود.",
+        ]
+
+    return "\n".join(lines), _menu(bool(entries), is_reseller, auto_renew)
 
 
 @router.message(Command("wallet"))
@@ -113,6 +138,64 @@ async def cb_history(call: CallbackQuery) -> None:
     kb = InlineKeyboardBuilder()
     kb.row(InlineKeyboardButton(text="🔙 کیف پول", callback_data="wal:home"))
     await call.message.edit_text("\n".join(lines), reply_markup=kb.as_markup())
+
+
+@router.callback_query(F.data == "wal:renew")
+async def cb_toggle_renew(call: CallbackQuery) -> None:
+    """تمدید خودکار — عمداً یک کلید صریح، نه چیزی که پنهانی روشن باشد."""
+    state = await renewal.toggle(call.from_user.id)
+    if state is None:
+        await call.answer("کاربر پیدا نشد", show_alert=True)
+        return
+    await call.answer(
+        "تمدید خودکار روشن شد ✅" if state else "تمدید خودکار خاموش شد"
+    )
+    if state:
+        await call.message.answer(
+            "🔄 <b>تمدید خودکار روشن شد.</b>\n\n"
+            "تا ۲۴ ساعت مانده به پایان اشتراک، هزینه‌ی همان طرح از کیف "
+            "پولتان برداشت و اشتراک تمدید می‌شود.\n\n"
+            "<i>اگر موجودی کافی نباشد چیزی برداشت نمی‌شود و فقط به شما خبر "
+            "می‌رسد. هر وقت خواستید می‌توانید خاموشش کنید.</i>"
+        )
+    text, kb = await _wallet_text(call.from_user.id)
+    try:
+        await call.message.edit_text(text, reply_markup=kb.as_markup())
+    except Exception:
+        log.debug("به‌روزرسانی کیف پول ناموفق بود", exc_info=True)
+
+
+@router.callback_query(F.data == "wal:gift")
+async def cb_gift_ask(call: CallbackQuery, state: FSMContext) -> None:
+    await call.answer()
+    await state.set_state(Flow.gift_code)
+    await call.message.answer(
+        "🎁 <b>کد هدیه</b>\n\n"
+        "کد را بفرستید تا اشتراکش برایتان فعال شود.\n\n"
+        "<i>حروف کوچک و بزرگ و خط تیره فرقی نمی‌کند.</i>\n\n"
+        "انصراف: /cancel"
+    )
+
+
+@router.message(Flow.gift_code)
+async def got_gift(message: Message, state: FSMContext) -> None:
+    await get_or_create_user(message.from_user)
+    try:
+        plan, _sub = await giftcodes.redeem(message.from_user.id, message.text or "")
+    except giftcodes.GiftError as exc:
+        await message.answer(f"⚠️ {exc}")
+        return
+    except Exception:
+        log.exception("مصرف کد هدیه ناموفق بود")
+        await message.answer("⚠️ خطای غیرمنتظره. دوباره تلاش کنید.")
+        return
+
+    await state.clear()
+    await message.answer(
+        f"🎉 <b>{plan.title}</b> برای شما فعال شد!\n\n"
+        f"مدت: {fa_num(plan.days)} روز\n\n"
+        "از «👤 حساب کاربری» می‌توانید سهمیه‌هایتان را ببینید."
+    )
 
 
 @router.callback_query(F.data == "wal:bills")
