@@ -16,7 +16,7 @@ from telkap.db import get_session
 from telkap.handlers.common import Flow, parse_int
 from telkap.models import DailyStat, PaymentRequest, RetryItem, Subscription, Task, User, utcnow
 from telkap.plans import PLANS, toman
-from telkap.services import backup, payments, support
+from telkap.services import backup, health, payments, support
 from telkap.services.copier import today_key
 from telkap.services.subscription import grant
 from telkap.services.userbot import manager
@@ -137,6 +137,20 @@ async def show_stats(event: CallbackQuery | Message) -> None:
         f"در صف تلاش مجدد: {fa_num(queued or 0)}\n"
         f"رسید در انتظار بررسی: {fa_num(pending_pay or 0)}"
     )
+
+    # سلامت اکانت‌های متصل — فقط وقتی مشکلی هست نمایش داده می‌شود
+    states = await health.summary()
+    problems = {
+        state: count
+        for state, count in states.items()
+        if state != health.STATE_OK and count
+    }
+    if problems:
+        text += "\n\n<b>⚠️ اکانت‌های نیازمند رسیدگی</b>\n"
+        text += "\n".join(
+            f"{health.STATE_LABELS.get(state, state)}: {fa_num(count)}"
+            for state, count in sorted(problems.items(), key=lambda kv: -kv[1])
+        )
     if isinstance(event, CallbackQuery):
         await event.answer()
         await event.message.edit_text(text, reply_markup=_back().as_markup())
@@ -241,21 +255,31 @@ async def cb_backup(call: CallbackQuery) -> None:
         await call.answer("دسترسی ندارید", show_alert=True)
         return
     await call.answer("در حال ساخت نسخه‌ی پشتیبان…")
-    path = await asyncio.to_thread(backup.make_backup)
+    path, offsite = await backup.run_once(call.bot)
     if path is None:
         await call.message.answer("⚠️ پشتیبان‌گیری انجام نشد (دیتابیس SQLite نیست یا خطا رخ داد).")
         return
+
     size_kb = path.stat().st_size // 1024
+    note = (
+        "\n☁️ نسخه‌ای هم به کانال پشتیبان فرستاده شد."
+        if offsite
+        else "\n⚠️ کانال پشتیبان تنظیم نشده؛ این نسخه فقط روی همین سرور است.\n"
+        "<i>برای امنیت واقعی، یک کانال خصوصی بسازید، ربات را در آن ادمین کنید "
+        "و شناسه‌اش را در <code>BACKUP_CHAT_ID</code> بگذارید.</i>"
+    )
     try:
         from aiogram.types import FSInputFile
 
         await call.message.answer_document(
             FSInputFile(path),
-            caption=f"💾 نسخه‌ی پشتیبان\nحجم: {fa_num(size_kb)} کیلوبایت",
+            caption=f"💾 نسخه‌ی پشتیبان\nحجم: {fa_num(size_kb)} کیلوبایت{note}",
         )
     except Exception:
         log.warning("ارسال فایل پشتیبان ناموفق بود", exc_info=True)
-        await call.message.answer(f"💾 نسخه‌ی پشتیبان ساخته شد:\n<code>{path}</code>")
+        await call.message.answer(
+            f"💾 نسخه‌ی پشتیبان ساخته شد:\n<code>{path}</code>{note}"
+        )
 
 
 # ------------------------------------------------------ فعال‌سازی دستی

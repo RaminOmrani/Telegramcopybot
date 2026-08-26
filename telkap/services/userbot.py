@@ -30,6 +30,7 @@ from telkap.config import get_settings
 from telkap.crypto import decrypt, encrypt
 from telkap.db import get_session, log_activity
 from telkap.models import Task, User
+from telkap.services import health
 
 log = logging.getLogger(__name__)
 
@@ -61,9 +62,14 @@ class UserbotManager:
         self._pending: dict[int, PendingLogin] = {}
         self._locks: dict[int, asyncio.Lock] = {}
         self._copier = None  # به‌صورت تنبل ست می‌شود تا وابستگی حلقوی نشود
+        self._notifier = None
 
     def bind_copier(self, copier) -> None:
         self._copier = copier
+
+    def bind_notifier(self, notifier) -> None:
+        """تابعی که پیام به کاربر می‌فرستد، برای هشدارهای سلامت اکانت."""
+        self._notifier = notifier
 
     # ------------------------------------------------------------------ ورود
     def _new_client(self, session: str = "") -> TelegramClient:
@@ -72,9 +78,14 @@ class UserbotManager:
             StringSession(session),
             cfg.api_id,
             cfg.api_hash,
-            device_model="Copy Bot",
-            system_version="1.0",
-            app_version="1.0",
+            # اثر انگشت باید شبیه یک کلاینت معمولی باشد. نام قبلی
+            # («Copy Bot») عملاً خودِ اکانت را به‌عنوان ابزار خودکار معرفی
+            # می‌کرد — هم در فهرست دستگاه‌های کاربر، هم برای تلگرام.
+            device_model=cfg.device_model,
+            system_version=cfg.system_version,
+            app_version=cfg.app_version,
+            lang_code="fa",
+            system_lang_code="fa",
             proxy=proxy.for_telethon(cfg.proxy_url),
             connection_retries=5,
             retry_delay=2,
@@ -193,14 +204,21 @@ class UserbotManager:
                 await client.connect()
                 if not await client.is_user_authorized():
                     raise AuthKeyUnregisteredError(request=None)
-            except (AuthKeyUnregisteredError, SessionRevokedError):
+            except (AuthKeyUnregisteredError, SessionRevokedError) as exc:
+                # تا امروز اینجا بی‌صدا خروج انجام می‌شد و کاربر فقط
+                # می‌دید ربات کار نمی‌کند؛ حالا دلیلش را می‌گوییم
                 log.warning("سشن کاربر %s باطل شده است", user_id)
+                await health.record(user_id, health.classify(exc), notifier=self._notifier)
                 await self.logout(user_id, revoked=True)
                 return None
-            except Exception:
+            except Exception as exc:
                 log.exception("اتصال کلاینت کاربر %s ناموفق بود", user_id)
+                diagnosis = health.classify(exc)
+                if diagnosis.state != health.STATE_OK:
+                    await health.record(user_id, diagnosis, notifier=self._notifier)
                 return None
 
+            await health.clear(user_id)          # اتصال موفق یعنی دوباره سالم است
             self._runtimes[user_id] = UserRuntime(client=client)
             return client
 

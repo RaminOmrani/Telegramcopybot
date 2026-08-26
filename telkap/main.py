@@ -120,6 +120,8 @@ async def main() -> None:
 
     copier = Copier(manager, notifier=notify)
     manager.bind_copier(copier)
+    # تا کاربر بفهمد چرا اکانتش قطع یا محدود شده، نه اینکه فقط ببیند کار نمی‌کند
+    manager.bind_notifier(notify)
     history_copier = HistoryCopier(manager, copier, notifier=notify)
     history_handlers.bind(history_copier)
 
@@ -141,7 +143,7 @@ async def main() -> None:
         asyncio.create_task(subscription_watchdog(notify), name="subscriptions"),
         asyncio.create_task(retry_worker.run_forever(), name="retry"),
         asyncio.create_task(reminders.run_forever(notify), name="reminders"),
-        asyncio.create_task(backup.run_forever(), name="backup"),
+        asyncio.create_task(backup.run_forever(bot), name="backup"),
         asyncio.create_task(maintenance.run_forever(), name="maintenance"),
     ]
 

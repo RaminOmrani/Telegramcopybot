@@ -3,6 +3,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+import random
 from collections.abc import Iterable, Sequence
 from datetime import timedelta
 from pathlib import Path
@@ -35,7 +36,7 @@ from telkap.config import get_settings
 from telkap.db import get_session, log_activity
 from telkap.models import DailyStat, Destination, MessageMap, RetryItem, Task, utcnow
 from telkap.plans import FEAT_MESSAGES, FEAT_WATERMARK
-from telkap.services import cache, entitlement
+from telkap.services import cache, entitlement, health
 from telkap.services.filters import MessageFacts, content_hash, should_copy
 from telkap.services.ratelimit import RateLimiter, daily_quota, hourly_quota
 from telkap.services.transform import apply_transforms, drop_custom_emoji, remap_entities
@@ -210,10 +211,47 @@ class Copier:
             except FloodWaitError as exc:
                 log.warning("FloodWait %s ثانیه برای کار %s", exc.seconds, task_id)
                 await self._record_error(task_id, f"محدودیت تلگرام: {exc.seconds} ثانیه صبر")
+                await health.record(user_id, health.classify(exc))
                 await asyncio.sleep(min(exc.seconds, 300))
             except Exception as exc:
+                if await self._handle_account_error(user_id, exc):
+                    return          # اکانت محدود شد؛ ادامه‌ی کارها بی‌فایده است
                 log.exception("پردازش کار %s ناموفق بود", task_id)
                 await self._record_error(task_id, str(exc))
+
+    async def _handle_account_error(self, user_id: int, exc: BaseException) -> bool:
+        """اگر خطا یعنی اکانت محدود/بن شده، همه‌ی کارهای کاربر متوقف می‌شوند.
+
+        ادامه دادن در این حالت فقط وضعیت را بدتر می‌کند، و کاربری که خبر
+        ندارد فکر می‌کند ربات خراب است.
+        """
+        diagnosis = health.classify(exc)
+        if not diagnosis.fatal:
+            return False
+
+        changed = await health.record(user_id, diagnosis, notifier=self.notifier)
+        if changed:
+            paused = await self._pause_all_tasks(user_id, diagnosis.title)
+            log.warning(
+                "اکانت کاربر %s محدود شد (%s)؛ %s کار متوقف شد",
+                user_id, diagnosis.state, paused,
+            )
+        return True
+
+    async def _pause_all_tasks(self, user_id: int, reason: str) -> int:
+        """همه‌ی کارهای فعال کاربر را خاموش می‌کند و تعدادشان را می‌دهد."""
+        async with get_session() as db:
+            rows = await db.execute(
+                select(Task).where(Task.user_id == user_id, Task.enabled.is_(True))
+            )
+            tasks = list(rows.scalars())
+            for task in tasks:
+                task.enabled = False
+                task.last_error = reason[:400]
+            await db.commit()
+        for task in tasks:
+            cache.invalidate_task(task.id)
+        return len(tasks)
 
     async def process(self, user_id: int, task_id: int, messages: Sequence) -> bool:
         """یک پیام یا آلبوم را برای یک کار پردازش و به همه‌ی مقصدها ارسال می‌کند."""
@@ -295,9 +333,14 @@ class Copier:
         # فرمت‌ها و ایموجی پریمیوم فقط وقتی حفظ می‌شوند که متن اصلی
         # دست‌نخورده مانده باشد؛ در غیر این صورت آفست‌ها معتبر نیستند
         entities = remap_entities(facts.text, text, src_entities)
+        # تأخیر کاملاً یکنواخت الگوی ماشینی می‌سازد، پس ±۱۵٪ پراکندگی
+        # می‌گیرد. وقتی کاربر تأخیری نخواسته چیزی اضافه نمی‌شود: کپی باید
+        # لحظه‌ای بماند، و فاصله‌گذاری واقعی را محدودکننده‌ی نرخ انجام
+        # می‌دهد که بر حسب حجم کار می‌کند، نه بر حسب میلی‌ثانیه.
         delay = int(cfg.get("delay_seconds") or 0)
         if delay > 0:
-            await asyncio.sleep(min(delay, 3600))
+            jitter = random.uniform(-0.15, 0.15) * delay
+            await asyncio.sleep(max(0.0, min(delay + jitter, 3600)))
 
         # واترمارک: اول از سهمیه‌ی روزانه‌ی طرح، بعد از اعتبار خریداری‌شده.
         # هر تصویر یک واحد می‌برد و آلبوم چند تصویر دارد، پس به ازای هر
@@ -377,6 +420,10 @@ class Copier:
                 raise
             except Exception as exc:
                 await entitlement.release(user_id, grant, sub_id)
+                # محدودیت یا بن شدن اکانت با تلاش مجدد درست نمی‌شود و فقط
+                # اوضاع را بدتر می‌کند؛ بالاتر مرکزی رسیدگی می‌شود
+                if health.classify(exc).fatal:
+                    raise
                 log.exception("ارسال به مقصد %s ناموفق بود؛ در صف تلاش مجدد", target)
                 await self._enqueue_retry(
                     task_id, user_id, src_chat_id, src_ids, str(target), str(exc)

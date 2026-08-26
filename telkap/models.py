@@ -64,6 +64,13 @@ class User(Base):
     # می‌شود و هرگز بازنویسی نمی‌گردد، وگرنه پاداش قابل دزدیدن است.
     referred_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
 
+    # سلامت اکانت کاربری متصل: ok | flood | peer_flood | banned | revoked
+    account_state: Mapped[str] = mapped_column(String(16), default="ok", index=True)
+    account_note: Mapped[str] = mapped_column(String(120), default="")
+    account_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     tasks: Mapped[list[Task]] = relationship(back_populates="user", cascade="all, delete-orphan")
     subscriptions: Mapped[list[Subscription]] = relationship(
         back_populates="user", cascade="all, delete-orphan"

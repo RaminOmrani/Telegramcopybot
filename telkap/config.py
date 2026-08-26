@@ -41,6 +41,17 @@ class Settings:
     # پروکسی برای شبکه‌هایی که تلگرام مسدود است، مثل socks5://127.0.0.1:10808
     proxy_url: str = ""
 
+    # اثر انگشتی که اکانت کاربری به تلگرام معرفی می‌کند. این مقدار هم در
+    # «دستگاه‌های متصل» خود کاربر دیده می‌شود و هم تلگرام آن را می‌بیند؛
+    # نامی که خودش را «ربات» معرفی کند، ریسک محدود شدن را بالا می‌برد.
+    device_model: str = "Desktop"
+    system_version: str = "Windows 10"
+    app_version: str = "4.16.8"
+
+    # پشتیبان‌گیری بیرون از سرور: شناسه‌ی کانال خصوصی که ربات در آن ادمین
+    # است. خالی یعنی فقط نسخه‌ی محلی گرفته می‌شود.
+    backup_chat_id: str = ""
+
     def is_admin(self, user_id: int) -> bool:
         return user_id in self.admin_ids
 
@@ -77,6 +88,10 @@ def load_settings() -> Settings:
         backup_hours=int(os.getenv("BACKUP_HOURS", "12")),
         log_retention_days=int(os.getenv("LOG_RETENTION_DAYS", "14")),
         proxy_url=os.getenv("PROXY_URL", "").strip(),
+        device_model=os.getenv("DEVICE_MODEL", "Desktop").strip() or "Desktop",
+        system_version=os.getenv("SYSTEM_VERSION", "Windows 10").strip() or "Windows 10",
+        app_version=os.getenv("APP_VERSION", "4.16.8").strip() or "4.16.8",
+        backup_chat_id=os.getenv("BACKUP_CHAT_ID", "").strip(),
     )
 
 
