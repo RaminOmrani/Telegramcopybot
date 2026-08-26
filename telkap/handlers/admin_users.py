@@ -26,7 +26,15 @@ from telkap.plans import (
     get_plan,
     toman,
 )
-from telkap.services import credits, limits, referral, subscription, wallet
+from telkap.services import (
+    credits,
+    health,
+    limits,
+    referral,
+    reseller,
+    subscription,
+    wallet,
+)
 from telkap.services.userbot import manager
 from telkap.texts import fa_num
 
@@ -242,6 +250,18 @@ async def _detail(user_id: int, flt: str, page: int):
         f"👛 کیف پول: <b>{toman(int(user.wallet_toman or 0))}</b>",
     ]
 
+    if user.is_reseller:
+        sales = await reseller.stats(user_id)
+        lines.append(
+            f"🏪 نماینده — <b>{fa_num(int(user.reseller_discount or 0))}٪</b> تخفیف · "
+            f"{fa_num(sales.sales)} فروش"
+        )
+    if user.account_state and user.account_state != health.STATE_OK:
+        lines.append(
+            f"⚠️ اکانت: <b>{health.STATE_LABELS.get(user.account_state, user.account_state)}</b>"
+            + (f" — {user.account_note}" if user.account_note else "")
+        )
+
     if user.referred_by:
         lines.append(f"🎁 معرف: <code>{user.referred_by}</code>")
     ref_stats = await referral.stats(user_id)
@@ -300,7 +320,11 @@ def _detail_keyboard(user: User, has_sub: bool, flt: str, page: int) -> InlineKe
         InlineKeyboardButton(text="🎫 اعتبار گذشته", callback_data=f"admu:chist:{uid}:-:{ctx}"),
     )
     kb.row(
-        InlineKeyboardButton(text="👛 کیف پول", callback_data=f"admu:wal:{uid}:-:{ctx}")
+        InlineKeyboardButton(text="👛 کیف پول", callback_data=f"admu:wal:{uid}:-:{ctx}"),
+        InlineKeyboardButton(
+            text="🏪 لغو نمایندگی" if user.is_reseller else "🏪 نماینده کن",
+            callback_data=f"admu:res:{uid}:-:{ctx}",
+        ),
     )
     kb.row(
         InlineKeyboardButton(text="🎛 سقف‌های اختصاصی", callback_data=f"ul:show:{uid}:{ctx}")
@@ -621,6 +645,81 @@ async def got_wallet(message: Message, state: FSMContext) -> None:
         )
     except Exception:
         log.debug("اطلاع تغییر کیف پول به کاربر نرسید", exc_info=True)
+    await _show_user(
+        message,
+        uid,
+        str(data.get("admin_flt", "all")),
+        int(data.get("admin_page", 0)),
+        edit=False,
+    )
+
+
+# ----------------------------------------------------------- نمایندگی
+@router.callback_query(F.data.startswith("admu:res:"))
+async def cb_reseller(call: CallbackQuery, state: FSMContext) -> None:
+    if not await _guard(call):
+        return
+    _action, uid, _arg, flt, page = _parse(call.data)
+    is_reseller, discount = await reseller.profile(uid)
+
+    if is_reseller:
+        await reseller.set_reseller(uid, False, admin_id=call.from_user.id)
+        await call.answer("نمایندگی برداشته شد")
+        try:
+            await call.bot.send_message(uid, "🏪 دسترسی نمایندگی شما برداشته شد.")
+        except Exception:
+            log.debug("اطلاع لغو نمایندگی نرسید", exc_info=True)
+        await _show_user(call.message, uid, flt, page)
+        return
+
+    # فعال کردن: اول درصد تخفیف پرسیده می‌شود
+    await call.answer()
+    await state.set_state(Flow.admin_reseller)
+    await state.update_data(admin_target=uid, admin_flt=flt, admin_page=page)
+    suggested = await reseller.default_discount()
+    await call.message.answer(
+        f"🏪 <b>نماینده کردن کاربر</b> <code>{uid}</code>\n\n"
+        f"چند درصد تخفیف روی قیمت طرح‌ها بگیرد؟\n"
+        f"پیشنهاد: <code>{fa_num(suggested)}</code> (حداکثر "
+        f"{fa_num(reseller.MAX_DISCOUNT)})\n\n"
+        f"<i>نماینده کیف پولش را شارژ می‌کند و بعد اشتراک را با این تخفیف "
+        f"می‌خرد و فوری برای مشتری خودش فعال می‌کند.</i>\n\n"
+        "انصراف: /cancel"
+    )
+
+
+@router.message(Flow.admin_reseller)
+async def got_reseller(message: Message, state: FSMContext) -> None:
+    if not _is_admin(message.from_user.id):
+        await state.clear()
+        return
+    discount = parse_int(message.text or "")
+    if discount is None or not 0 <= discount <= reseller.MAX_DISCOUNT:
+        await message.answer(
+            f"عددی بین ۰ و {fa_num(reseller.MAX_DISCOUNT)} بفرستید."
+        )
+        return
+    data = await state.get_data()
+    uid = int(data.get("admin_target", 0))
+
+    result = await reseller.set_reseller(
+        uid, True, discount, admin_id=message.from_user.id
+    )
+    if result is None:
+        await message.answer("کاربر پیدا نشد.")
+        return
+    await state.clear()
+    await message.answer(f"✅ نماینده شد با <b>{fa_num(discount)}٪</b> تخفیف.")
+    try:
+        await message.bot.send_message(
+            uid,
+            f"🏪 <b>دسترسی نمایندگی برای شما فعال شد.</b>\n\n"
+            f"تخفیف شما: <b>{fa_num(discount)}٪</b> روی همه‌ی طرح‌ها.\n\n"
+            "کیف پولتان را شارژ کنید و از «👛 کیف پول و دعوت» ← «🏪 پنل نمایندگی» "
+            "برای مشتریانتان اشتراک فعال کنید.",
+        )
+    except Exception:
+        log.debug("اطلاع نمایندگی به کاربر نرسید", exc_info=True)
     await _show_user(
         message,
         uid,

@@ -12,7 +12,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from telkap.handlers.common import get_or_create_user
 from telkap.keyboards import BTN_WALLET
 from telkap.plans import toman
-from telkap.services import referral, wallet
+from telkap.services import referral, reseller, wallet
 from telkap.texts import fa_num
 
 log = logging.getLogger(__name__)
@@ -21,8 +21,10 @@ router = Router(name="wallet")
 RULE = "━━━━━━━━━━━━━━━━━━"
 
 
-def _menu(has_history: bool) -> InlineKeyboardBuilder:
+def _menu(has_history: bool, is_reseller: bool = False) -> InlineKeyboardBuilder:
     kb = InlineKeyboardBuilder()
+    if is_reseller:
+        kb.row(InlineKeyboardButton(text="🏪 پنل نمایندگی", callback_data="rs:home"))
     kb.row(InlineKeyboardButton(text="🎁 دعوت دوستان", callback_data="wal:invite"))
     if has_history:
         kb.row(InlineKeyboardButton(text="📜 تاریخچه تراکنش‌ها", callback_data="wal:history"))
@@ -55,7 +57,14 @@ async def _wallet_text(user_id: int) -> tuple[str, InlineKeyboardBuilder]:
     if stats.earned:
         lines += ["", f"🎁 تا امروز از دعوت: <b>{toman(stats.earned)}</b>"]
 
-    return "\n".join(lines), _menu(bool(entries))
+    is_reseller, discount = await reseller.profile(user_id)
+    if is_reseller:
+        lines += [
+            "",
+            f"🏪 شما نماینده‌اید — <b>{fa_num(discount)}٪</b> تخفیف روی همه‌ی طرح‌ها.",
+        ]
+
+    return "\n".join(lines), _menu(bool(entries), is_reseller)
 
 
 @router.message(Command("wallet"))

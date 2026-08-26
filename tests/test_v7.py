@@ -459,3 +459,129 @@ async def test_approving_a_real_payment_pays_the_referrer(tmp_path, monkeypatch)
         assert await wallet.balance(8) == 45_000
     finally:
         await db_module.close_db()
+
+
+# ---------------------------------------------------------- نمایندگی
+@pytest.mark.asyncio
+async def test_reseller_buys_at_a_discount_and_activates_instantly(tmp_path, monkeypatch):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.plans import MONTH
+        from telkap.services import reseller, subscription, wallet
+
+        await _add_user(db_module, 8, "مشتری")
+        await reseller.set_reseller(7, True, 25)
+        await wallet.credit(7, 500_000)
+
+        sale = await reseller.activate(7, 8, "month")
+
+        expected = reseller.discounted(MONTH.price_toman, 25)
+        assert sale.paid_toman == expected
+        assert sale.list_toman == MONTH.price_toman
+        assert await wallet.balance(7) == 500_000 - expected
+
+        # مشتری واقعاً اشتراک گرفته است
+        plan = await subscription.active_plan_for(8)
+        assert plan is not None and plan.code == "month"
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_reseller_cannot_sell_without_enough_balance(tmp_path, monkeypatch):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import reseller, subscription, wallet
+
+        await _add_user(db_module, 8)
+        await reseller.set_reseller(7, True, 10)
+        await wallet.credit(7, 1_000)
+
+        with pytest.raises(reseller.ResellerError, match="کافی نیست"):
+            await reseller.activate(7, 8, "month")
+
+        assert await wallet.balance(7) == 1_000        # چیزی کم نشده
+        assert await subscription.active_plan_for(8) is None
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_only_resellers_can_use_the_panel(tmp_path, monkeypatch):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import reseller, wallet
+
+        await _add_user(db_module, 8)
+        await wallet.credit(7, 900_000)
+
+        with pytest.raises(reseller.ResellerError, match="نماینده نیستید"):
+            await reseller.activate(7, 8, "month")
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_reseller_gets_a_clear_error_for_unknown_customer(tmp_path, monkeypatch):
+    """مشتری که ربات را استارت نکرده، کاربر ندارد و باید پیام روشن بگیرد."""
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import reseller, wallet
+
+        await reseller.set_reseller(7, True, 20)
+        await wallet.credit(7, 900_000)
+
+        with pytest.raises(reseller.ResellerError, match="استارت"):
+            await reseller.activate(7, 999_999, "month")
+        assert await wallet.balance(7) == 900_000
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_reseller_cannot_sell_to_self(tmp_path, monkeypatch):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import reseller, wallet
+
+        await reseller.set_reseller(7, True, 20)
+        await wallet.credit(7, 900_000)
+
+        with pytest.raises(reseller.ResellerError, match="خودتان"):
+            await reseller.activate(7, 7, "month")
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_reseller_stats_track_sales_and_saving(tmp_path, monkeypatch):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import reseller, wallet
+
+        await _add_user(db_module, 8)
+        await _add_user(db_module, 10)
+        await reseller.set_reseller(7, True, 30)
+        await wallet.credit(7, 2_000_000)
+
+        await reseller.activate(7, 8, "week")
+        await reseller.activate(7, 10, "week")
+        await reseller.activate(7, 8, "month")     # همان مشتری، خرید دوم
+
+        stats = await reseller.stats(7)
+        assert stats.sales == 3
+        assert stats.customers == 2
+        assert stats.saved > 0                     # نسبت به قیمت فهرست
+        assert len(await reseller.sales(7)) == 3
+    finally:
+        await db_module.close_db()
+
+
+def test_reseller_discount_is_bounded_and_rounded():
+    from telkap.services.reseller import MAX_DISCOUNT, discounted
+
+    assert discounted(429_000, 0) == 429_000
+    assert discounted(429_000, 100) == discounted(429_000, MAX_DISCOUNT)
+    # به هزار تومان رند می‌شود تا قیمت‌ها تمیز بمانند
+    assert discounted(129_000, 15) % 1_000 == 0
+    assert discounted(1_000, 99) >= 0

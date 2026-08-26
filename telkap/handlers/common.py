@@ -57,6 +57,9 @@ class Flow(StatesGroup):
     admin_limit_value = State()
     admin_referral_value = State()
     admin_wallet = State()
+    admin_reseller = State()
+
+    reseller_customer = State()
 
     support_message = State()
     support_reply = State()

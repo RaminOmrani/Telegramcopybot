@@ -86,6 +86,8 @@ def _add_missing_columns(conn) -> None:
             ("limits", "JSON DEFAULT '{}'"),
             ("wallet_toman", "INTEGER DEFAULT 0"),
             ("referred_by", "BIGINT"),
+            ("is_reseller", "BOOLEAN DEFAULT 0"),
+            ("reseller_discount", "INTEGER DEFAULT 0"),
             ("account_state", "VARCHAR(16) DEFAULT 'ok'"),
             ("account_note", "VARCHAR(120) DEFAULT ''"),
             ("account_checked_at", "TIMESTAMP"),

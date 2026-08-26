@@ -64,6 +64,11 @@ class User(Base):
     # می‌شود و هرگز بازنویسی نمی‌گردد، وگرنه پاداش قابل دزدیدن است.
     referred_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
 
+    # نمایندگی: اشتراک را با تخفیف از کیف پولش می‌خرد و برای مشتری خودش
+    # فعال می‌کند. درصد تخفیف برای هر نماینده جدا تعیین می‌شود.
+    is_reseller: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    reseller_discount: Mapped[int] = mapped_column(Integer, default=0)
+
     # سلامت اکانت کاربری متصل: ok | flood | peer_flood | banned | revoked
     account_state: Mapped[str] = mapped_column(String(16), default="ok", index=True)
     account_note: Mapped[str] = mapped_column(String(120), default="")
@@ -450,6 +455,26 @@ class ReferralReward(Base):
     amount_toman: Mapped[int] = mapped_column(Integer, default=0)
     status: Mapped[str] = mapped_column(String(16), default=STATUS_PAID, index=True)
     note: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ResellerSale(Base):
+    """یک فروش نمایندگی: نماینده از کیف پولش خرید و برای مشتری فعال کرد.
+
+    قیمت فهرست هم ذخیره می‌شود تا بعداً معلوم باشد تخفیف در لحظه‌ی فروش
+    چقدر بوده، حتی اگر قیمت‌ها یا درصد تخفیف بعداً عوض شوند.
+    """
+
+    __tablename__ = "reseller_sales"
+    __table_args__ = (Index("ix_reseller_sales_seller", "reseller_id", "id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    reseller_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    customer_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    plan_code: Mapped[str] = mapped_column(String(32))
+    paid_toman: Mapped[int] = mapped_column(Integer, default=0)       # آنچه نماینده داد
+    list_toman: Mapped[int] = mapped_column(Integer, default=0)       # قیمت فهرست
+    discount_percent: Mapped[int] = mapped_column(Integer, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

@@ -17,6 +17,7 @@ from telkap.handlers import (
     guide,
     history,
     preview,
+    reseller,
     settings,
     start,
     support,
@@ -47,6 +48,7 @@ def build_router() -> Router:
     root.include_router(settings.router)
     root.include_router(history.router)
     root.include_router(wallet.router)
+    root.include_router(reseller.router)
     root.include_router(billing.router)
     # فوروارد آخر ثبت می‌شود چون هندلر پیام فورواردشده‌اش فیلتر حالت ندارد
     root.include_router(forward.router)
