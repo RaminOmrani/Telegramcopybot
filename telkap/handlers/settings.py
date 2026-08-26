@@ -27,7 +27,7 @@ from telkap.keyboards import (
 )
 from telkap.models import PendingPost, Rule, Task
 from telkap.plans import FEAT_WATERMARK
-from telkap.services import cache, pending
+from telkap.services import cache, dedupe, pending
 from telkap.services.defaults import merged_settings
 from telkap.services.subscription import active_plan_for
 from telkap.texts import (
@@ -49,6 +49,7 @@ from telkap.texts import (
     ASK_REPLACE_FROM,
     ASK_REPLACE_TO,
     ASK_SIGNATURE,
+    ASK_SIMILARITY,
     ASK_WATERMARK_TEXT,
     INVALID_NUMBER,
 )
@@ -98,6 +99,7 @@ ASK_SPECS = {
     "delay_seconds": (ASK_DELAY, "int"),
     "max_per_hour": (ASK_MAX_HOUR, "int"),
     "min_gap_seconds": (ASK_MIN_GAP, "int"),
+    "similarity_percent": (ASK_SIMILARITY, "int"),
     "engagement_wait_minutes": (ASK_ENGAGE_WAIT, "int"),
     "min_views": (ASK_MIN_VIEWS, "int"),
     "min_reactions": (ASK_MIN_REACTIONS, "int"),
@@ -226,6 +228,23 @@ async def cb_ad_sensitivity(call: CallbackQuery) -> None:
     cfg["ad_sensitivity"] = order[(order.index(current) + 1) % len(order)] if current in order else "medium"
     await _save_settings(task_id, cfg)
     await call.answer()
+    await _render(call, "filters", task_id)
+
+
+@router.callback_query(F.data.startswith("dupmode:"))
+async def cb_duplicate_mode(call: CallbackQuery) -> None:
+    """چرخش بین سه سطح سخت‌گیریِ تشخیص تکراری."""
+    task_id = int(call.data.split(":")[1])
+    task = await _owned_task(call.from_user.id, task_id)
+    if task is None:
+        await call.answer("دسترسی ندارید", show_alert=True)
+        return
+    cfg = merged_settings(task.settings)
+    current = dedupe.mode_of(cfg)
+    nxt = dedupe.MODES[(dedupe.MODES.index(current) + 1) % len(dedupe.MODES)]
+    cfg["duplicate_mode"] = nxt
+    await _save_settings(task_id, cfg)
+    await call.answer(dedupe.MODE_LABELS[nxt])
     await _render(call, "filters", task_id)
 
 

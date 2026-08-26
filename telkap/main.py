@@ -29,6 +29,7 @@ from telkap.models import Task
 from telkap.services import (
     alerts,
     backup,
+    digest,
     forcejoin,
     maintenance,
     planstore,
@@ -165,6 +166,7 @@ async def main() -> None:
         asyncio.create_task(retry_worker.run_forever(), name="retry"),
         asyncio.create_task(release_worker.run_forever(), name="release"),
         asyncio.create_task(reminders.run_forever(notify), name="reminders"),
+        asyncio.create_task(digest.run_forever(notify), name="digest"),
         asyncio.create_task(backup.run_forever(bot), name="backup"),
         asyncio.create_task(renewal.run_forever(notify), name="renewal"),
         asyncio.create_task(maintenance.run_forever(), name="maintenance"),

@@ -19,6 +19,7 @@ from telkap.plans import (
     purchasable,
     toman,
 )
+from telkap.services import dedupe
 from telkap.services.defaults import MEDIA_KINDS
 from telkap.services.watermark import POSITIONS
 from telkap.texts import fa_num, on_off
@@ -87,8 +88,17 @@ def _divider(label: str) -> InlineKeyboardButton:
 
 
 def task_menu(
-    task: Task, *, backfill_running: bool = False, waiting: int = 0
+    task: Task,
+    *,
+    backfill_running: bool = False,
+    waiting: int = 0,
+    pro: bool = False,
 ) -> InlineKeyboardMarkup:
+    """منوی یک کار.
+
+    در حالت ساده فقط چیزهایی هست که تقریباً همه لازمشان دارند. بقیه پشت
+    یک دکمه می‌مانند — نه حذف شده‌اند، فقط سر راهِ کاربر تازه نیستند.
+    """
     kb = InlineKeyboardBuilder()
     toggle = "⏸  توقف این کار" if task.enabled else "▶️  فعال‌سازی این کار"
     kb.row(InlineKeyboardButton(text=toggle, callback_data=f"task:toggle:{task.id}"))
@@ -109,41 +119,64 @@ def task_menu(
     )
     kb.row(
         InlineKeyboardButton(text="✍️ هدر / فوتر / امضا", callback_data=f"set:text:{task.id}"),
-        InlineKeyboardButton(text="🎞 نوع محتوا", callback_data=f"set:media:{task.id}"),
-    )
-    kb.row(
-        InlineKeyboardButton(text="🚦 فیلترها", callback_data=f"set:filters:{task.id}"),
         InlineKeyboardButton(text="💧 واترمارک", callback_data=f"set:wm:{task.id}"),
     )
-    kb.row(
-        InlineKeyboardButton(
-            text="🧩 کانفیگ پروکسی", callback_data=f"set:cfg:{task.id}"
+    if pro:
+        kb.row(
+            InlineKeyboardButton(text="🚦 فیلترها", callback_data=f"set:filters:{task.id}"),
+            InlineKeyboardButton(text="🎞 نوع محتوا", callback_data=f"set:media:{task.id}"),
         )
-    )
+        kb.row(
+            InlineKeyboardButton(
+                text="🧩 کانفیگ پروکسی", callback_data=f"set:cfg:{task.id}"
+            )
+        )
 
     kb.row(_divider("انتشار"))
-    kb.row(
-        InlineKeyboardButton(text="📤 کانال‌های مقصد", callback_data=f"dest:list:{task.id}"),
-        InlineKeyboardButton(text="⚙️ ارسال و ترافیک", callback_data=f"set:send:{task.id}"),
-    )
-    kb.row(
-        InlineKeyboardButton(text="🕐 زمان‌بندی", callback_data=f"set:time:{task.id}"),
-        InlineKeyboardButton(text="📈 آمار این کار", callback_data=f"task:stats:{task.id}"),
-    )
-
-    kb.row(_divider("ابزارها"))
-    kb.row(
-        InlineKeyboardButton(text="🧪 تست تنظیمات", callback_data=f"task:test:{task.id}"),
-        InlineKeyboardButton(text="📋 کپی تنظیمات", callback_data=f"clone:pick:{task.id}"),
-    )
-    if backfill_running:
+    if pro:
         kb.row(
-            InlineKeyboardButton(text="⏹ توقف کپی گذشته", callback_data=f"hist:cancel:{task.id}")
+            InlineKeyboardButton(text="📤 کانال‌های مقصد", callback_data=f"dest:list:{task.id}"),
+            InlineKeyboardButton(text="⚙️ ارسال و ترافیک", callback_data=f"set:send:{task.id}"),
+        )
+        kb.row(
+            InlineKeyboardButton(text="🕐 زمان‌بندی", callback_data=f"set:time:{task.id}"),
+            InlineKeyboardButton(text="📈 آمار این کار", callback_data=f"task:stats:{task.id}"),
         )
     else:
         kb.row(
-            InlineKeyboardButton(text="🕓 کپی پیام‌های گذشته", callback_data=f"hist:start:{task.id}")
+            InlineKeyboardButton(
+                text="📤 کانال‌های مقصد", callback_data=f"dest:list:{task.id}"
+            )
         )
+
+    kb.row(_divider("ابزارها"))
+    kb.row(
+        InlineKeyboardButton(text="🧰 قالب آماده", callback_data=f"tpl:list:{task.id}"),
+        InlineKeyboardButton(text="🧪 تست تنظیمات", callback_data=f"task:test:{task.id}"),
+    )
+    if pro:
+        kb.row(
+            InlineKeyboardButton(text="📋 کپی تنظیمات", callback_data=f"clone:pick:{task.id}")
+        )
+        if backfill_running:
+            kb.row(
+                InlineKeyboardButton(
+                    text="⏹ توقف کپی گذشته", callback_data=f"hist:cancel:{task.id}"
+                )
+            )
+        else:
+            kb.row(
+                InlineKeyboardButton(
+                    text="🕓 کپی پیام‌های گذشته", callback_data=f"hist:start:{task.id}"
+                )
+            )
+    else:
+        kb.row(
+            InlineKeyboardButton(
+                text="⚙️ گزینه‌های پیشرفته", callback_data=f"task:pro:{task.id}"
+            )
+        )
+
     kb.row(
         InlineKeyboardButton(text="🗑 حذف کار", callback_data=f"task:del:{task.id}"),
         InlineKeyboardButton(text="🔙 بازگشت", callback_data="task:list"),
@@ -197,6 +230,22 @@ def filters_menu(task_id: int, cfg: dict) -> InlineKeyboardMarkup:
         InlineKeyboardButton(text="🚫 کلمات ممنوعه", callback_data=f"rule:block:{task_id}"),
         InlineKeyboardButton(text="✅ کلمات مجاز", callback_data=f"rule:allow:{task_id}"),
     )
+    # سطح سخت‌گیری فقط وقتی معنی دارد که یکی از دو فیلتر تکراری روشن باشد
+    if cfg.get("skip_duplicates") or cfg.get("skip_cross_duplicates"):
+        mode = dedupe.mode_of(cfg)
+        kb.row(
+            InlineKeyboardButton(
+                text=f"🎚 تشخیص تکراری: {dedupe.MODE_LABELS[mode]}",
+                callback_data=f"dupmode:{task_id}",
+            )
+        )
+        if mode == dedupe.MODE_SIMILAR:
+            kb.row(
+                InlineKeyboardButton(
+                    text=f"📊 حداقل شباهت: {fa_num(int(cfg.get('similarity_percent') or 85))}٪",
+                    callback_data=f"ask:similarity_percent:{task_id}",
+                )
+            )
     kb.row(
         InlineKeyboardButton(
             text="📈 فیلتر تعامل (بازدید و واکنش)",
@@ -604,7 +653,13 @@ def credit_offer_menu(kind: str) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def account_menu(logged_in: bool, has_pin: bool) -> InlineKeyboardMarkup:
+def account_menu(
+    logged_in: bool,
+    has_pin: bool,
+    *,
+    pro: bool = False,
+    digest: bool = False,
+) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     if logged_in:
         kb.row(InlineKeyboardButton(text="🚪 خروج از حساب", callback_data="acc:logout"))
@@ -622,6 +677,17 @@ def account_menu(logged_in: bool, has_pin: bool) -> InlineKeyboardMarkup:
     kb.row(
         InlineKeyboardButton(text="👛 کیف پول", callback_data="wal:home"),
         InlineKeyboardButton(text="🧾 گزارش فعالیت", callback_data="acc:logs"),
+    )
+    kb.row(
+        InlineKeyboardButton(
+            text="🧭 منوها: پیشرفته" if pro else "🧭 منوها: ساده",
+            callback_data="acc:level",
+        )
+    )
+    kb.row(
+        InlineKeyboardButton(
+            text=f"📬 خلاصه‌ی روزانه: {on_off(digest)}", callback_data="acc:digest"
+        )
     )
     return kb.as_markup()
 

@@ -92,9 +92,15 @@ def _add_missing_columns(conn) -> None:
             ("account_state", "VARCHAR(16) DEFAULT 'ok'"),
             ("account_note", "VARCHAR(120) DEFAULT ''"),
             ("account_checked_at", "TIMESTAMP"),
+            ("display_level", "VARCHAR(8) DEFAULT 'simple'"),
+            ("daily_digest", "BOOLEAN DEFAULT 0"),
         ],
         "activity_log": [
             ("actor_id", "BIGINT"),
+        ],
+        "message_map": [
+            ("norm_hash", "VARCHAR(64)"),
+            ("simhash", "BIGINT"),
         ],
         "payment_requests": [
             ("kind", "VARCHAR(16) DEFAULT 'plan'"),
@@ -127,6 +133,10 @@ def _finish_schema(conn, migrated: bool) -> None:
     conn.exec_driver_sql(
         "CREATE INDEX IF NOT EXISTS ix_message_map_dest_dedupe "
         "ON message_map (dest_chat, content_hash)"
+    )
+    conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_message_map_norm_dedupe "
+        "ON message_map (dest_chat, norm_hash)"
     )
     if not migrated:
         return

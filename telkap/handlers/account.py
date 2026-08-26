@@ -106,14 +106,56 @@ def _usage(spent: int, limit: int) -> str:
     return f"{fa_num(spent)} از {fa_num(limit)} (مانده: {fa_num(max(0, limit - spent))})"
 
 
+def _account_markup(user: User):
+    return account_menu(
+        user.is_logged_in,
+        bool(user.pin_hash),
+        pro=user.display_level == "pro",
+        digest=bool(user.daily_digest),
+    )
+
+
 @router.message(Command("account"))
 @router.message(F.text == BTN_ACCOUNT)
 async def show_account(message: Message) -> None:
     user = await get_or_create_user(message.from_user)
-    await message.answer(
-        await _account_text(user),
-        reply_markup=account_menu(user.is_logged_in, bool(user.pin_hash)),
-    )
+    await message.answer(await _account_text(user), reply_markup=_account_markup(user))
+
+
+@router.callback_query(F.data.in_({"acc:level", "acc:digest"}))
+async def cb_preference(call: CallbackQuery) -> None:
+    """دو تنظیم شخصی: سطح نمایش منوها و خلاصه‌ی روزانه."""
+    async with get_session() as db:
+        user = await db.get(User, call.from_user.id)
+        if user is None:
+            await call.answer()
+            return
+        if call.data == "acc:level":
+            user.display_level = "simple" if user.display_level == "pro" else "pro"
+            note = (
+                "منوها کامل شدند"
+                if user.display_level == "pro"
+                else "منوها ساده شدند"
+            )
+        else:
+            user.daily_digest = not user.daily_digest
+            note = (
+                "خلاصه‌ی روزانه روشن شد"
+                if user.daily_digest
+                else "خلاصه‌ی روزانه خاموش شد"
+            )
+        await db.commit()
+        await db.refresh(user)
+
+    await call.answer(note)
+    try:
+        await call.message.edit_text(
+            await _account_text(user), reply_markup=_account_markup(user)
+        )
+    except Exception:
+        await call.message.answer(
+            await _account_text(user), reply_markup=_account_markup(user)
+        )
 
 
 # ------------------------------------------------------------------ ورود

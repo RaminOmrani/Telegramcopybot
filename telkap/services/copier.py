@@ -5,6 +5,7 @@ import asyncio
 import logging
 import random
 from collections.abc import Iterable, Sequence
+from dataclasses import dataclass
 from datetime import timedelta
 from pathlib import Path
 from typing import Any
@@ -47,6 +48,7 @@ from telkap.plans import FEAT_MESSAGES, FEAT_WATERMARK
 from telkap.services import (
     alerts,
     cache,
+    dedupe,
     docedit,
     entitlement,
     health,
@@ -228,6 +230,29 @@ def sender_is_bot(message) -> bool:
     """آیا فرستنده‌ی پیام ربات است؟ در کانال‌ها معمولاً فرستنده‌ای نیست."""
     sender = getattr(message, "sender", None)
     return bool(getattr(sender, "bot", False))
+
+
+@dataclass(frozen=True, slots=True)
+class Fingerprint:
+    """سه سطح اثر انگشت یک پست، برای سه سطح سخت‌گیریِ تشخیص تکراری."""
+
+    exact: str
+    normalized: str
+    fuzzy: int = 0
+
+
+def fingerprint_of(facts: MessageFacts) -> Fingerprint:
+    """اثر انگشت پست، در هر سه سطح.
+
+    هر سه همیشه ساخته و ذخیره می‌شوند — هرکدام کمتر از یک میلی‌ثانیه —
+    تا اگر کاربر بعداً سطح سخت‌گیری را عوض کرد، همان لحظه روی پست‌های
+    قبلی هم کار کند، نه فقط از پستِ بعدی به بعد.
+    """
+    return Fingerprint(
+        exact=content_hash(facts),
+        normalized=dedupe.normalized_hash(facts.media_kind, facts.text),
+        fuzzy=dedupe.simhash(facts.text),
+    )
 
 
 def build_facts(message) -> MessageFacts:
@@ -512,8 +537,10 @@ class Copier:
         if not await self._message_quota_ok(user_id, task_id, ent):
             return False
 
-        digest = content_hash(facts)
-        if cfg.get("skip_duplicates") and await self._is_duplicate(task_id, digest):
+        print_ = fingerprint_of(facts)
+        if cfg.get("skip_duplicates") and await self._seen_before(
+            MessageMap.task_id == task_id, print_, cfg
+        ):
             await self._bump(task_id, user_id, skipped=True)
             await log_activity(
                 user_id=user_id, task_id=task_id, event="skip", detail="پست تکراری"
@@ -566,8 +593,8 @@ class Copier:
                 continue
 
             # همین محتوا شاید از مبدای دیگری قبلاً به همین کانال رفته باشد
-            if dest_cfg.get("skip_cross_duplicates") and await self._already_in_channel(
-                str(target), digest
+            if dest_cfg.get("skip_cross_duplicates") and await self._seen_before(
+                MessageMap.dest_chat == str(target), print_, dest_cfg
             ):
                 cross_dupes += 1
                 continue
@@ -646,7 +673,7 @@ class Copier:
 
             if sent:
                 any_sent = True
-                await self._remember(task_id, src_ids, sent, digest, str(target))
+                await self._remember(task_id, src_ids, sent, print_, str(target))
 
         if any_sent:
             await self._bump(task_id, user_id, skipped=False)
@@ -964,31 +991,41 @@ class Copier:
         )
 
     # -------------------------------------------------------------- کمکی
-    async def _is_duplicate(self, task_id: int, digest: str) -> bool:
-        async with get_session() as db:
-            row = await db.execute(
-                select(MessageMap.id).where(
-                    MessageMap.task_id == task_id, MessageMap.content_hash == digest
-                ).limit(1)
-            )
-            return row.scalar_one_or_none() is not None
+    async def _seen_before(self, scope, print_: Fingerprint, cfg: dict[str, Any]) -> bool:
+        """آیا محتوایی با همین اثر انگشت قبلاً در این محدوده ثبت شده؟
 
-    async def _already_in_channel(self, dest_chat: str, digest: str) -> bool:
-        """آیا همین محتوا قبلاً به همین کانال رفته — از هر کار و مبدایی؟
-
-        این همان چیزی است که کاربرِ چند-مبدایی می‌خواهد: وقتی یک خبر در
-        سه کانال منبع تکرار می‌شود، فقط یک بار در کانال او منتشر گردد.
+        `scope` شرط SQLAlchemy است — یا «همین کار» یا «همین کانال مقصد».
+        سطح سخت‌گیری از تنظیمات کاربر می‌آید.
         """
-        if not digest:
+        mode = dedupe.mode_of(cfg)
+
+        if mode == dedupe.MODE_SIMILAR:
+            if not print_.fuzzy:
+                return False
+            async with get_session() as db:
+                rows = await db.execute(
+                    select(MessageMap.simhash)
+                    .where(scope, MessageMap.simhash.is_not(None))
+                    .order_by(MessageMap.id.desc())
+                    .limit(dedupe.SIMILAR_WINDOW)
+                )
+                percent = int(cfg.get("similarity_percent") or 85)
+                return any(
+                    dedupe.looks_similar(print_.fuzzy, int(other), percent)
+                    for other in rows.scalars()
+                    if other
+                )
+
+        column, value = (
+            (MessageMap.norm_hash, print_.normalized)
+            if mode == dedupe.MODE_NORMALIZED
+            else (MessageMap.content_hash, print_.exact)
+        )
+        if not value:
             return False
         async with get_session() as db:
             row = await db.execute(
-                select(MessageMap.id)
-                .where(
-                    MessageMap.dest_chat == dest_chat,
-                    MessageMap.content_hash == digest,
-                )
-                .limit(1)
+                select(MessageMap.id).where(scope, column == value).limit(1)
             )
             return row.scalar_one_or_none() is not None
 
@@ -997,7 +1034,7 @@ class Copier:
         task_id: int,
         src_ids: Sequence[int],
         dst_ids: Sequence[int],
-        digest: str,
+        print_: Fingerprint,
         dest_chat: str,
     ) -> None:
         if not src_ids or not dst_ids:
@@ -1014,13 +1051,18 @@ class Copier:
                 )
                 if existing.scalar_one_or_none() is not None:
                     continue
+                # اثر انگشت فقط روی اولین پیامِ آلبوم می‌نشیند؛ بقیه
+                # همان محتوا را تکرار می‌کنند و شمردنشان تکراری‌سازی است
+                first = index == 0
                 db.add(
                     MessageMap(
                         task_id=task_id,
                         src_msg_id=src_id,
                         dst_msg_id=dst_id,
                         dest_chat=dest_chat,
-                        content_hash=digest if index == 0 else None,
+                        content_hash=print_.exact if first else None,
+                        norm_hash=print_.normalized if first else None,
+                        simhash=print_.fuzzy if first else None,
                     )
                 )
             await db.commit()

@@ -80,6 +80,13 @@ class User(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # سطح نمایش منوها: simple | pro
+    # با ده‌ها گزینه، منوی کامل کاربر تازه را می‌ترساند. حالت ساده فقط
+    # چیزهایی را نشان می‌دهد که واقعاً لازم‌اند و بقیه یک کلیک دورترند.
+    display_level: Mapped[str] = mapped_column(String(8), default="simple")
+    # خلاصه‌ی روزانه‌ی کارها
+    daily_digest: Mapped[bool] = mapped_column(Boolean, default=False)
+
     tasks: Mapped[list[Task]] = relationship(back_populates="user", cascade="all, delete-orphan")
     subscriptions: Mapped[list[Subscription]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
@@ -228,6 +235,11 @@ class MessageMap(Base):
     dst_msg_id: Mapped[int] = mapped_column(BigInteger)
     dest_chat: Mapped[str] = mapped_column(String(64), default="")
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # اثر انگشت هم‌ارز: بدون امضا، ایموجی و لینک — همان‌هایی که بین دو
+    # نسخه‌ی یک خبر فرق می‌کنند
+    norm_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # اثر انگشت شباهت؛ با تغییر کوچکِ متن کمی تغییر می‌کند
+    simhash: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 

@@ -26,6 +26,7 @@ from telkap.handlers import (
     settings,
     start,
     support,
+    task_templates,
     tasks,
     wallet,
     watermark_wizard,
@@ -81,6 +82,7 @@ def build_router() -> Router:
     root.include_router(billing.router)
     root.include_router(churn.router)
     root.include_router(approvals.router)
+    root.include_router(task_templates.router)
     # فوروارد آخر ثبت می‌شود چون هندلر پیام فورواردشده‌اش فیلتر حالت ندارد
     root.include_router(forward.router)
     return root

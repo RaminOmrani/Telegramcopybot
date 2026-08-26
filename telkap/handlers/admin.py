@@ -15,7 +15,7 @@ from telkap.db import get_session, log_activity
 from telkap.handlers.common import Flow, parse_int
 from telkap.models import DailyStat, PaymentRequest, RetryItem, Subscription, Task, User, utcnow
 from telkap.plans import PLANS, toman
-from telkap.services import backup, health, payments, roles, support
+from telkap.services import audience, backup, health, payments, roles, support
 from telkap.services.copier import today_key
 from telkap.services.subscription import grant
 from telkap.services.userbot import manager
@@ -540,39 +540,119 @@ async def cmd_ban(message: Message) -> None:
 
 
 # --------------------------------------------------------- پیام همگانی
+async def _segment_screen() -> tuple[str, InlineKeyboardBuilder]:
+    counts = await audience.sizes()
+    kb = InlineKeyboardBuilder()
+    for segment in audience.SEGMENTS:
+        kb.row(
+            InlineKeyboardButton(
+                text=f"{segment.title} ({fa_num(counts[segment.code])})",
+                callback_data=f"cast:{segment.code}",
+            )
+        )
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm:home"))
+
+    lines = ["📢 <b>پیام همگانی</b>\n", "به چه کسانی فرستاده شود؟\n"]
+    lines.extend(f"{s.title} — {s.hint}" for s in audience.SEGMENTS)
+    lines.append(
+        "\n<i>کاربران مسدود هرگز پیام نمی‌گیرند. پیش از ارسال، متن را با "
+        "تعداد دقیق مخاطبان دوباره می‌بینید.</i>"
+    )
+    return "\n".join(lines), kb
+
+
 @router.callback_query(F.data == "adm:cast")
-async def cb_broadcast(call: CallbackQuery, state: FSMContext) -> None:
+async def cb_broadcast(call: CallbackQuery) -> None:
     if not await roles.can(call.from_user.id, roles.CAP_USERS):
         await call.answer("دسترسی ندارید", show_alert=True)
         return
     await call.answer()
+    text, kb = await _segment_screen()
+    await call.message.edit_text(text, reply_markup=kb.as_markup())
+
+
+@router.callback_query(F.data.startswith("cast:"))
+async def cb_pick_segment(call: CallbackQuery, state: FSMContext) -> None:
+    if not await roles.can(call.from_user.id, roles.CAP_USERS):
+        await call.answer("دسترسی ندارید", show_alert=True)
+        return
+    code = call.data.split(":", 1)[1]
+    segment = audience.BY_CODE.get(code)
+    if segment is None:
+        await call.answer()
+        return
+
+    await call.answer()
     await state.set_state(Flow.admin_broadcast)
-    await call.message.answer("📢 متن پیام همگانی را بفرستید.\n\nانصراف: /cancel")
+    await state.update_data(segment=code)
+    await call.message.answer(
+        f"📢 متن پیام برای «{segment.title}» را بفرستید.\n\n"
+        "<i>قالب‌بندی (بولد، لینک، ایموجی) حفظ می‌شود.</i>\n\nانصراف: /cancel"
+    )
 
 
 @router.message(Command("broadcast"))
-async def cmd_broadcast(message: Message, state: FSMContext) -> None:
+async def cmd_broadcast(message: Message) -> None:
     if not await roles.can(message.from_user.id, roles.CAP_USERS):
         return
-    await state.set_state(Flow.admin_broadcast)
-    await message.answer("📢 متن پیام همگانی را بفرستید.\n\nانصراف: /cancel")
+    text, kb = await _segment_screen()
+    await message.answer(text, reply_markup=kb.as_markup())
 
 
 @router.message(Flow.admin_broadcast)
-async def do_broadcast(message: Message, state: FSMContext) -> None:
+async def got_broadcast_text(message: Message, state: FSMContext) -> None:
+    """متن گرفته شد؛ پیش از ارسال یک بار نشان داده و تأیید گرفته می‌شود.
+
+    پیام همگانی برگشت‌پذیر نیست — یک تأیید ارزشش را دارد.
+    """
     if not await roles.can(message.from_user.id, roles.CAP_USERS):
         await state.clear()
         return
-    await state.clear()
-    async with get_session() as db:
-        rows = await db.execute(select(User.id).where(User.is_banned.is_(False)))
-        user_ids = [uid for uid in rows.scalars()]
+    data = await state.get_data()
+    code = data.get("segment", audience.ALL)
+    segment = audience.BY_CODE.get(code) or audience.BY_CODE[audience.ALL]
+    body = message.html_text
 
+    await state.update_data(body=body)
+    count = await audience.size(code)
+    kb = InlineKeyboardBuilder()
+    if count:
+        kb.row(
+            InlineKeyboardButton(
+                text=f"✅ ارسال به {fa_num(count)} نفر", callback_data="castgo"
+            )
+        )
+    kb.row(InlineKeyboardButton(text="❌ انصراف", callback_data="adm:home"))
+
+    await message.answer(
+        f"📢 <b>پیش‌نمایش</b>\nمخاطب: {segment.title} — {fa_num(count)} نفر\n"
+        f"{'─' * 18}\n\n{body}",
+        reply_markup=kb.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "castgo")
+async def do_broadcast(call: CallbackQuery, state: FSMContext) -> None:
+    if not await roles.can(call.from_user.id, roles.CAP_USERS):
+        await call.answer("دسترسی ندارید", show_alert=True)
+        return
+    data = await state.get_data()
+    body = data.get("body")
+    code = data.get("segment", audience.ALL)
+    await state.clear()
+    if not body:
+        await call.answer("متن پیام پیدا نشد؛ از نو شروع کنید", show_alert=True)
+        return
+
+    user_ids = await audience.members(code)
+    await call.answer()
     sent = failed = 0
-    notice = await message.answer(f"در حال ارسال به {fa_num(len(user_ids))} کاربر…")
+    notice = await call.message.answer(
+        f"در حال ارسال به {fa_num(len(user_ids))} کاربر…"
+    )
     for index, user_id in enumerate(user_ids, start=1):
         try:
-            await message.bot.send_message(user_id, message.html_text)
+            await call.bot.send_message(user_id, body)
             sent += 1
         except Exception:
             failed += 1
@@ -583,6 +663,13 @@ async def do_broadcast(message: Message, state: FSMContext) -> None:
                 await notice.edit_text(f"ارسال‌شده: {fa_num(sent)} | ناموفق: {fa_num(failed)}")
             except Exception:
                 log.debug("به‌روزرسانی پیشرفت ارسال ناموفق بود", exc_info=True)
+
+    await log_activity(
+        actor_id=call.from_user.id,
+        event="broadcast",
+        detail=f"{audience.BY_CODE[code].title}: {sent} موفق، {failed} ناموفق",
+        level="warning",
+    )
 
     await notice.edit_text(
         f"📢 پایان ارسال همگانی.\nموفق: {fa_num(sent)} | ناموفق: {fa_num(failed)}"

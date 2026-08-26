@@ -85,7 +85,12 @@ async def show_task(target: Message, task_id: int, *, edit: bool = False) -> Non
     waiting = await pending.waiting_count(
         task.user_id, reason=PendingPost.REASON_APPROVAL, task_id=task.id
     )
-    markup = task_menu(task, backfill_running=running, waiting=waiting)
+    async with get_session() as db:
+        owner = await db.get(User, task.user_id)
+    pro = bool(owner and owner.display_level == "pro")
+    markup = task_menu(
+        task, backfill_running=running, waiting=waiting, pro=pro
+    )
     if edit:
         try:
             await target.edit_text(text, reply_markup=markup)
@@ -367,6 +372,19 @@ async def got_title(message: Message, state: FSMContext) -> None:
 
 
 # ------------------------------------------------------------ فعال/غیرفعال
+@router.callback_query(F.data.startswith("task:pro:"))
+async def cb_go_pro(call: CallbackQuery) -> None:
+    """کاربر گزینه‌های پیشرفته را خواست؛ از این پس همه‌ی منوها کامل‌اند."""
+    task_id = int(call.data.split(":")[2])
+    async with get_session() as db:
+        user = await db.get(User, call.from_user.id)
+        if user is not None:
+            user.display_level = "pro"
+            await db.commit()
+    await call.answer("حالت پیشرفته روشن شد")
+    await show_task(call.message, task_id, edit=True)
+
+
 @router.callback_query(F.data.startswith("task:toggle:"))
 async def cb_toggle(call: CallbackQuery) -> None:
     task_id = int(call.data.split(":")[2])
