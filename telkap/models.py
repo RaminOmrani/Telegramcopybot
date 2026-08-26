@@ -80,6 +80,8 @@ class User(Base):
         DateTime(timezone=True), nullable=True
     )
 
+    # زبان رابط کاربری: fa | en | ar
+    language: Mapped[str] = mapped_column(String(4), default="fa")
     # سطح نمایش منوها: simple | pro
     # با ده‌ها گزینه، منوی کامل کاربر تازه را می‌ترساند. حالت ساده فقط
     # چیزهایی را نشان می‌دهد که واقعاً لازم‌اند و بقیه یک کلیک دورترند.

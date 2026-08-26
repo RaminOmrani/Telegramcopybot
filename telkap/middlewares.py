@@ -15,12 +15,37 @@ from aiogram.types import (
     TelegramObject,
 )
 
+from telkap import i18n
 from telkap.config import get_settings
 from telkap.db import get_session
 from telkap.models import User
 from telkap.services import forcejoin, maintenance, roles
 
 log = logging.getLogger(__name__)
+
+
+class LanguageMiddleware(BaseMiddleware):
+    """زبان کاربر را پیش از هر هندلری سر جایش می‌گذارد.
+
+    زبان در یک ContextVar می‌نشیند تا `t()` را بشود هرجای کد صدا زد،
+    بدون اینکه لازم باشد زبان از هندلر تا عمق توابع دست‌به‌دست شود.
+    چون در هر پیام لازم است، یک کش کوچک نگه داشته می‌شود؛ زبان به‌ندرت
+    عوض می‌شود و موقع تغییر همان‌جا باطل می‌گردد.
+    """
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        tg_user = data.get("event_from_user")
+        lang = i18n.DEFAULT
+        if tg_user is not None:
+            lang = await i18n.language_of(tg_user.id, fallback=tg_user.language_code)
+        i18n.set_current(lang)
+        data["lang"] = lang
+        return await handler(event, data)
 
 
 class MaintenanceMiddleware(BaseMiddleware):

@@ -15,7 +15,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from telkap.config import get_settings
 from telkap.handlers.common import Flow, get_or_create_user
-from telkap.keyboards import BTN_SUPPORT, main_menu
+from telkap.keyboards import main_menu, menu_texts
 from telkap.models import SupportTicket
 from telkap.services import roles, support
 from telkap.texts import fa_num
@@ -71,7 +71,7 @@ async def _user_text(user_id: int) -> tuple[str, bool]:
 
 
 @router.message(Command("support"))
-@router.message(F.text == BTN_SUPPORT)
+@router.message(F.text.in_(menu_texts("menu.support")))
 async def cmd_support(message: Message) -> None:
     await get_or_create_user(message.from_user)
     text, has_open = await _user_text(message.from_user.id)

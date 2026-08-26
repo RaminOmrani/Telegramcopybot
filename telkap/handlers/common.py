@@ -8,11 +8,11 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import Message, TelegramObject
 from aiogram.types import User as TgUser
 
+from telkap import i18n
 from telkap.config import get_settings
 from telkap.db import get_session
 from telkap.models import User
 from telkap.services.subscription import active_plan_for, grant_trial_if_new
-from telkap.texts import NO_LOGIN, NO_SUBSCRIPTION
 
 
 class Flow(StatesGroup):
@@ -105,7 +105,7 @@ async def require_login(message: Message) -> User | None:
     """کاربر را برمی‌گرداند اگر اکانت کاربری‌اش متصل باشد، وگرنه هشدار می‌دهد."""
     user = await get_or_create_user(message.from_user)
     if not user.is_logged_in:
-        await message.answer(NO_LOGIN)
+        await message.answer(i18n.t("need.login"))
         return None
     return user
 
@@ -113,7 +113,7 @@ async def require_login(message: Message) -> User | None:
 async def require_subscription(message: Message):
     plan = await active_plan_for(message.from_user.id)
     if plan is None:
-        await message.answer(NO_SUBSCRIPTION)
+        await message.answer(i18n.t("need.subscription"))
     return plan
 
 

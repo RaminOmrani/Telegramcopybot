@@ -15,10 +15,9 @@ from telkap.handlers import history as history_handlers
 from telkap.handlers.chatpicker import picker_button
 from telkap.handlers.common import Flow, get_or_create_user
 from telkap.keyboards import (
-    BTN_NEW_TASK,
-    BTN_TASKS,
     confirm,
     main_menu,
+    menu_texts,
     task_menu,
     tasks_list,
 )
@@ -126,7 +125,7 @@ async def _tasks_header(user_id: int, tasks) -> str:
 
 # ------------------------------------------------------------------- لیست
 @router.message(Command("tasks"))
-@router.message(F.text == BTN_TASKS)
+@router.message(F.text.in_(menu_texts("menu.tasks")))
 async def cmd_tasks(message: Message) -> None:
     tasks = await _load_tasks(message.from_user.id)
     if not tasks:
@@ -204,7 +203,7 @@ async def cb_stats(call: CallbackQuery) -> None:
 
 # ------------------------------------------------------------- ساخت کار
 @router.message(Command("newtask"))
-@router.message(F.text == BTN_NEW_TASK)
+@router.message(F.text.in_(menu_texts("menu.new_task")))
 async def cmd_new_task(message: Message, state: FSMContext) -> None:
     await _start_new_task(message, state, message.from_user.id)
 

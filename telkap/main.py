@@ -23,6 +23,7 @@ from telkap.middlewares import (
     BanMiddleware,
     ErrorLogMiddleware,
     ForceJoinMiddleware,
+    LanguageMiddleware,
     MaintenanceMiddleware,
 )
 from telkap.models import Task
@@ -151,6 +152,7 @@ async def main() -> None:
     dispatcher = Dispatcher(storage=MemoryStorage())
     for observer in (dispatcher.message, dispatcher.callback_query):
         observer.middleware(ErrorLogMiddleware())
+        observer.middleware(LanguageMiddleware())
         observer.middleware(BanMiddleware())
         observer.middleware(MaintenanceMiddleware())
         observer.middleware(ForceJoinMiddleware())

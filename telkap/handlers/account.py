@@ -16,7 +16,7 @@ from telkap.handlers.common import (
     get_or_create_user,
     hash_pin,
 )
-from telkap.keyboards import BTN_ACCOUNT, account_menu, main_menu, quota_menu
+from telkap.keyboards import account_menu, main_menu, menu_texts, quota_menu
 from telkap.models import User
 from telkap.plans import (
     CREDIT_HISTORY,
@@ -116,7 +116,7 @@ def _account_markup(user: User):
 
 
 @router.message(Command("account"))
-@router.message(F.text == BTN_ACCOUNT)
+@router.message(F.text.in_(menu_texts("menu.account")))
 async def show_account(message: Message) -> None:
     user = await get_or_create_user(message.from_user)
     await message.answer(await _account_text(user), reply_markup=_account_markup(user))

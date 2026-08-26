@@ -16,10 +16,10 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from telkap.config import get_settings
 from telkap.handlers.common import Flow, get_or_create_user, parse_int
 from telkap.keyboards import (
-    BTN_PLANS,
     PLAN_ICONS,
     credit_packs_menu,
     credits_menu,
+    menu_texts,
     plans_menu,
 )
 from telkap.models import PaymentRequest
@@ -100,7 +100,7 @@ def _compare_text() -> str:
 
 
 @router.message(Command("plans"))
-@router.message(F.text == BTN_PLANS)
+@router.message(F.text.in_(menu_texts("menu.plans")))
 async def show_plans(message: Message) -> None:
     sub = await active_subscription(message.from_user.id)
     header = ""

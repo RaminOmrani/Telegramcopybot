@@ -9,6 +9,7 @@ from aiogram.types import (
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from telkap import i18n
 from telkap.models import Task
 from telkap.plans import (
     CREDIT_KINDS,
@@ -35,19 +36,31 @@ BTN_SUPPORT = "🛟 پشتیبانی"
 BTN_WALLET = "👛 کیف پول و دعوت"
 
 
-def main_menu() -> ReplyKeyboardMarkup:
+def main_menu(lang: str | None = None) -> ReplyKeyboardMarkup:
     # منوی اصلی عمداً روی ۸ دکمه نگه داشته می‌شود؛ «گزارش فعالیت» که کم
     # استفاده است به «حساب کاربری» منتقل شد تا جای کیف پول باز شود.
+    def btn(key: str) -> KeyboardButton:
+        return KeyboardButton(text=i18n.t(key, lang))
+
     return ReplyKeyboardMarkup(
         keyboard=[
-            [KeyboardButton(text=BTN_NEW_TASK), KeyboardButton(text=BTN_TASKS)],
-            [KeyboardButton(text=BTN_FORWARD), KeyboardButton(text=BTN_ACCOUNT)],
-            [KeyboardButton(text=BTN_PLANS), KeyboardButton(text=BTN_WALLET)],
-            [KeyboardButton(text=BTN_HELP), KeyboardButton(text=BTN_SUPPORT)],
+            [btn("menu.new_task"), btn("menu.tasks")],
+            [btn("menu.forward"), btn("menu.account")],
+            [btn("menu.plans"), btn("menu.wallet")],
+            [btn("menu.help"), btn("menu.support")],
         ],
         resize_keyboard=True,
-        input_field_placeholder="یک گزینه را انتخاب کنید…",
+        input_field_placeholder=i18n.t("menu.placeholder", lang),
     )
+
+
+def menu_texts(key: str) -> set[str]:
+    """همه‌ی ترجمه‌های یک دکمه — برای فیلتر کردن پیام‌های ورودی.
+
+    کاربری که زبانش را عوض کرده ممکن است هنوز دکمه‌ی قدیمی را ببیند، پس
+    هندلرها باید همه‌ی زبان‌ها را بشناسند.
+    """
+    return {i18n.t(key, code) for code in i18n.LANGS}
 
 
 MEDIA_LABELS = {
@@ -686,8 +699,12 @@ def account_menu(
     )
     kb.row(
         InlineKeyboardButton(
-            text=f"📬 خلاصه‌ی روزانه: {on_off(digest)}", callback_data="acc:digest"
+            text=f'{i18n.t("account.digest")}: {on_off(digest)}',
+            callback_data="acc:digest",
         )
+    )
+    kb.row(
+        InlineKeyboardButton(text=i18n.t("lang.button"), callback_data="acc:lang")
     )
     return kb.as_markup()
 

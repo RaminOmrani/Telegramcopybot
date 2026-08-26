@@ -13,7 +13,7 @@ from aiogram.filters import Command
 from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
-from telkap.keyboards import BTN_HELP
+from telkap.keyboards import menu_texts
 from telkap.plans import (
     CREDIT_HISTORY,
     CREDIT_WATERMARK,
@@ -284,6 +284,10 @@ def _extras() -> str:
         "پیش‌فرض، منوی هر کار ساده است و فقط چیزهای پرکاربرد را نشان "
         "می‌دهد. با «⚙️ گزینه‌های پیشرفته» همه‌چیز باز می‌شود. هر وقت "
         "خواستید از «👤 حساب کاربری ← 🧭 منوها» برگردید به حالت ساده.\n\n"
+        "<b>🌍 زبان</b>\n"
+        "«👤 حساب کاربری ← 🌍 زبان» یا دستور /language.\n"
+        "فارسی، انگلیسی و عربی. منوها، خوش‌آمد و پیام‌های اصلی ترجمه "
+        "می‌شوند؛ راهنمای کامل و پنل مدیریت فعلاً فارسی‌اند.\n\n"
         "<b>📬 خلاصه‌ی روزانه</b>\n"
         "«👤 حساب کاربری ← 📬 خلاصه‌ی روزانه» را روشن کنید تا هر روز صبح "
         "یک پیام کوتاه بگیرید: دیروز چند پست رفت، چند تا خطا خورد، چه "
@@ -692,7 +696,7 @@ def _section_keyboard(current: str) -> InlineKeyboardBuilder:
 
 @router.message(Command("help"))
 @router.message(Command("guide"))
-@router.message(F.text == BTN_HELP)
+@router.message(F.text.in_(menu_texts("menu.help")))
 async def cmd_help(message: Message) -> None:
     await message.answer(_home(), reply_markup=_menu().as_markup())
 

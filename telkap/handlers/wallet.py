@@ -13,7 +13,7 @@ from sqlalchemy import select
 
 from telkap.db import get_session
 from telkap.handlers.common import Flow, get_or_create_user
-from telkap.keyboards import BTN_WALLET
+from telkap.keyboards import menu_texts
 from telkap.models import PaymentRequest
 from telkap.plans import toman
 from telkap.services import (
@@ -99,7 +99,7 @@ async def _wallet_text(user_id: int) -> tuple[str, InlineKeyboardBuilder]:
 
 
 @router.message(Command("wallet"))
-@router.message(F.text == BTN_WALLET)
+@router.message(F.text.in_(menu_texts("menu.wallet")))
 async def cmd_wallet(message: Message) -> None:
     await get_or_create_user(message.from_user)
     text, kb = await _wallet_text(message.from_user.id)

@@ -92,6 +92,7 @@ def _add_missing_columns(conn) -> None:
             ("account_state", "VARCHAR(16) DEFAULT 'ok'"),
             ("account_note", "VARCHAR(120) DEFAULT ''"),
             ("account_checked_at", "TIMESTAMP"),
+            ("language", "VARCHAR(4) DEFAULT 'fa'"),
             ("display_level", "VARCHAR(8) DEFAULT 'simple'"),
             ("daily_digest", "BOOLEAN DEFAULT 0"),
         ],
