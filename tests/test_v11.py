@@ -173,13 +173,15 @@ async def test_a_released_post_is_not_held_again(tmp_path, monkeypatch):
     """بدون این، پستِ تأییدشده دوباره در صف می‌افتاد و هرگز منتشر نمی‌شد."""
     db_module, task_id = await _setup(tmp_path, monkeypatch, settings={"approval": True})
     try:
+        from telkap.models import PendingPost
         from telkap.services import pending
         from telkap.services.copier import Copier
 
         client = FakeClient()
         copier = Copier(FakeManager(client))
         assert await copier.process(
-            7, task_id, [FakeMessage(id=1, message="خبر")], held=True
+            7, task_id, [FakeMessage(id=1, message="خبر")],
+            released=PendingPost.REASON_APPROVAL
         ) is True
         assert len(client.sent) == 1
         assert await pending.listing(7) == []

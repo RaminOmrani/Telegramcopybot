@@ -1,7 +1,8 @@
 """تبدیل متن پست‌ها: جایگزینی، حذف لینک/هشتگ، امضا، هدر و فوتر.
 
 این ماژول کاملاً خالص است (بدون وابستگی به تلگرام یا دیتابیس) تا
-بتوان رفتار آن را مستقیم تست کرد.
+بتوان رفتار آن را مستقیم تست کرد. `configs` هم به همین دلیل خالص نگه
+داشته شده و اینجا وارد می‌شود.
 """
 from __future__ import annotations
 
@@ -12,6 +13,8 @@ from collections.abc import Iterable
 from dataclasses import dataclass
 from difflib import SequenceMatcher
 from typing import Any
+
+from telkap.services import configs
 
 URL_RE = re.compile(
     r"""(?xi)
@@ -154,6 +157,41 @@ def tidy(text: str) -> str:
     return "\n".join(line.rstrip() for line in text.split("\n")).strip()
 
 
+def config_tag(settings: dict[str, Any]) -> str:
+    """نامی که روی کانفیگ‌ها می‌نشیند.
+
+    اگر کاربر تگ جدا ننوشته باشد از امضا و بعد فوتر استفاده می‌شود — چون
+    معمولاً همان آیدی کانال است و دوباره نوشتنش فقط یک جای دیگر برای
+    قدیمی شدن می‌سازد.
+    """
+    for key in ("config_tag", "signature", "footer"):
+        value = (settings.get(key) or "").strip()
+        if value:
+            return value
+    return ""
+
+
+# نشانه‌ای که در متن واقعی پیدا نمی‌شود و هیچ‌کدام از الگوهای پاک‌سازی
+# آن را نمی‌گیرند
+_SHELTER = "\x00cfg{}\x00"
+
+
+def _shelter_configs(text: str) -> tuple[str, list[str]]:
+    kept: list[str] = []
+
+    def stash(match) -> str:
+        kept.append(match.group(0))
+        return _SHELTER.format(len(kept) - 1)
+
+    return configs.LINK_RE.sub(stash, text), kept
+
+
+def _restore_configs(text: str, kept: list[str]) -> str:
+    for index, link in enumerate(kept):
+        text = text.replace(_SHELTER.format(index), link)
+    return text
+
+
 def apply_transforms(
     text: str,
     settings: dict[str, Any],
@@ -172,6 +210,14 @@ def apply_transforms(
     elif settings.get("signature"):
         text = f"{text}\n\n{settings['signature']}" if text else settings["signature"]
 
+    # ۲.۵) بازنویسی نام کانفیگ‌های پروکسی
+    if settings.get("rewrite_configs"):
+        text, _ = configs.rewrite_text(text, config_tag(settings))
+
+    # کانفیگ‌ها از دست پاک‌سازی‌ها کنار گذاشته می‌شوند: «حذف لینک‌ها»
+    # وگرنه خودِ کانفیگ را می‌خورد و «حذف ایموجی» نامش را خراب می‌کند.
+    text, sheltered = _shelter_configs(text)
+
     # ۳) پاک‌سازی‌ها
     if settings.get("remove_links"):
         text = URL_RE.sub("", text)
@@ -183,6 +229,8 @@ def apply_transforms(
         text = EMAIL_RE.sub("", text)
     if settings.get("remove_emoji"):
         text = EMOJI_RE.sub("", text)
+
+    text = _restore_configs(text, sheltered)
 
     # ۴) هدر و فوتر
     header = (settings.get("header") or "").strip()

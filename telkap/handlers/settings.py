@@ -15,6 +15,8 @@ from telkap.handlers.common import Flow, parse_int
 from telkap.handlers.tasks import show_task
 from telkap.keyboards import (
     clean_menu,
+    configs_menu,
+    engagement_menu,
     filters_menu,
     media_menu,
     rules_menu,
@@ -31,13 +33,19 @@ from telkap.services.subscription import active_plan_for
 from telkap.texts import (
     ASK_ALLOW_WORD,
     ASK_BLOCK_WORD,
+    ASK_CONFIG_TAG,
     ASK_DELAY,
+    ASK_ENGAGE_WAIT,
+    ASK_FILE_RENAME,
     ASK_FOOTER,
     ASK_HEADER,
     ASK_MAX_HOUR,
     ASK_MAX_LEN,
+    ASK_MIN_FORWARDS,
     ASK_MIN_GAP,
     ASK_MIN_LEN,
+    ASK_MIN_REACTIONS,
+    ASK_MIN_VIEWS,
     ASK_REPLACE_FROM,
     ASK_REPLACE_TO,
     ASK_SIGNATURE,
@@ -55,6 +63,22 @@ PANELS = {
     "text": ("✍️ <b>هدر، فوتر و امضا</b>\nمتن‌های ثابت پست‌ها:", text_menu),
     "wm": ("💧 <b>واترمارک تصاویر</b>\nروی عکس‌های ارسالی درج می‌شود:", watermark_menu),
     "send": ("⚙️ <b>ارسال و ترافیک</b>\nشیوه و سرعت انتشار:", send_menu),
+    "engage": (
+        "📈 <b>فیلتر تعامل</b>\n"
+        "فقط پست‌هایی کپی شوند که در کانال مبدا گرفته‌اند.\n\n"
+        "<i>پستِ تازه هنوز بازدید ندارد، پس ربات اول صبر می‌کند، بعد "
+        "پست را دوباره می‌خواند و آن‌وقت می‌سنجد. بدون تعیین مدت انتظار، "
+        "آمار همان لحظه‌ی رسیدن ملاک است که معمولاً صفر است.</i>",
+        engagement_menu,
+    ),
+    "cfg": (
+        "🧩 <b>کانفیگ پروکسی</b>\n"
+        "نام (تگ) کانفیگ‌های داخل پست را با نام کانال خودتان عوض می‌کند.\n\n"
+        "<i>در <code>vmess</code> نام داخل یک بسته‌ی کدشده است و با "
+        "«جایگزینی کلمات» عوض نمی‌شود؛ اینجا کانفیگ باز، نامش عوض و "
+        "دوباره بسته می‌شود.</i>",
+        configs_menu,
+    ),
     "time": (
         "🕐 <b>زمان‌بندی و تأیید</b>\n"
         "کپی فقط در بازه‌ی زیر انجام می‌شود؛ اگر شروع و پایان برابر باشند "
@@ -74,6 +98,12 @@ ASK_SPECS = {
     "delay_seconds": (ASK_DELAY, "int"),
     "max_per_hour": (ASK_MAX_HOUR, "int"),
     "min_gap_seconds": (ASK_MIN_GAP, "int"),
+    "engagement_wait_minutes": (ASK_ENGAGE_WAIT, "int"),
+    "min_views": (ASK_MIN_VIEWS, "int"),
+    "min_reactions": (ASK_MIN_REACTIONS, "int"),
+    "min_forwards": (ASK_MIN_FORWARDS, "int"),
+    "config_tag": (ASK_CONFIG_TAG, "text"),
+    "file_rename": (ASK_FILE_RENAME, "text"),
     "min_length": (ASK_MIN_LEN, "int"),
     "max_length": (ASK_MAX_LEN, "int"),
 }
@@ -144,6 +174,7 @@ FLAG_PANEL = {
     "block_with_links": "filters",
     "block_with_buttons": "filters",
     "skip_duplicates": "filters",
+    "skip_cross_duplicates": "filters",
     "skip_bots": "filters",
     "skip_replies": "filters",
     "caption_only": "media",
@@ -151,6 +182,8 @@ FLAG_PANEL = {
     "sync_edits": "send",
     "sync_deletes": "send",
     "copy_buttons": "send",
+    "rewrite_configs": "cfg",
+    "rewrite_files": "cfg",
     "approval": "time",
     "hold_outside_hours": "time",
 }

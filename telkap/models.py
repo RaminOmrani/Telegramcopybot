@@ -218,6 +218,8 @@ class MessageMap(Base):
         UniqueConstraint("task_id", "src_msg_id", "dest_chat", name="uq_message_map_task_src_dest"),
         # تشخیص تکراری بودن به ازای هر پست اجرا می‌شود؛ بدون ایندکس، جدول پیمایش می‌شد
         Index("ix_message_map_dedupe", "task_id", "content_hash"),
+        # همان پرسش ولی بین چند مبدا: آیا این محتوا قبلاً به این کانال رفته؟
+        Index("ix_message_map_dest_dedupe", "dest_chat", "content_hash"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)

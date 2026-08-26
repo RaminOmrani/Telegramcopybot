@@ -44,10 +44,23 @@ from telkap.models import (
     utcnow,
 )
 from telkap.plans import FEAT_MESSAGES, FEAT_WATERMARK
-from telkap.services import alerts, cache, entitlement, health, pending, routing
+from telkap.services import (
+    alerts,
+    cache,
+    docedit,
+    entitlement,
+    health,
+    pending,
+    routing,
+)
 from telkap.services.filters import MessageFacts, content_hash, should_copy
 from telkap.services.ratelimit import RateLimiter, daily_quota, hourly_quota
-from telkap.services.transform import apply_transforms, drop_custom_emoji, remap_entities
+from telkap.services.transform import (
+    apply_transforms,
+    config_tag,
+    drop_custom_emoji,
+    remap_entities,
+)
 from telkap.services.watermark import apply_watermark, watermark_ready
 
 log = logging.getLogger(__name__)
@@ -97,6 +110,16 @@ def classify_media(message) -> str:
 def media_size(message) -> int:
     doc = getattr(getattr(message, "media", None), "document", None)
     return int(getattr(doc, "size", 0) or 0)
+
+
+def media_filename(message) -> str:
+    """نام فایل پیوست، اگر داشته باشد."""
+    doc = getattr(getattr(message, "media", None), "document", None)
+    for attr in getattr(doc, "attributes", []) or []:
+        name = getattr(attr, "file_name", None)
+        if name:
+            return str(name)
+    return ""
 
 
 def extract_buttons(message) -> list[list[Button]] | None:
@@ -163,6 +186,42 @@ def next_window_open(cfg: dict[str, Any]):
     if target <= local:
         target += timedelta(days=1)
     return target - timedelta(hours=offset)
+
+
+def engagement_of(message) -> tuple[int, int, int]:
+    """(بازدید، مجموع واکنش‌ها، فوروارد) یک پست."""
+    views = int(getattr(message, "views", 0) or 0)
+    forwards = int(getattr(message, "forwards", 0) or 0)
+    reactions = 0
+    results = getattr(getattr(message, "reactions", None), "results", None) or []
+    for item in results:
+        reactions += int(getattr(item, "count", 0) or 0)
+    return views, reactions, forwards
+
+
+def _wants_engagement(cfg: dict[str, Any]) -> bool:
+    return any(
+        int(cfg.get(key) or 0)
+        for key in ("min_views", "min_reactions", "min_forwards")
+    )
+
+
+def engagement_ok(message, cfg: dict[str, Any]) -> tuple[bool, str]:
+    """آیا پست به حد نصاب تعامل رسیده؟ خروجی دوم دلیل رد شدن است."""
+    need_views = int(cfg.get("min_views") or 0)
+    need_reactions = int(cfg.get("min_reactions") or 0)
+    need_forwards = int(cfg.get("min_forwards") or 0)
+    if not (need_views or need_reactions or need_forwards):
+        return True, ""
+
+    views, reactions, forwards = engagement_of(message)
+    if need_views and views < need_views:
+        return False, f"بازدید کم بود ({views} از {need_views})"
+    if need_reactions and reactions < need_reactions:
+        return False, f"واکنش کم بود ({reactions} از {need_reactions})"
+    if need_forwards and forwards < need_forwards:
+        return False, f"فوروارد کم بود ({forwards} از {need_forwards})"
+    return True, ""
 
 
 def sender_is_bot(message) -> bool:
@@ -332,13 +391,17 @@ class Copier:
         task_id: int,
         messages: Sequence,
         *,
-        held: bool = False,
+        released: str = "",
     ) -> bool:
         """یک پیام یا آلبوم را برای یک کار پردازش و به همه‌ی مقصدها ارسال می‌کند.
 
-        `held=True` یعنی این پست از صف آمده و قبلاً منتظر مانده؛ پس دوباره
-        نگه داشته نمی‌شود، وگرنه هرگز منتشر نمی‌شد.
+        `released` می‌گوید این پست از کدام صف آزاد شده — خالی یعنی تازه
+        رسیده. اهمیتش در زنجیر شدن است: پستی که برای تعامل منتظر مانده،
+        پس از آزاد شدن هنوز باید به صف تأیید برود، ولی پستی که خودِ صف
+        تأیید آزادش کرده نباید دوباره همان‌جا بنشیند.
         """
+        waited = bool(released)      # هر انتظاری که بوده، تمام شده
+        approved = released == PendingPost.REASON_APPROVAL
         snapshot = await cache.get_task(task_id)
         if snapshot is None or not snapshot.enabled:
             return False
@@ -352,7 +415,7 @@ class Copier:
 
         if not within_active_hours(cfg):
             # نگه داشتن، فقط اگر کاربر خواسته باشد؛ وگرنه رفتار قبلی
-            if not held and cfg.get("hold_outside_hours") and src_chat_id:
+            if not waited and cfg.get("hold_outside_hours") and src_chat_id:
                 if await self._hold(
                     snapshot, messages,
                     reason=PendingPost.REASON_SCHEDULE,
@@ -398,12 +461,32 @@ class Copier:
             )
             return False
 
+        # فیلتر تعامل. پستِ تازه هنوز بازدید ندارد، پس اول منتظر می‌مانیم و
+        # بعد از آنکه دوباره از مبدا خوانده شد (با آمار به‌روز) می‌سنجیم.
+        if _wants_engagement(cfg):
+            wait = int(cfg.get("engagement_wait_minutes") or 0)
+            if not waited and wait > 0 and src_chat_id:
+                if await self._hold(
+                    snapshot,
+                    messages,
+                    reason=PendingPost.REASON_SCHEDULE,
+                    release_at=utcnow() + timedelta(minutes=min(wait, 1440)),
+                ):
+                    return False
+            passed, why = engagement_ok(primary, cfg)
+            if not passed:
+                await self._bump(task_id, user_id, skipped=True)
+                await log_activity(
+                    user_id=user_id, task_id=task_id, event="skip", detail=why
+                )
+                return False
+
         # پست از فیلترها رد شده و نامزد انتشار است. اگر کاربر تأیید دستی
         # یا فاصله‌ی حداقلی خواسته، اینجا نگه داشته می‌شود — پیش از آنکه
         # سهمیه‌ای مصرف شود. هنگام انتشار همه‌ی بررسی‌ها دوباره اجرا
         # می‌شوند، پس چیزی از قلم نمی‌افتد.
-        if not held and src_chat_id:
-            if cfg.get("approval"):
+        if src_chat_id:
+            if cfg.get("approval") and not approved:
                 if await self._hold(
                     snapshot, messages, reason=PendingPost.REASON_APPROVAL
                 ):
@@ -465,6 +548,7 @@ class Copier:
         watermark_open = True   # تا وقتی سهمیه و اعتبار تمام نشده
         any_sent = False
         routed_away = 0         # مقصدهایی که کلمه‌ی کلیدی‌شان نخورد
+        cross_dupes = 0         # مقصدهایی که این محتوا را قبلاً گرفته بودند
 
         for spec in targets:
             target = spec.target
@@ -479,6 +563,13 @@ class Copier:
             # مسیریابی: این مقصد ممکن است فقط بعضی پست‌ها را بخواهد
             if not routing.wants(facts.text, dest_cfg):
                 routed_away += 1
+                continue
+
+            # همین محتوا شاید از مبدای دیگری قبلاً به همین کانال رفته باشد
+            if dest_cfg.get("skip_cross_duplicates") and await self._already_in_channel(
+                str(target), digest
+            ):
+                cross_dupes += 1
                 continue
 
             # سهمیه/اعتبار واترمارک پیش از ارسال کنار گذاشته می‌شود و اگر
@@ -559,14 +650,18 @@ class Copier:
 
         if any_sent:
             await self._bump(task_id, user_id, skipped=False)
-        elif routed_away:
+        elif routed_away or cross_dupes:
             # هیچ مقصدی این پست را نخواست — رد شدن است، نه خطا
             await self._bump(task_id, user_id, skipped=True)
             await log_activity(
                 user_id=user_id,
                 task_id=task_id,
                 event="skip",
-                detail="کلمه‌ی کلیدی هیچ مقصدی نخورد",
+                detail=(
+                    "این محتوا قبلاً در کانال مقصد منتشر شده بود"
+                    if cross_dupes and not routed_away
+                    else "کلمه‌ی کلیدی هیچ مقصدی نخورد"
+                ),
             )
         return any_sent
 
@@ -609,6 +704,36 @@ class Copier:
             return [sent.id]
 
         watermarking = allow_watermark and media_kind == "photo" and watermark_ready(cfg)
+        # فایل کانفیگ باید دانلود، بازنویسی و دوباره آپلود شود؛ ارسال
+        # مستقیمِ رسانه‌ی مبدا نسخه‌ی دست‌نخورده را می‌فرستد.
+        rewriting = (
+            bool(cfg.get("rewrite_files"))
+            and media_kind == "document"
+            and any(docedit.worth_opening(media_filename(m)) for m in messages)
+        )
+
+        if rewriting:
+            files, changed = await self._rewritten_files(client, messages, cfg)
+            if not changed:
+                # چیزی عوض نشد؛ همان مسیر عادی، بدون آپلود اضافه
+                for path in files:
+                    Path(path).unlink(missing_ok=True)
+                rewriting = False
+            else:
+                try:
+                    sent = await client.send_file(
+                        target,
+                        files if len(files) > 1 else files[0],
+                        caption=text or None,
+                        buttons=buttons,
+                        formatting_entities=entities,
+                        force_document=True,
+                    )
+                finally:
+                    for path in files:
+                        Path(path).unlink(missing_ok=True)
+                sent = sent if isinstance(sent, list) else [sent]
+                return [m.id for m in sent if m]
 
         if watermarking:
             files = await self._watermarked_files(client, messages, cfg)
@@ -728,6 +853,41 @@ class Copier:
             results.append(str(final))
         return results
 
+    async def _rewritten_files(
+        self, client, messages: Sequence, cfg: dict[str, Any]
+    ) -> tuple[list[str], int]:
+        """فایل‌های پیوست را دانلود و تگشان را بازنویسی می‌کند.
+
+        خروجی: (مسیرها، تعداد کل تغییرها). تعداد ۰ یعنی هیچ فایلی قالب
+        شناخته‌شده نداشت و باید مسیر عادی ارسال را رفت.
+        """
+        out_dir = get_settings().download_dir
+        out_dir.mkdir(parents=True, exist_ok=True)
+        tag = config_tag(cfg)
+        pattern = cfg.get("file_rename") or "{tag}"
+
+        paths: list[str] = []
+        changed = 0
+        for msg in messages:
+            if msg.media is None:
+                continue
+            src = await client.download_media(msg, file=str(out_dir))
+            if not src:
+                continue
+            src_path = Path(src)
+            try:
+                final, count = await asyncio.to_thread(
+                    docedit.rewrite_file, src_path, tag, rename=pattern
+                )
+            except Exception:
+                log.exception("بازنویسی فایل %s ناموفق بود؛ نسخه‌ی اصلی می‌رود", src_path.name)
+                final, count = src_path, 0
+            if final != src_path:
+                src_path.unlink(missing_ok=True)
+            changed += count
+            paths.append(str(final))
+        return paths, changed
+
     # --------------------------------------------------------- همگام‌سازی
     async def _sync_edit(self, user_id: int, task_id: int, message) -> None:
         snapshot = await cache.get_task(task_id)
@@ -810,6 +970,25 @@ class Copier:
                 select(MessageMap.id).where(
                     MessageMap.task_id == task_id, MessageMap.content_hash == digest
                 ).limit(1)
+            )
+            return row.scalar_one_or_none() is not None
+
+    async def _already_in_channel(self, dest_chat: str, digest: str) -> bool:
+        """آیا همین محتوا قبلاً به همین کانال رفته — از هر کار و مبدایی؟
+
+        این همان چیزی است که کاربرِ چند-مبدایی می‌خواهد: وقتی یک خبر در
+        سه کانال منبع تکرار می‌شود، فقط یک بار در کانال او منتشر گردد.
+        """
+        if not digest:
+            return False
+        async with get_session() as db:
+            row = await db.execute(
+                select(MessageMap.id)
+                .where(
+                    MessageMap.dest_chat == dest_chat,
+                    MessageMap.content_hash == digest,
+                )
+                .limit(1)
             )
             return row.scalar_one_or_none() is not None
 

@@ -214,8 +214,10 @@ async def prune(hours: int = STALE_APPROVAL_HOURS) -> int:
 class ReleaseWorker:
     """پست‌های سررسیدشده را منتشر می‌کند.
 
-    از همان مسیر موتور کپی رد می‌شوند — با `held=True` تا دوباره در صف
-    نیفتند — پس همه‌ی فیلترها، سهمیه‌ها و واترمارک سر جایشان می‌مانند.
+    از همان مسیر موتور کپی رد می‌شوند — با `released` تا دوباره در همان
+    صف نیفتند — پس همه‌ی فیلترها، سهمیه‌ها و واترمارک سر جایشان می‌مانند.
+    ردیف پیش از پردازش پاک می‌شود تا پستی که مثلاً منتظر تعامل بوده،
+    بتواند بعدش به صف تأیید برود.
     """
 
     def __init__(self, manager, copier, notifier=None) -> None:
@@ -276,8 +278,8 @@ class ReleaseWorker:
             )
             return False
 
-        sent = await self.copier.process(
-            item.user_id, item.task_id, messages, held=True
-        )
         await drop(item.id)
+        sent = await self.copier.process(
+            item.user_id, item.task_id, messages, released=item.reason
+        )
         return bool(sent)

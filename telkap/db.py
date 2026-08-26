@@ -123,6 +123,11 @@ def _finish_schema(conn, migrated: bool) -> None:
         "CREATE INDEX IF NOT EXISTS ix_message_map_dedupe "
         "ON message_map (task_id, content_hash)"
     )
+    # تشخیص تکراری بین چند مبدا: «آیا این محتوا قبلاً به این کانال رفته؟»
+    conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_message_map_dest_dedupe "
+        "ON message_map (dest_chat, content_hash)"
+    )
     if not migrated:
         return
     conn.exec_driver_sql(

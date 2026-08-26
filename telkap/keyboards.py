@@ -115,6 +115,11 @@ def task_menu(
         InlineKeyboardButton(text="🚦 فیلترها", callback_data=f"set:filters:{task.id}"),
         InlineKeyboardButton(text="💧 واترمارک", callback_data=f"set:wm:{task.id}"),
     )
+    kb.row(
+        InlineKeyboardButton(
+            text="🧩 کانفیگ پروکسی", callback_data=f"set:cfg:{task.id}"
+        )
+    )
 
     kb.row(_divider("انتشار"))
     kb.row(
@@ -174,6 +179,7 @@ def filters_menu(task_id: int, cfg: dict) -> InlineKeyboardMarkup:
         ("رد کردن پست‌های دارای لینک", "block_with_links"),
         ("رد کردن پست‌های دکمه‌دار", "block_with_buttons"),
         ("جلوگیری از پست تکراری", "skip_duplicates"),
+        ("تکراری بین چند مبدا", "skip_cross_duplicates"),
         ("رد کردن پیام ربات‌ها (گروه)", "skip_bots"),
         ("رد کردن پیام‌های پاسخ (گروه)", "skip_replies"),
     ]:
@@ -193,6 +199,12 @@ def filters_menu(task_id: int, cfg: dict) -> InlineKeyboardMarkup:
     )
     kb.row(
         InlineKeyboardButton(
+            text="📈 فیلتر تعامل (بازدید و واکنش)",
+            callback_data=f"set:engage:{task_id}",
+        )
+    )
+    kb.row(
+        InlineKeyboardButton(
             text=f"📏 حداقل طول: {fa_num(int(cfg.get('min_length') or 0))}",
             callback_data=f"ask:min_length:{task_id}",
         ),
@@ -202,6 +214,36 @@ def filters_menu(task_id: int, cfg: dict) -> InlineKeyboardMarkup:
         ),
     )
     kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"task:open:{task_id}"))
+    return kb.as_markup()
+
+
+def engagement_menu(task_id: int, cfg: dict) -> InlineKeyboardMarkup:
+    """حد نصاب تعامل: فقط پست‌هایی که در مبدا گرفته‌اند کپی شوند."""
+    kb = InlineKeyboardBuilder()
+    wait = int(cfg.get("engagement_wait_minutes") or 0)
+    kb.row(
+        InlineKeyboardButton(
+            text=(
+                f"⏱ مدت انتظار: {fa_num(wait)} دقیقه"
+                if wait
+                else "⏱ مدت انتظار: بدون انتظار"
+            ),
+            callback_data=f"ask:engagement_wait_minutes:{task_id}",
+        )
+    )
+    for label, key in (
+        ("👁 حداقل بازدید", "min_views"),
+        ("❤️ حداقل واکنش", "min_reactions"),
+        ("↪️ حداقل فوروارد", "min_forwards"),
+    ):
+        value = int(cfg.get(key) or 0)
+        kb.row(
+            InlineKeyboardButton(
+                text=f"{label}: {fa_num(value) if value else 'بی‌اهمیت'}",
+                callback_data=f"ask:{key}:{task_id}",
+            )
+        )
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"set:filters:{task_id}"))
     return kb.as_markup()
 
 
@@ -231,6 +273,45 @@ def text_menu(task_id: int, cfg: dict) -> InlineKeyboardMarkup:
     kb.row(InlineKeyboardButton(text="🔝 متن ابتدای پست (هدر)", callback_data=f"ask:header:{task_id}"))
     kb.row(InlineKeyboardButton(text="🔻 متن انتهای پست (فوتر)", callback_data=f"ask:footer:{task_id}"))
     kb.row(InlineKeyboardButton(text="🖋 امضای جایگزین", callback_data=f"ask:signature:{task_id}"))
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"task:open:{task_id}"))
+    return kb.as_markup()
+
+
+def configs_menu(task_id: int, cfg: dict) -> InlineKeyboardMarkup:
+    """بازنویسی نام کانفیگ‌های پروکسی، در متن و در فایل."""
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        _flag(
+            "بازنویسی نام کانفیگ‌های داخل متن",
+            bool(cfg.get("rewrite_configs")),
+            f"flag:rewrite_configs:{task_id}",
+        )
+    )
+    kb.row(
+        _flag(
+            "بازنویسی داخل فایل‌های پیوست",
+            bool(cfg.get("rewrite_files")),
+            f"flag:rewrite_files:{task_id}",
+        )
+    )
+
+    tag = (cfg.get("config_tag") or "").strip()
+    fallback = (cfg.get("signature") or cfg.get("footer") or "").strip()
+    if tag:
+        label = f"🏷 نام روی کانفیگ‌ها: {tag[:24]}"
+    elif fallback:
+        label = f"🏷 نام: {fallback[:20]} (از امضا)"
+    else:
+        label = "🏷 نام روی کانفیگ‌ها: تعیین نشده"
+    kb.row(InlineKeyboardButton(text=label, callback_data=f"ask:config_tag:{task_id}"))
+
+    if cfg.get("rewrite_files"):
+        kb.row(
+            InlineKeyboardButton(
+                text=f"📄 نام فایل: {(cfg.get('file_rename') or '{tag}')[:24]}",
+                callback_data=f"ask:file_rename:{task_id}",
+            )
+        )
     kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"task:open:{task_id}"))
     return kb.as_markup()
 
