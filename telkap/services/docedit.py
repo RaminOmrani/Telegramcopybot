@@ -44,6 +44,16 @@ TEXT_SUFFIXES = {
     ".ehi",
 }
 
+# فایل‌های کانفیگی که محتوایشان رمزنگاری‌شده است و بازنویسی تگِ داخلشان
+# ممکن نیست. برای این‌ها فقط نام فایل عوض می‌شود — که خودش هم دیده
+# می‌شود و هم کارِ کانالِ ناشر را می‌کند.
+#
+# `.npvt` (برنامه‌ی NPV Tunnel) با سرآیند NPVT1 شروع می‌شود و بدنه‌اش
+# رمز است؛ با هیچ فشرده‌سازی استانداردی باز نمی‌شود.
+SEALED_SUFFIXES = {".npvt", ".nm", ".dpk", ".hat", ".sks"}
+
+SEALED_MAGIC = (b"NPVT",)
+
 
 def _decode(raw: bytes) -> str | None:
     try:
@@ -131,9 +141,20 @@ def _rewrite_zip(raw: bytes, tag: str) -> tuple[bytes, int]:
 
 
 def worth_opening(filename: str) -> bool:
-    """آیا این فایل ارزش باز کردن دارد؟ عکس و ویدیو قطعاً نه."""
+    """آیا این فایل ارزش دست زدن دارد؟ عکس و ویدیو قطعاً نه."""
     suffix = Path(filename or "").suffix.lower()
-    return suffix in TEXT_SUFFIXES or suffix == ".zip"
+    return suffix in TEXT_SUFFIXES or suffix in SEALED_SUFFIXES or suffix == ".zip"
+
+
+def is_sealed(filename: str, raw: bytes = b"") -> bool:
+    """آیا محتوای این فایل رمزنگاری‌شده است؟
+
+    هم از روی پسوند تشخیص داده می‌شود و هم از روی سرآیند خودِ فایل، چون
+    بعضی کانال‌ها پسوند را عوض می‌کنند.
+    """
+    if Path(filename or "").suffix.lower() in SEALED_SUFFIXES:
+        return True
+    return any(raw.startswith(magic) for magic in SEALED_MAGIC)
 
 
 def new_name(filename: str, pattern: str, tag: str) -> str:
@@ -156,6 +177,10 @@ def rewrite_file(path: str | Path, tag: str, *, rename: str = "") -> tuple[Path,
 
     خروجی: (مسیر فایلی که باید فرستاده شود، تعداد تغییرها). اگر چیزی عوض
     نشده باشد همان مسیر اصلی برمی‌گردد.
+
+    برای فایل‌های رمزنگاری‌شده فقط نام عوض می‌شود. نامِ فایل بیرون از
+    بسته‌ی رمز است، پس همیشه شدنی است — و کاربر نهایی هم همان را در
+    کانال می‌بیند.
     """
     source = Path(path)
     if not source.exists() or not worth_opening(source.name):
@@ -166,16 +191,38 @@ def rewrite_file(path: str | Path, tag: str, *, rename: str = "") -> tuple[Path,
     except OSError:
         return source, 0
 
+    if is_sealed(source.name, raw):
+        renamed = _rename_only(source, tag, rename)
+        return renamed, (1 if renamed != source else 0)
+
     new_raw, changed = rewrite_bytes(raw, tag)
     if not changed:
         return source, 0
 
-    target = source.with_name(new_name(source.name, rename or "{tag}", tag))
-    if target == source:
-        target = source.with_name(f"tagged-{source.name}")
+    target = _unique_target(source, tag, rename)
     try:
         target.write_bytes(new_raw)
     except OSError:
         log.warning("نوشتن فایل بازنویسی‌شده ناموفق بود", exc_info=True)
         return source, 0
     return target, changed
+
+
+def _unique_target(source: Path, tag: str, rename: str) -> Path:
+    target = source.with_name(new_name(source.name, rename or "{tag}", tag))
+    if target == source:
+        target = source.with_name(f"tagged-{source.name}")
+    return target
+
+
+def _rename_only(source: Path, tag: str, rename: str) -> Path:
+    """محتوا دست‌نخورده می‌ماند و فقط نام فایل عوض می‌شود."""
+    if not configs.clean_tag(tag):
+        return source
+    target = _unique_target(source, tag, rename)
+    try:
+        source.rename(target)
+    except OSError:
+        log.warning("تغییر نام فایل رمزنگاری‌شده ناموفق بود", exc_info=True)
+        return source
+    return target

@@ -211,6 +211,39 @@ def test_a_huge_file_is_not_opened():
     assert rewrite_bytes(raw, "@New") == (raw, 0)
 
 
+def test_an_encrypted_config_file_is_only_renamed(tmp_path):
+    """`.npvt` بدنه‌اش رمز است؛ نه می‌شود بازنویسی‌اش کرد، نه باید خرابش کرد."""
+    from telkap.services.docedit import rewrite_file
+
+    # ساختار واقعی: سرآیند NPVT1 و بدنه‌ی base64 رمزنگاری‌شده
+    sealed = b"NPVT1\n1UDjs5b4eJWenYEWkz8KZB0=,Z85xi0Zpr3/zGtIWoiIC14cbvbjy"
+    src = tmp_path / "OldChannel.npvt"
+    src.write_bytes(sealed)
+
+    out, changed = rewrite_file(src, "@MyChannel")
+    assert out.name == "@MyChannel.npvt"
+    assert changed == 1
+    assert out.read_bytes() == sealed       # یک بایت هم عوض نشده
+    assert not src.exists()
+
+
+def test_an_encrypted_file_is_detected_even_with_a_disguised_name():
+    from telkap.services.docedit import is_sealed
+
+    assert is_sealed("anything.bin", b"NPVT1\ndata") is True
+    assert is_sealed("configs.npvt") is True
+    assert is_sealed("configs.txt", b"vmess://abc") is False
+
+
+def test_a_sealed_file_without_a_tag_is_left_alone(tmp_path):
+    from telkap.services.docedit import rewrite_file
+
+    src = tmp_path / "OldChannel.npvt"
+    src.write_bytes(b"NPVT1\nsealed")
+    out, changed = rewrite_file(src, "   ")
+    assert out == src and changed == 0
+
+
 def test_only_promising_files_are_opened():
     from telkap.services.docedit import worth_opening
 
