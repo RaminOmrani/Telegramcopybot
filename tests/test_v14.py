@@ -113,6 +113,42 @@ def test_the_main_menu_speaks_the_chosen_language():
     assert len(fa) == len(en) == len(ar) == 8
 
 
+def test_every_language_has_a_name_and_a_working_menu():
+    """زبانی که در فهرست باشد ولی منویش خالی درآید، بدتر از نبودنش است."""
+    from telkap import i18n
+    from telkap.keyboards import main_menu
+
+    for code in i18n.LANGS:
+        assert code in i18n.LANG_NAMES, code
+        buttons = [b.text for row in main_menu(code).keyboard for b in row]
+        assert len(buttons) == 8, code
+        assert all(text.strip() for text in buttons), code
+
+
+def test_each_language_menu_is_actually_distinct():
+    """اگر ترجمه‌ای جا بیفتد، منو بی‌صدا فارسی می‌ماند."""
+    from telkap import i18n
+    from telkap.keyboards import main_menu
+
+    def first(code: str) -> str:
+        return main_menu(code).keyboard[0][0].text
+
+    seen = {first(code) for code in i18n.LANGS}
+    assert len(seen) == len(i18n.LANGS)
+
+
+def test_the_welcome_screen_works_in_every_language():
+    from telkap import i18n
+    from telkap.handlers.start import welcome
+
+    persian = welcome("fa")
+    for code in i18n.LANGS:
+        text = welcome(code)
+        assert len(text) > 200, code
+        if code != "fa":
+            assert text != persian, code
+
+
 def test_button_filters_accept_every_language():
     """کاربری که زبانش را عوض کرده ممکن است هنوز دکمه‌ی قدیمی را ببیند."""
     from telkap.keyboards import menu_texts

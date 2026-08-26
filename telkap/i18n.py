@@ -17,12 +17,18 @@ from __future__ import annotations
 from contextvars import ContextVar
 
 DEFAULT = "fa"
-LANGS = ("fa", "en", "ar")
+LANGS = ("fa", "en", "ar", "ru", "tr", "uz", "hi", "id", "pt")
 
 LANG_NAMES = {
     "fa": "🇮🇷 فارسی",
     "en": "🇬🇧 English",
     "ar": "🇸🇦 العربية",
+    "ru": "🇷🇺 Русский",
+    "tr": "🇹🇷 Türkçe",
+    "uz": "🇺🇿 Oʻzbekcha",
+    "hi": "🇮🇳 हिन्दी",
+    "id": "🇮🇩 Indonesia",
+    "pt": "🇧🇷 Português",
 }
 
 # زبان‌هایی که خط راست‌به‌چپ دارند
@@ -137,32 +143,69 @@ async def set_language(user_id: int, lang: str) -> str:
 # کلید → {زبان: متن}. فارسی همیشه هست و نقش پشتوانه را دارد.
 CATALOG: dict[str, dict[str, str]] = {
     # ---------------------------------------------------- منوی اصلی
-    "menu.tasks": {"fa": "📋 کارهای کپی", "en": "📋 Copy jobs", "ar": "📋 مهام النسخ"},
-    "menu.new_task": {"fa": "➕ کار جدید", "en": "➕ New job", "ar": "➕ مهمة جديدة"},
+    "menu.tasks": {
+        "fa": "📋 کارهای کپی", "en": "📋 Copy jobs", "ar": "📋 مهام النسخ",
+        "ru": "📋 Задачи копирования", "tr": "📋 Kopyalama işleri",
+        "uz": "📋 Nusxalash vazifalari", "hi": "📋 कॉपी कार्य",
+        "id": "📋 Tugas salin", "pt": "📋 Tarefas de cópia",
+    },
+    "menu.new_task": {
+        "fa": "➕ کار جدید", "en": "➕ New job", "ar": "➕ مهمة جديدة",
+        "ru": "➕ Новая задача", "tr": "➕ Yeni iş", "uz": "➕ Yangi vazifa",
+        "hi": "➕ नया कार्य", "id": "➕ Tugas baru", "pt": "➕ Nova tarefa",
+    },
     "menu.forward": {
-        "fa": "↪️ فوروارد پیشرفته",
-        "en": "↪️ Manual forward",
-        "ar": "↪️ إعادة توجيه يدوية",
+        "fa": "↪️ فوروارد پیشرفته", "en": "↪️ Manual forward",
+        "ar": "↪️ إعادة توجيه يدوية", "ru": "↪️ Ручная пересылка",
+        "tr": "↪️ Elle iletme", "uz": "↪️ Qoʻlda yuborish",
+        "hi": "↪️ मैनुअल फ़ॉरवर्ड", "id": "↪️ Teruskan manual",
+        "pt": "↪️ Encaminhar manual",
     },
-    "menu.account": {"fa": "👤 حساب کاربری", "en": "👤 Account", "ar": "👤 الحساب"},
-    "menu.plans": {"fa": "💳 خرید اشتراک", "en": "💳 Buy a plan", "ar": "💳 شراء اشتراك"},
+    "menu.account": {
+        "fa": "👤 حساب کاربری", "en": "👤 Account", "ar": "👤 الحساب",
+        "ru": "👤 Аккаунт", "tr": "👤 Hesap", "uz": "👤 Hisob",
+        "hi": "👤 खाता", "id": "👤 Akun", "pt": "👤 Conta",
+    },
+    "menu.plans": {
+        "fa": "💳 خرید اشتراک", "en": "💳 Buy a plan", "ar": "💳 شراء اشتراك",
+        "ru": "💳 Купить тариф", "tr": "💳 Abonelik al",
+        "uz": "💳 Tarif sotib olish", "hi": "💳 प्लान खरीदें",
+        "id": "💳 Beli paket", "pt": "💳 Comprar plano",
+    },
     "menu.wallet": {
-        "fa": "👛 کیف پول و دعوت",
-        "en": "👛 Wallet & referrals",
-        "ar": "👛 المحفظة والدعوات",
+        "fa": "👛 کیف پول و دعوت", "en": "👛 Wallet & referrals",
+        "ar": "👛 المحفظة والدعوات", "ru": "👛 Кошелёк и рефералы",
+        "tr": "👛 Cüzdan ve davet", "uz": "👛 Hamyon va takliflar",
+        "hi": "👛 वॉलेट और रेफ़रल", "id": "👛 Dompet & referal",
+        "pt": "👛 Carteira e indicações",
     },
-    "menu.help": {"fa": "📚 راهنما", "en": "📚 Guide", "ar": "📚 الدليل"},
-    "menu.support": {"fa": "🛟 پشتیبانی", "en": "🛟 Support", "ar": "🛟 الدعم"},
+    "menu.help": {
+        "fa": "📚 راهنما", "en": "📚 Guide", "ar": "📚 الدليل",
+        "ru": "📚 Руководство", "tr": "📚 Rehber", "uz": "📚 Qoʻllanma",
+        "hi": "📚 गाइड", "id": "📚 Panduan", "pt": "📚 Guia",
+    },
+    "menu.support": {
+        "fa": "🛟 پشتیبانی", "en": "🛟 Support", "ar": "🛟 الدعم",
+        "ru": "🛟 Поддержка", "tr": "🛟 Destek", "uz": "🛟 Yordam",
+        "hi": "🛟 सहायता", "id": "🛟 Dukungan", "pt": "🛟 Suporte",
+    },
     "menu.placeholder": {
-        "fa": "یک گزینه را انتخاب کنید…",
-        "en": "Choose an option…",
-        "ar": "اختر خياراً…",
+        "fa": "یک گزینه را انتخاب کنید…", "en": "Choose an option…",
+        "ar": "اختر خياراً…", "ru": "Выберите пункт…", "tr": "Bir seçenek seçin…",
+        "uz": "Variantni tanlang…", "hi": "एक विकल्प चुनें…",
+        "id": "Pilih opsi…", "pt": "Escolha uma opção…",
     },
     # ------------------------------------------------------- خوش‌آمد
     "start.title": {
         "fa": "🤖 <b>ربات کپی محتوای تلگرام</b>",
         "en": "🤖 <b>Telegram Content Copier</b>",
         "ar": "🤖 <b>بوت نسخ محتوى تلجرام</b>",
+        "ru": "🤖 <b>Копировщик контента Telegram</b>",
+        "tr": "🤖 <b>Telegram İçerik Kopyalayıcı</b>",
+        "uz": "🤖 <b>Telegram kontent nusxalagichi</b>",
+        "hi": "🤖 <b>टेलीग्राम कंटेंट कॉपियर</b>",
+        "id": "🤖 <b>Penyalin Konten Telegram</b>",
+        "pt": "🤖 <b>Copiador de Conteúdo do Telegram</b>",
     },
     "start.pitch": {
         "fa": (
@@ -179,11 +222,43 @@ CATALOG: dict[str, dict[str, str]] = {
             "أعد نشر منشورات أي قناة في قناتك — فوراً وتلقائياً وبالتعديلات "
             "التي تريدها. <b>لا حاجة لأن تكون مشرفاً في القناة المصدر.</b>"
         ),
+        "ru": (
+            "Публикуйте посты любого канала у себя — мгновенно, автоматически "
+            "и с нужными вам правками. <b>Быть админом исходного канала не "
+            "требуется.</b>"
+        ),
+        "tr": (
+            "Herhangi bir kanalın gönderilerini kendi kanalınızda yayınlayın — "
+            "anında, otomatik ve istediğiniz gibi düzenlenmiş. "
+            "<b>Kaynak kanalda yönetici olmanıza gerek yok.</b>"
+        ),
+        "uz": (
+            "Istalgan kanalning postlarini oʻz kanalingizda chop eting — "
+            "bir zumda, avtomatik va oʻzingiz xohlagandek tahrirlangan holda. "
+            "<b>Manba kanalda admin boʻlishingiz shart emas.</b>"
+        ),
+        "hi": (
+            "किसी भी चैनल की पोस्ट अपने चैनल में दोबारा प्रकाशित करें — तुरंत, "
+            "अपने आप, और आपकी पसंद के अनुसार संपादित। <b>स्रोत चैनल का एडमिन "
+            "होना ज़रूरी नहीं है।</b>"
+        ),
+        "id": (
+            "Terbitkan ulang postingan channel mana pun di channel Anda — "
+            "seketika, otomatis, dan disunting sesuai keinginan Anda. "
+            "<b>Anda tidak perlu menjadi admin channel sumber.</b>"
+        ),
+        "pt": (
+            "Republique as postagens de qualquer canal no seu — na hora, "
+            "automaticamente e editadas do seu jeito. <b>Você não precisa ser "
+            "admin do canal de origem.</b>"
+        ),
     },
     "start.features_title": {
-        "fa": "<b>امکانات اصلی</b>",
-        "en": "<b>What it does</b>",
-        "ar": "<b>الإمكانيات</b>",
+        "fa": "<b>امکانات اصلی</b>", "en": "<b>What it does</b>",
+        "ar": "<b>الإمكانيات</b>", "ru": "<b>Возможности</b>",
+        "tr": "<b>Neler yapar</b>", "uz": "<b>Imkoniyatlar</b>",
+        "hi": "<b>यह क्या करता है</b>", "id": "<b>Fiturnya</b>",
+        "pt": "<b>O que ele faz</b>",
     },
     "start.features": {
         "fa": (
@@ -213,96 +288,230 @@ CATALOG: dict[str, dict[str, str]] = {
             "  💧 علامة مائية على الصور\n"
             "  🕓 نسخ المنشورات السابقة"
         ),
+        "ru": (
+            "  ⚡️ Мгновенное копирование из каналов и групп\n"
+            "  📤 Публикация сразу в несколько каналов, у каждого своя подпись\n"
+            "  ✂️ Замена слов, удаление ссылок и хэштегов\n"
+            "  🖋 Удаление ника источника и подстановка вашего\n"
+            "  🚦 Умный фильтр рекламы\n"
+            "  💧 Водяные знаки на изображениях\n"
+            "  🕓 Копирование старых постов"
+        ),
+        "tr": (
+            "  ⚡️ Kanal ve gruplardan anında kopyalama\n"
+            "  📤 Aynı anda birkaç kanala yayın, her birine özel imza\n"
+            "  ✂️ Kelime değiştirme, bağlantı ve etiket temizleme\n"
+            "  🖋 Kaynak kullanıcı adını kaldırıp kendinizinkini koyma\n"
+            "  🚦 Akıllı reklam filtresi\n"
+            "  💧 Görsellere filigran\n"
+            "  🕓 Eski gönderileri kopyalama"
+        ),
+        "uz": (
+            "  ⚡️ Kanal va guruhlardan bir zumda nusxalash\n"
+            "  📤 Bir vaqtda bir nechta kanalga chop etish, har biriga oʻz imzosi\n"
+            "  ✂️ Soʻzlarni almashtirish, havola va xeshteglarni olib tashlash\n"
+            "  🖋 Manba nomini olib tashlab, oʻzingiznikini qoʻyish\n"
+            "  🚦 Aqlli reklama filtri\n"
+            "  💧 Rasmlarga suv belgisi\n"
+            "  🕓 Eski postlarni nusxalash"
+        ),
+        "hi": (
+            "  ⚡️ चैनल और ग्रुप से तुरंत कॉपी\n"
+            "  📤 एक साथ कई चैनलों पर प्रकाशन, हर एक के अपने हस्ताक्षर\n"
+            "  ✂️ शब्द बदलना, लिंक और हैशटैग हटाना\n"
+            "  🖋 स्रोत का हैंडल हटाकर अपना लगाना\n"
+            "  🚦 स्मार्ट विज्ञापन फ़िल्टर\n"
+            "  💧 छवियों पर वॉटरमार्क\n"
+            "  🕓 पुरानी पोस्ट कॉपी करना"
+        ),
+        "id": (
+            "  ⚡️ Penyalinan instan dari channel dan grup\n"
+            "  📤 Terbit ke beberapa channel sekaligus, masing-masing dengan tanda tangannya\n"
+            "  ✂️ Ganti kata, hapus tautan dan tagar\n"
+            "  🖋 Hapus nama pengguna sumber dan pasang milik Anda\n"
+            "  🚦 Filter iklan cerdas\n"
+            "  💧 Watermark gambar\n"
+            "  🕓 Salin postingan lama"
+        ),
+        "pt": (
+            "  ⚡️ Cópia instantânea de canais e grupos\n"
+            "  📤 Publique em vários canais de uma vez, cada um com sua assinatura\n"
+            "  ✂️ Substituir palavras, remover links e hashtags\n"
+            "  🖋 Remover o @ da origem e colocar o seu\n"
+            "  🚦 Filtro inteligente de anúncios\n"
+            "  💧 Marca d'água em imagens\n"
+            "  🕓 Copiar posts antigos"
+        ),
     },
     "start.newcomer": {
         "fa": "🚀 <b>تازه‌کارید؟</b> «📚 راهنما» را بزنید — در سه گام راه می‌افتید.",
         "en": "🚀 <b>New here?</b> Tap «📚 Guide» — three steps and you're running.",
         "ar": "🚀 <b>جديد هنا؟</b> اضغط «📚 الدليل» — ثلاث خطوات وتنطلق.",
+        "ru": "🚀 <b>Впервые здесь?</b> Нажмите «📚 Руководство» — три шага и всё готово.",
+        "tr": "🚀 <b>Yeni misiniz?</b> «📚 Rehber»e dokunun — üç adımda hazırsınız.",
+        "uz": "🚀 <b>Yangimisiz?</b> «📚 Qoʻllanma»ni bosing — uch qadamda tayyor.",
+        "hi": "🚀 <b>नए हैं?</b> «📚 गाइड» दबाएँ — तीन चरणों में शुरू।",
+        "id": "🚀 <b>Baru di sini?</b> Ketuk «📚 Panduan» — tiga langkah dan siap.",
+        "pt": "🚀 <b>Novo por aqui?</b> Toque em «📚 Guia» — três passos e pronto.",
     },
     "start.cta": {
         "fa": "از دکمه‌های زیر شروع کنید 👇",
         "en": "Start with the buttons below 👇",
         "ar": "ابدأ من الأزرار في الأسفل 👇",
+        "ru": "Начните с кнопок ниже 👇",
+        "tr": "Aşağıdaki düğmelerle başlayın 👇",
+        "uz": "Quyidagi tugmalardan boshlang 👇",
+        "hi": "नीचे दिए बटनों से शुरू करें 👇",
+        "id": "Mulai dari tombol di bawah 👇",
+        "pt": "Comece pelos botões abaixo 👇",
     },
     # ------------------------------------------------------ انتخاب زبان
     "lang.ask": {
-        "fa": "🌍 زبان خود را انتخاب کنید:",
-        "en": "🌍 Choose your language:",
-        "ar": "🌍 اختر لغتك:",
+        "fa": "🌍 زبان خود را انتخاب کنید:", "en": "🌍 Choose your language:",
+        "ar": "🌍 اختر لغتك:", "ru": "🌍 Выберите язык:",
+        "tr": "🌍 Dilinizi seçin:", "uz": "🌍 Tilingizni tanlang:",
+        "hi": "🌍 अपनी भाषा चुनें:", "id": "🌍 Pilih bahasa Anda:",
+        "pt": "🌍 Escolha seu idioma:",
     },
     "lang.changed": {
-        "fa": "✅ زبان به فارسی تغییر کرد.",
-        "en": "✅ Language set to English.",
-        "ar": "✅ تم ضبط اللغة على العربية.",
+        "fa": "✅ زبان به فارسی تغییر کرد.", "en": "✅ Language set to English.",
+        "ar": "✅ تم ضبط اللغة على العربية.", "ru": "✅ Язык изменён на русский.",
+        "tr": "✅ Dil Türkçe olarak ayarlandı.", "uz": "✅ Til oʻzbekchaga oʻzgartirildi.",
+        "hi": "✅ भाषा हिन्दी पर सेट हो गई।", "id": "✅ Bahasa diatur ke Indonesia.",
+        "pt": "✅ Idioma definido para Português.",
     },
-    "lang.button": {"fa": "🌍 زبان", "en": "🌍 Language", "ar": "🌍 اللغة"},
+    "lang.button": {
+        "fa": "🌍 زبان", "en": "🌍 Language", "ar": "🌍 اللغة", "ru": "🌍 Язык",
+        "tr": "🌍 Dil", "uz": "🌍 Til", "hi": "🌍 भाषा", "id": "🌍 Bahasa",
+        "pt": "🌍 Idioma",
+    },
     "lang.partial": {
         "fa": "",
         "en": (
-            "<i>The admin panel and the full guide are Persian-only for now; "
-            "everything you need day to day is translated.</i>"
+            "<i>The admin panel is Persian-only; everything you need day to "
+            "day is translated.</i>"
         ),
         "ar": (
-            "<i>لوحة الإدارة والدليل الكامل بالفارسية حالياً؛ وكل ما تحتاجه "
-            "يومياً مترجم.</i>"
+            "<i>لوحة الإدارة بالفارسية فقط؛ وكل ما تحتاجه يومياً مترجم.</i>"
+        ),
+        "ru": (
+            "<i>Админ-панель только на персидском; всё, что нужно вам "
+            "ежедневно, переведено.</i>"
+        ),
+        "tr": (
+            "<i>Yönetim paneli yalnızca Farsça; günlük ihtiyacınız olan her "
+            "şey çevrildi.</i>"
+        ),
+        "uz": (
+            "<i>Admin paneli faqat forscha; kundalik kerak boʻladigan "
+            "hamma narsa tarjima qilingan.</i>"
+        ),
+        "hi": (
+            "<i>एडमिन पैनल केवल फ़ारसी में है; रोज़मर्रा की ज़रूरत की हर चीज़ "
+            "अनूदित है।</i>"
+        ),
+        "id": (
+            "<i>Panel admin hanya dalam bahasa Persia; semua yang Anda "
+            "butuhkan sehari-hari sudah diterjemahkan.</i>"
+        ),
+        "pt": (
+            "<i>O painel de administração está apenas em persa; tudo o que "
+            "você usa no dia a dia está traduzido.</i>"
         ),
     },
     # -------------------------------------------------------- عمومی
-    "common.back": {"fa": "🔙 بازگشت", "en": "🔙 Back", "ar": "🔙 رجوع"},
-    "common.cancel": {"fa": "انصراف: /cancel", "en": "Cancel: /cancel", "ar": "إلغاء: /cancel"},
-    "common.saved": {"fa": "✅ ذخیره شد.", "en": "✅ Saved.", "ar": "✅ تم الحفظ."},
-    "common.no_access": {
-        "fa": "دسترسی ندارید",
-        "en": "You don't have access",
-        "ar": "لا تملك صلاحية",
+    "common.back": {
+        "fa": "🔙 بازگشت", "en": "🔙 Back", "ar": "🔙 رجوع", "ru": "🔙 Назад",
+        "tr": "🔙 Geri", "uz": "🔙 Orqaga", "hi": "🔙 वापस", "id": "🔙 Kembali",
+        "pt": "🔙 Voltar",
     },
-    "common.on": {"fa": "✅ روشن", "en": "✅ On", "ar": "✅ مُفعّل"},
-    "common.off": {"fa": "❌ خاموش", "en": "❌ Off", "ar": "❌ مُعطّل"},
+    "common.cancel": {
+        "fa": "انصراف: /cancel", "en": "Cancel: /cancel", "ar": "إلغاء: /cancel",
+        "ru": "Отмена: /cancel", "tr": "İptal: /cancel", "uz": "Bekor qilish: /cancel",
+        "hi": "रद्द करें: /cancel", "id": "Batal: /cancel", "pt": "Cancelar: /cancel",
+    },
+    "common.saved": {
+        "fa": "✅ ذخیره شد.", "en": "✅ Saved.", "ar": "✅ تم الحفظ.",
+        "ru": "✅ Сохранено.", "tr": "✅ Kaydedildi.", "uz": "✅ Saqlandi.",
+        "hi": "✅ सहेजा गया।", "id": "✅ Tersimpan.", "pt": "✅ Salvo.",
+    },
+    "common.no_access": {
+        "fa": "دسترسی ندارید", "en": "You don't have access", "ar": "لا تملك صلاحية",
+        "ru": "Нет доступа", "tr": "Erişiminiz yok", "uz": "Ruxsatingiz yoʻq",
+        "hi": "आपके पास पहुँच नहीं है", "id": "Anda tidak punya akses",
+        "pt": "Você não tem acesso",
+    },
+    "common.on": {
+        "fa": "✅ روشن", "en": "✅ On", "ar": "✅ مُفعّل", "ru": "✅ Вкл",
+        "tr": "✅ Açık", "uz": "✅ Yoniq", "hi": "✅ चालू", "id": "✅ Aktif",
+        "pt": "✅ Ligado",
+    },
+    "common.off": {
+        "fa": "❌ خاموش", "en": "❌ Off", "ar": "❌ مُعطّل", "ru": "❌ Выкл",
+        "tr": "❌ Kapalı", "uz": "❌ Oʻchiq", "hi": "❌ बंद", "id": "❌ Nonaktif",
+        "pt": "❌ Desligado",
+    },
     "common.error": {
         "fa": "⚠️ خطایی رخ داد. دوباره تلاش کنید یا /start را بزنید.",
         "en": "⚠️ Something went wrong. Try again or send /start.",
         "ar": "⚠️ حدث خطأ. حاول مجدداً أو أرسل /start.",
+        "ru": "⚠️ Что-то пошло не так. Попробуйте снова или отправьте /start.",
+        "tr": "⚠️ Bir şeyler ters gitti. Tekrar deneyin veya /start gönderin.",
+        "uz": "⚠️ Xatolik yuz berdi. Qayta urinib koʻring yoki /start yuboring.",
+        "hi": "⚠️ कुछ गड़बड़ हुई। दोबारा कोशिश करें या /start भेजें।",
+        "id": "⚠️ Terjadi kesalahan. Coba lagi atau kirim /start.",
+        "pt": "⚠️ Algo deu errado. Tente novamente ou envie /start.",
     },
     # ------------------------------------------------------ حساب کاربری
     "account.title": {
-        "fa": "👤 <b>حساب کاربری</b>",
-        "en": "👤 <b>Your account</b>",
-        "ar": "👤 <b>حسابك</b>",
+        "fa": "👤 <b>حساب کاربری</b>", "en": "👤 <b>Your account</b>",
+        "ar": "👤 <b>حسابك</b>", "ru": "👤 <b>Ваш аккаунт</b>",
+        "tr": "👤 <b>Hesabınız</b>", "uz": "👤 <b>Hisobingiz</b>",
+        "hi": "👤 <b>आपका खाता</b>", "id": "👤 <b>Akun Anda</b>",
+        "pt": "👤 <b>Sua conta</b>",
     },
     "account.connect": {
-        "fa": "🔐 اتصال اکانت",
-        "en": "🔐 Connect account",
-        "ar": "🔐 ربط الحساب",
+        "fa": "🔐 اتصال اکانت", "en": "🔐 Connect account", "ar": "🔐 ربط الحساب",
+        "ru": "🔐 Подключить аккаунт", "tr": "🔐 Hesabı bağla",
+        "uz": "🔐 Hisobni ulash", "hi": "🔐 खाता जोड़ें",
+        "id": "🔐 Hubungkan akun", "pt": "🔐 Conectar conta",
     },
     "account.logout": {
-        "fa": "🚪 خروج از حساب",
-        "en": "🚪 Sign out",
-        "ar": "🚪 تسجيل الخروج",
+        "fa": "🚪 خروج از حساب", "en": "🚪 Sign out", "ar": "🚪 تسجيل الخروج",
+        "ru": "🚪 Выйти", "tr": "🚪 Çıkış yap", "uz": "🚪 Chiqish",
+        "hi": "🚪 साइन आउट", "id": "🚪 Keluar", "pt": "🚪 Sair",
     },
     "account.quota": {
-        "fa": "📊 سهمیه و اعتبار من",
-        "en": "📊 My quota & credit",
-        "ar": "📊 حصتي ورصيدي",
+        "fa": "📊 سهمیه و اعتبار من", "en": "📊 My quota & credit",
+        "ar": "📊 حصتي ورصيدي", "ru": "📊 Мои лимиты и кредиты",
+        "tr": "📊 Kotam ve kredim", "uz": "📊 Kvota va kreditim",
+        "hi": "📊 मेरा कोटा और क्रेडिट", "id": "📊 Kuota & kredit saya",
+        "pt": "📊 Minha cota e créditos",
     },
     "account.logs": {
-        "fa": "🧾 گزارش فعالیت",
-        "en": "🧾 Activity log",
-        "ar": "🧾 سجل النشاط",
+        "fa": "🧾 گزارش فعالیت", "en": "🧾 Activity log", "ar": "🧾 سجل النشاط",
+        "ru": "🧾 Журнал действий", "tr": "🧾 Etkinlik günlüğü",
+        "uz": "🧾 Faoliyat jurnali", "hi": "🧾 गतिविधि लॉग",
+        "id": "🧾 Log aktivitas", "pt": "🧾 Registro de atividade",
     },
     "account.digest": {
-        "fa": "📬 خلاصه‌ی روزانه",
-        "en": "📬 Daily summary",
-        "ar": "📬 الملخص اليومي",
+        "fa": "📬 خلاصه‌ی روزانه", "en": "📬 Daily summary", "ar": "📬 الملخص اليومي",
+        "ru": "📬 Ежедневная сводка", "tr": "📬 Günlük özet",
+        "uz": "📬 Kunlik xulosa", "hi": "📬 दैनिक सारांश",
+        "id": "📬 Ringkasan harian", "pt": "📬 Resumo diário",
     },
     "account.level_simple": {
-        "fa": "🧭 منوها: ساده",
-        "en": "🧭 Menus: simple",
-        "ar": "🧭 القوائم: مبسطة",
+        "fa": "🧭 منوها: ساده", "en": "🧭 Menus: simple", "ar": "🧭 القوائم: مبسطة",
+        "ru": "🧭 Меню: простое", "tr": "🧭 Menüler: basit",
+        "uz": "🧭 Menyular: oddiy", "hi": "🧭 मेन्यू: सरल",
+        "id": "🧭 Menu: sederhana", "pt": "🧭 Menus: simples",
     },
     "account.level_pro": {
-        "fa": "🧭 منوها: پیشرفته",
-        "en": "🧭 Menus: advanced",
-        "ar": "🧭 القوائم: متقدمة",
+        "fa": "🧭 منوها: پیشرفته", "en": "🧭 Menus: advanced",
+        "ar": "🧭 القوائم: متقدمة", "ru": "🧭 Меню: расширенное",
+        "tr": "🧭 Menüler: gelişmiş", "uz": "🧭 Menyular: kengaytirilgan",
+        "hi": "🧭 मेन्यू: उन्नत", "id": "🧭 Menu: lanjutan",
+        "pt": "🧭 Menus: avançado",
     },
     # ---------------------------------------------------- پیام‌های لازم
     "need.login": {
@@ -318,36 +527,69 @@ CATALOG: dict[str, dict[str, str]] = {
             "🔐 عليك ربط حسابك في تلجرام أولاً.\n"
             "«👤 الحساب» ← «🔐 ربط الحساب»"
         ),
+        "ru": (
+            "🔐 Сначала подключите свой аккаунт Telegram.\n"
+            "«👤 Аккаунт» → «🔐 Подключить аккаунт»"
+        ),
+        "tr": (
+            "🔐 Önce Telegram hesabınızı bağlamalısınız.\n"
+            "«👤 Hesap» → «🔐 Hesabı bağla»"
+        ),
+        "uz": (
+            "🔐 Avval Telegram hisobingizni ulashingiz kerak.\n"
+            "«👤 Hisob» → «🔐 Hisobni ulash»"
+        ),
+        "hi": (
+            "🔐 पहले अपना टेलीग्राम खाता जोड़ना होगा।\n"
+            "«👤 खाता» → «🔐 खाता जोड़ें»"
+        ),
+        "id": (
+            "🔐 Anda perlu menghubungkan akun Telegram terlebih dahulu.\n"
+            "«👤 Akun» → «🔐 Hubungkan akun»"
+        ),
+        "pt": (
+            "🔐 Você precisa conectar sua conta do Telegram primeiro.\n"
+            "«👤 Conta» → «🔐 Conectar conta»"
+        ),
     },
     "need.subscription": {
-        "fa": (
-            "⛔️ اشتراک فعالی ندارید.\n"
-            "برای ادامه «💳 خرید اشتراک» را بزنید."
-        ),
-        "en": (
-            "⛔️ You don't have an active plan.\n"
-            "Tap «💳 Buy a plan» to continue."
-        ),
-        "ar": (
-            "⛔️ ليس لديك اشتراك فعّال.\n"
-            "اضغط «💳 شراء اشتراك» للمتابعة."
-        ),
+        "fa": "⛔️ اشتراک فعالی ندارید.\nبرای ادامه «💳 خرید اشتراک» را بزنید.",
+        "en": "⛔️ You don't have an active plan.\nTap «💳 Buy a plan» to continue.",
+        "ar": "⛔️ ليس لديك اشتراك فعّال.\nاضغط «💳 شراء اشتراك» للمتابعة.",
+        "ru": "⛔️ У вас нет активного тарифа.\nНажмите «💳 Купить тариф», чтобы продолжить.",
+        "tr": "⛔️ Aktif aboneliğiniz yok.\nDevam etmek için «💳 Abonelik al»a dokunun.",
+        "uz": "⛔️ Faol tarifingiz yoʻq.\nDavom etish uchun «💳 Tarif sotib olish»ni bosing.",
+        "hi": "⛔️ आपके पास सक्रिय प्लान नहीं है।\nजारी रखने के लिए «💳 प्लान खरीदें» दबाएँ।",
+        "id": "⛔️ Anda tidak punya paket aktif.\nKetuk «💳 Beli paket» untuk melanjutkan.",
+        "pt": "⛔️ Você não tem um plano ativo.\nToque em «💳 Comprar plano» para continuar.",
     },
     # ------------------------------------------------------------ کارها
     "task.none": {
         "fa": "هنوز کاری نساخته‌اید. «➕ کار جدید» را بزنید.",
         "en": "No jobs yet. Tap «➕ New job».",
         "ar": "لا توجد مهام بعد. اضغط «➕ مهمة جديدة».",
+        "ru": "Задач пока нет. Нажмите «➕ Новая задача».",
+        "tr": "Henüz iş yok. «➕ Yeni iş»e dokunun.",
+        "uz": "Hozircha vazifa yoʻq. «➕ Yangi vazifa»ni bosing.",
+        "hi": "अभी कोई कार्य नहीं। «➕ नया कार्य» दबाएँ।",
+        "id": "Belum ada tugas. Ketuk «➕ Tugas baru».",
+        "pt": "Nenhuma tarefa ainda. Toque em «➕ Nova tarefa».",
     },
     "task.new": {
-        "fa": "➕ ساخت کار جدید",
-        "en": "➕ Create a job",
-        "ar": "➕ إنشاء مهمة",
+        "fa": "➕ ساخت کار جدید", "en": "➕ Create a job", "ar": "➕ إنشاء مهمة",
+        "ru": "➕ Создать задачу", "tr": "➕ İş oluştur", "uz": "➕ Vazifa yaratish",
+        "hi": "➕ कार्य बनाएँ", "id": "➕ Buat tugas", "pt": "➕ Criar tarefa",
     },
     "task.ask_source": {
         "fa": "📥 آیدی یا لینک کانال <b>مبدا</b> را بفرستید.",
         "en": "📥 Send the <b>source</b> channel's @username or link.",
         "ar": "📥 أرسل معرّف أو رابط القناة <b>المصدر</b>.",
+        "ru": "📥 Отправьте @username или ссылку <b>исходного</b> канала.",
+        "tr": "📥 <b>Kaynak</b> kanalın @kullanıcı adını veya bağlantısını gönderin.",
+        "uz": "📥 <b>Manba</b> kanalning @foydalanuvchi nomi yoki havolasini yuboring.",
+        "hi": "📥 <b>स्रोत</b> चैनल का @यूज़रनेम या लिंक भेजें।",
+        "id": "📥 Kirim @username atau tautan channel <b>sumber</b>.",
+        "pt": "📥 Envie o @usuário ou link do canal de <b>origem</b>.",
     },
     "task.ask_dest": {
         "fa": (
@@ -362,16 +604,42 @@ CATALOG: dict[str, dict[str, str]] = {
             "📤 أرسل معرّف أو رابط القناة <b>الهدف</b>.\n"
             "⚠️ يجب أن يكون لحسابك صلاحية النشر فيها."
         ),
+        "ru": (
+            "📤 Отправьте @username или ссылку <b>целевого</b> канала.\n"
+            "⚠️ Ваш аккаунт должен иметь право публиковать там."
+        ),
+        "tr": (
+            "📤 <b>Hedef</b> kanalın @kullanıcı adını veya bağlantısını gönderin.\n"
+            "⚠️ Hesabınızın orada gönderi yetkisi olmalı."
+        ),
+        "uz": (
+            "📤 <b>Maqsad</b> kanalning @foydalanuvchi nomi yoki havolasini yuboring.\n"
+            "⚠️ Hisobingizda u yerda post joylash huquqi boʻlishi kerak."
+        ),
+        "hi": (
+            "📤 <b>गंतव्य</b> चैनल का @यूज़रनेम या लिंक भेजें।\n"
+            "⚠️ आपके खाते को वहाँ पोस्ट करने की अनुमति होनी चाहिए।"
+        ),
+        "id": (
+            "📤 Kirim @username atau tautan channel <b>tujuan</b>.\n"
+            "⚠️ Akun Anda harus punya izin memposting di sana."
+        ),
+        "pt": (
+            "📤 Envie o @usuário ou link do canal de <b>destino</b>.\n"
+            "⚠️ Sua conta precisa ter permissão para publicar lá."
+        ),
     },
     # ------------------------------------------------------------ خرید
     "plans.title": {
-        "fa": "💳 <b>طرح‌های اشتراک</b>",
-        "en": "💳 <b>Subscription plans</b>",
-        "ar": "💳 <b>خطط الاشتراك</b>",
+        "fa": "💳 <b>طرح‌های اشتراک</b>", "en": "💳 <b>Subscription plans</b>",
+        "ar": "💳 <b>خطط الاشتراك</b>", "ru": "💳 <b>Тарифные планы</b>",
+        "tr": "💳 <b>Abonelik planları</b>", "uz": "💳 <b>Obuna tariflari</b>",
+        "hi": "💳 <b>सदस्यता प्लान</b>", "id": "💳 <b>Paket langganan</b>",
+        "pt": "💳 <b>Planos de assinatura</b>",
     },
     "plans.choose": {
-        "fa": "یک طرح را انتخاب کنید:",
-        "en": "Pick a plan:",
-        "ar": "اختر خطة:",
+        "fa": "یک طرح را انتخاب کنید:", "en": "Pick a plan:", "ar": "اختر خطة:",
+        "ru": "Выберите тариф:", "tr": "Bir plan seçin:", "uz": "Tarifni tanlang:",
+        "hi": "एक प्लान चुनें:", "id": "Pilih paket:", "pt": "Escolha um plano:",
     },
 }
