@@ -9,12 +9,19 @@ on:
 jobs:
   test:
     runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # ۳٫۱۱ کمینه‌ی پشتیبانی‌شده است و ۳٫۱۳ همان چیزی که روی سرور اجرا
+        # می‌شود. هر دو باید سبز بمانند، وگرنه یکی‌شان بی‌صدا می‌شکند.
+        python-version: ["3.11", "3.13"]
+    name: تست روی پایتون ${{ matrix.python-version }}
     steps:
       - uses: actions/checkout@v4
 
       - uses: actions/setup-python@v5
         with:
-          python-version: "3.11"
+          python-version: ${{ matrix.python-version }}
           cache: pip
 
       - name: نصب وابستگی‌ها
@@ -22,8 +29,8 @@ jobs:
 
       - name: بررسی کد
         run: |
-          python -m pyflakes telkap/ tests/
-          python -m ruff check telkap/ tests/
+          python -m pyflakes telkap/ tests/ tools/
+          python -m ruff check telkap/ tests/ tools/
 
       - name: اجرای تست‌ها
         env:
