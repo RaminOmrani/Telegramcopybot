@@ -12,6 +12,7 @@
 """
 from __future__ import annotations
 
+import ipaddress
 import socket
 import ssl
 import sys
@@ -62,6 +63,23 @@ def resolve(host: str) -> list[str]:
     return sorted({info[4][0] for info in infos})
 
 
+def poisoned(addresses: list[str]) -> bool:
+    """آیا DNS نام را به یک آدرس داخلی برگردانده؟
+
+    وقتی api.telegram.org به چیزی مثل 10.10.34.35 تبدیل می‌شود، یعنی
+    DNS شبکه جواب جعلی می‌دهد و شما را به صفحه‌ی فیلترینگ می‌فرستد.
+    این را باید بدانیم چون تنظیم درستِ پروکسی را عوض می‌کند.
+    """
+    for address in addresses:
+        try:
+            ip = ipaddress.ip_address(address)
+        except ValueError:
+            continue
+        if ip.is_private or ip.is_loopback or ip.is_reserved:
+            return True
+    return False
+
+
 def tcp_open(host: str, port: int) -> str | None:
     """None یعنی وصل شد؛ وگرنه متن خطا برمی‌گردد."""
     try:
@@ -71,7 +89,8 @@ def tcp_open(host: str, port: int) -> str | None:
         return str(exc)
 
 
-def check_dns() -> bool:
+def check_dns() -> tuple[bool, bool]:
+    """(تبدیل شد؟، جواب جعلی بود؟)"""
     print(f"\n۱) نام {BOT_API} به آدرس تبدیل می‌شود؟")
     try:
         addresses = resolve(BOT_API)
@@ -79,9 +98,19 @@ def check_dns() -> bool:
         bad(f"تبدیل نام ناموفق بود: {exc}")
         print("      یعنی DNS سرور کار نمی‌کند یا نام را عمداً بسته‌اند.")
         print("      DNS را روی 1.1.1.1 یا 8.8.8.8 بگذارید و دوباره بزنید.")
-        return False
+        return False, False
+
+    if poisoned(addresses):
+        bad(f"جواب جعلی: {'، '.join(addresses)}")
+        print("      این یک آدرس داخلی است، نه سرور واقعی تلگرام. یعنی DNS")
+        print("      شبکه عمداً جواب اشتباه می‌دهد و شما را به صفحه‌ی")
+        print("      فیلترینگ می‌فرستد.")
+        print("      مهم: در این حالت پروکسی را حتماً socks5h بنویسید نه socks5،")
+        print("      وگرنه باز هم همین آدرس جعلی استفاده می‌شود.")
+        return True, True
+
     ok(f"بله: {'، '.join(addresses)}")
-    return True
+    return True, False
 
 
 def check_direct() -> bool:
@@ -150,8 +179,8 @@ def main() -> None:
     print("بررسی دسترسی این سرور به تلگرام")
     print("=" * 46)
 
-    dns = check_dns()
-    direct = check_direct() if dns else False
+    dns, fake_dns = check_dns()
+    direct = check_direct() if dns and not fake_dns else False
     check_data_centers()
 
     env = read_env()
@@ -160,6 +189,10 @@ def main() -> None:
     if proxy_ok is None:
         print("\n۴) پروکسی داخل .env: تنظیم نشده")
 
+    # با DNS مسموم، socks5 ساده نام را خودش تبدیل می‌کند و باز به همان
+    # آدرس جعلی می‌رسد؛ socks5h تبدیل نام را به خودِ پروکسی می‌سپارد.
+    scheme = "socks5h" if fake_dns else "socks5"
+
     print("\n" + "=" * 46)
     print("نتیجه:")
     if direct:
@@ -167,13 +200,18 @@ def main() -> None:
         print("  PROXY_URL در .env پر است ولی پروکسی کار نمی‌کند — خالی‌اش کنید.")
     elif proxy_ok:
         print("  دسترسی مستقیم نیست ولی پروکسی روشن است.")
-        print("  ربات را دوباره اجرا کنید؛ باید از پروکسی رد شود.")
+        if fake_dns and not proxy_url.lower().startswith("socks5h"):
+            print("  ⚠ ولی DNS این شبکه جواب جعلی می‌دهد. نشانی پروکسی را در")
+            print("    .env به socks5h عوض کنید، وگرنه باز هم وصل نمی‌شود:")
+            print(f"       PROXY_URL={proxy_url.replace('socks5://', 'socks5h://', 1)}")
+        else:
+            print("  ربات را دوباره اجرا کنید؛ باید از پروکسی رد شود.")
     else:
         print("  نه دسترسی مستقیم هست و نه پروکسی سالمی تنظیم شده.")
         print("  ربات تا وقتی این درست نشود بالا نمی‌آید. دو راه:")
         print("    ۱) VPN سرور را در حالت TUN / Global روشن کنید")
         print("    ۲) یا یک پروکسی روی خود سرور بالا بیاورید و در .env بگذارید:")
-        print("       PROXY_URL=socks5://127.0.0.1:10808")
+        print(f"       PROXY_URL={scheme}://127.0.0.1:10808")
         sys.exit(1)
 
 
