@@ -113,6 +113,17 @@ def tcp_open(host: str, port: int, timeout: float = TIMEOUT) -> str | None:
         return str(exc)
 
 
+def recv_exact(sock: socket.socket, count: int) -> bytes:
+    """دقیقاً count بایت می‌خواند؛ recv تنها ممکن است کمتر بدهد."""
+    buffer = b""
+    while len(buffer) < count:
+        chunk = sock.recv(count - len(buffer))
+        if not chunk:
+            break
+        buffer += chunk
+    return buffer
+
+
 def socks5_reaches(sock: socket.socket, host: str, port: int) -> bool:
     """آیا از این SOCKS5 می‌شود به host رسید؟
 
@@ -121,7 +132,7 @@ def socks5_reaches(sock: socket.socket, host: str, port: int) -> bool:
     DNS مسموم تنها راه درست است. مقصدهای عددی (مرکز داده‌ها) نوع ۰x۰۱.
     """
     sock.sendall(b"\x05\x01\x00")                    # سلام، بدون احراز هویت
-    if sock.recv(2) != b"\x05\x00":
+    if recv_exact(sock, 2) != b"\x05\x00":
         return False
 
     try:
@@ -131,8 +142,25 @@ def socks5_reaches(sock: socket.socket, host: str, port: int) -> bool:
         target = b"\x03" + bytes([len(name)]) + name
 
     sock.sendall(b"\x05\x01\x00" + target + port.to_bytes(2, "big"))
-    reply = sock.recv(4)
-    return len(reply) >= 2 and reply[0] == 0x05 and reply[1] == 0x00
+
+    reply = recv_exact(sock, 4)
+    if len(reply) < 4 or reply[0] != 0x05 or reply[1] != 0x00:
+        return False
+
+    # باقیِ پاسخ (نشانیِ بسته‌شده و پورت) باید خوانده شود، وگرنه در بافر
+    # می‌ماند و دست‌دادنِ TLS بعدی آن را به‌جای پیام TLS می‌خواند — که خطای
+    # گمراه‌کننده‌ی «wrong version number» می‌دهد به‌جای خطای واقعی.
+    atyp = reply[3]
+    if atyp == 0x01:
+        rest = 4
+    elif atyp == 0x04:
+        rest = 16
+    elif atyp == 0x03:
+        rest = recv_exact(sock, 1)[0]
+    else:
+        return False
+    recv_exact(sock, rest + 2)          # نشانی + دو بایت پورت
+    return True
 
 
 def http_reaches(sock: socket.socket, host: str, port: int) -> bool:
@@ -143,14 +171,42 @@ def http_reaches(sock: socket.socket, host: str, port: int) -> bool:
     return b" 200 " in sock.recv(128)
 
 
-def probe(host: str, port: int, target: str = BOT_API) -> str | None:
-    """اگر اینجا پروکسیِ سالمی هست که به مقصد می‌رسد، نوعش را برمی‌گرداند."""
+def real_telegram(sock: socket.socket, host: str) -> str | None:
+    """آیا آن‌سوی این اتصال واقعاً تلگرام است؟
+
+    قبول شدنِ درخواستِ SOCKS چیز زیادی ثابت نمی‌کند: پروکسی ممکن است نام
+    را با DNS مسمومِ همین شبکه تبدیل کند، به صفحه‌ی فیلترینگ وصل شود و
+    همان را «موفق» گزارش کند. تنها چیزی که تقلب‌ناپذیر است، گواهی TLS
+    است — صفحه‌ی فیلترینگ گواهی معتبرِ api.telegram.org ندارد.
+
+    None یعنی درست است؛ وگرنه متن اشکال برمی‌گردد.
+    """
+    try:
+        with ssl.create_default_context().wrap_socket(
+            sock, server_hostname=host
+        ):
+            return None
+    except ssl.SSLCertVerificationError as exc:
+        return f"گواهی معتبر نبود ({exc.verify_message or exc.reason})"
+    except (ssl.SSLError, OSError) as exc:
+        return f"دست‌دادن TLS شکست خورد: {exc}"
+
+
+def probe(
+    host: str, port: int, target: str = BOT_API, verify: bool = True
+) -> tuple[str, str | None] | None:
+    """(نوع پروکسی، اشکالِ TLS) — یا None اگر اصلاً پروکسی‌ای آنجا نباشد.
+
+    `verify=False` برای مقصدهای عددی مثل مرکز داده‌هاست که TLS با نام
+    ندارند؛ آنجا رسیدن به مقصد همان چیزی است که می‌شود سنجید.
+    """
     for scheme, reaches in (("socks5h", socks5_reaches), ("http", http_reaches)):
         try:
             with socket.create_connection((host, port), timeout=TIMEOUT) as sock:
                 sock.settimeout(TIMEOUT)
-                if reaches(sock, target, 443):
-                    return scheme
+                if not reaches(sock, target, 443):
+                    continue
+                return scheme, real_telegram(sock, target) if verify else None
         except OSError:
             return None                 # پورت باز نیست؛ نوع دوم را هم لازم نیست
         except Exception:               # noqa: BLE001 — پروتکل نخواند، نوع بعدی
@@ -164,10 +220,15 @@ def scan() -> list[tuple[int, str, str]]:
     for port, name in PROXY_PORTS:
         if tcp_open("127.0.0.1", port, LOCAL_TIMEOUT):
             continue                    # بسته است؛ سراغ دست‌دادن هم نمی‌رویم
-        scheme = probe("127.0.0.1", port)
-        if scheme:
-            ok(f"پورت {port} ({name}) — {scheme} و به تلگرام می‌رسد")
-            found.append((port, scheme, name))
+        result = probe("127.0.0.1", port)
+        if result is None:
+            continue
+        scheme, tls_problem = result
+        if tls_problem:
+            bad(f"پورت {port} ({name}) — وصل می‌شود ولی تلگرام نیست")
+            continue
+        ok(f"پورت {port} ({name}) — {scheme} و به تلگرامِ واقعی می‌رسد")
+        found.append((port, scheme, name))
     if not found:
         bad("روی هیچ‌کدام از پورت‌های رایج پروکسی سالمی نبود")
     return found
@@ -234,7 +295,8 @@ def check_data_centers(via: tuple[str, int] | None) -> bool:
     healthy = False
     for name, ip in DATA_CENTERS:
         if via:
-            reached = probe(via[0], via[1], target=ip) is not None
+            # مرکز داده‌ها TLS با نام ندارند، پس فقط رسیدن سنجیده می‌شود.
+            reached = probe(via[0], via[1], target=ip, verify=False) is not None
             error = None if reached else "از پروکسی رد نشد"
         else:
             error = tcp_open(ip, 443)
@@ -250,12 +312,13 @@ def check_data_centers(via: tuple[str, int] | None) -> bool:
     return healthy
 
 
-def check_proxy(url: str) -> bool:
+def check_proxy(url: str) -> str:
+    """«ok» یا دلیلِ نرسیدن: bad_url / no_port / no_reach / intercepted."""
     print(f"\n۳) پروکسی داخل .env: {url}")
     parsed = urlparse(url)
     if not parsed.hostname or not parsed.port:
         bad("نشانی ناقص است؛ باید مثل socks5://127.0.0.1:10808 باشد")
-        return False
+        return "bad_url"
 
     error = tcp_open(parsed.hostname, parsed.port)
     if error:
@@ -263,19 +326,31 @@ def check_proxy(url: str) -> bool:
         print("      یعنی برنامه‌ی پروکسی (Hiddify/v2rayN/…) روشن نیست، یا")
         print("      روشن است ولی پورت دیگری باز کرده — هر برنامه پورت خودش")
         print("      را دارد و ۱۰۸۰۸ فقط پیش‌فرضِ v2rayN است.")
-        return False
+        return "no_port"
     ok("پورت باز است")
 
     # باز بودن پورت یعنی چیزی آنجا هست، نه اینکه راهش به تلگرام باز است.
     # پس واقعاً از همان پروکسی به api.telegram.org وصل می‌شویم.
-    if probe(parsed.hostname, parsed.port):
-        ok("و از همین پروکسی به تلگرام می‌رسد ✓")
-        return True
+    result = probe(parsed.hostname, parsed.port)
+    if result is None:
+        bad("ولی راهش به تلگرام باز نیست")
+        print("      پروکسی روشن است ولی خودش به تلگرام وصل نمی‌شود — کانفیگش")
+        print("      منقضی شده یا سرورش جواب نمی‌دهد. در خودِ برنامه امتحان کنید.")
+        return "no_reach"
 
-    bad("ولی راهش به تلگرام باز نیست")
-    print("      پروکسی روشن است ولی خودش به تلگرام وصل نمی‌شود — کانفیگش")
-    print("      منقضی شده یا سرورش جواب نمی‌دهد. در خودِ برنامه امتحان کنید.")
-    return False
+    _, tls_problem = result
+    if tls_problem is None:
+        ok("و از همین پروکسی به تلگرامِ واقعی می‌رسد ✓")
+        return "ok"
+
+    bad(f"وصل می‌شود ولی آن‌سویش تلگرام نیست — {tls_problem}")
+    print("      یعنی پروکسی نام را با DNS همین شبکه تبدیل کرده، به صفحه‌ی")
+    print("      فیلترینگ رسیده، و همان را «موفق» گزارش کرده است.")
+    print("      چاره در خودِ برنامه‌ی پروکسی است، نه در .env:")
+    print("        · DNS آن را روی یک نشانی راه‌دور بگذارید (مثل")
+    print("          https://8.8.8.8/dns-query) تا تبدیل نام از تونل رد شود")
+    print("        · یا حالت TUN را روشن کنید و PROXY_URL را خالی بگذارید")
+    return "intercepted"
 
 
 def main() -> None:
@@ -289,9 +364,10 @@ def main() -> None:
     # از کدام راه باید سنجید.
     env = read_env()
     proxy_url = env.get("PROXY_URL", "").strip()
-    proxy_ok = check_proxy(proxy_url) if proxy_url else None
-    if proxy_ok is None:
+    status = check_proxy(proxy_url) if proxy_url else "unset"
+    if status == "unset":
         print("\n۳) پروکسی داخل .env: تنظیم نشده")
+    proxy_ok = status == "ok"
 
     via = None
     if proxy_ok:
@@ -303,9 +379,12 @@ def main() -> None:
     # آدرس جعلی می‌رسد؛ socks5h تبدیل نام را به خودِ پروکسی می‌سپارد.
     scheme = "socks5h" if fake_dns else "socks5"
 
-    # هیچ راهی کار نکرد؛ شاید برنامه‌ی پروکسی روشن باشد ولی روی پورت دیگری.
-    # پیش از اعلام نتیجه می‌گردیم، تا نتیجه بتواند پورت درست را نام ببرد.
-    found = scan() if not direct and not proxy_ok else []
+    # شاید برنامه‌ی پروکسی روشن باشد ولی روی پورت دیگری. پیش از اعلام
+    # نتیجه می‌گردیم، تا نتیجه بتواند پورت درست را نام ببرد.
+    # وقتی پروکسی وصل می‌شود ولی سر از صفحه‌ی فیلترینگ درمی‌آورد، گشتن
+    # بی‌فایده است: پورت درست است و اشکال از DNS داخلِ همان برنامه است.
+    hunt = not direct and not proxy_ok and status != "intercepted"
+    found = scan() if hunt else []
 
     print("\n" + "=" * 46)
     print("نتیجه:")
@@ -320,6 +399,16 @@ def main() -> None:
             print(f"       PROXY_URL={proxy_url.replace('socks5://', 'socks5h://', 1)}")
         else:
             print("  ربات را دوباره اجرا کنید؛ باید از پروکسی رد شود.")
+    elif status == "intercepted":
+        print("  پروکسی روشن است و پورتش هم درست، ولی به تلگرامِ واقعی")
+        print("  نمی‌رسد — نام را با DNS همین شبکه تبدیل می‌کند و سر از")
+        print("  صفحه‌ی فیلترینگ درمی‌آورد.")
+        print("\n  .env را دست نزنید؛ اشکال داخلِ خودِ برنامه‌ی پروکسی است.")
+        print("  در Hiddify یکی از این دو:")
+        print("    ۱) تنظیمات ← DNS را روی نشانی راه‌دور بگذارید، مثل")
+        print("       https://8.8.8.8/dns-query یا https://1.1.1.1/dns-query")
+        print("    ۲) یا «پیاده‌سازی Tun» را روشن کنید — آن وقت کل سیستم از")
+        print("       تونل رد می‌شود و در .env بنویسید: PROXY_URL=")
     else:
         if found:
             port, found_scheme, name = found[0]
