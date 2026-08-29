@@ -70,6 +70,18 @@ class Settings:
     # لینک ورود از روی همین ساخته می‌شود.
     web_base_url: str = ""
 
+    # ── هوش مصنوعی ────────────────────────────────────────────────────
+    # هر سرویسی که رابط OpenAI را بفهمد. کلید که خالی باشد، هیچ‌کدام از
+    # قابلیت‌های هوش مصنوعی در منوها ظاهر نمی‌شوند.
+    ai_base_url: str = "https://api.avalai.ir/v1"
+    ai_api_key: str = ""
+    # نقش‌ها جدا هستند چون هزینه‌شان ده‌ها برابر فرق می‌کند: دسته‌بندی با
+    # مدل کوچک همان نتیجه را می‌دهد، بازنویسی فارسی نه.
+    ai_model_small: str = "gemini-2.0-flash-lite"
+    ai_model_main: str = "gpt-4.1-mini"
+    ai_model_vision: str = "gpt-4.1-mini"
+    ai_model_embed: str = "text-embedding-3-small"
+
     def is_admin(self, user_id: int) -> bool:
         return user_id in self.admin_ids
 
@@ -114,6 +126,12 @@ def load_settings() -> Settings:
         web_host=os.getenv("WEB_HOST", "127.0.0.1").strip() or "127.0.0.1",
         web_port=int(os.getenv("WEB_PORT", "8080")),
         web_base_url=os.getenv("WEB_BASE_URL", "").strip().rstrip("/"),
+        ai_base_url=os.getenv("AI_BASE_URL", "https://api.avalai.ir/v1").strip(),
+        ai_api_key=os.getenv("AI_API_KEY", "").strip(),
+        ai_model_small=os.getenv("AI_MODEL_SMALL", "gemini-2.0-flash-lite").strip(),
+        ai_model_main=os.getenv("AI_MODEL_MAIN", "gpt-4.1-mini").strip(),
+        ai_model_vision=os.getenv("AI_MODEL_VISION", "gpt-4.1-mini").strip(),
+        ai_model_embed=os.getenv("AI_MODEL_EMBED", "text-embedding-3-small").strip(),
     )
 
 

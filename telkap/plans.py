@@ -14,9 +14,11 @@ FEAT_MESSAGES = "messages"         # سهمیه‌ی پیام (همیشه هست
 # بسته‌های اعتباری که جدا از اشتراک خریده می‌شوند (تومان به ازای هر واحد)
 WATERMARK_UNIT_TOMAN = 1_000       # هر تصویر واترمارک‌شده
 HISTORY_UNIT_TOMAN = 1_000         # هر پیام قدیمی کپی‌شده
+AI_UNIT_TOMAN = 500                # هر کار هوش مصنوعی روی یک پست
 
 CREDIT_WATERMARK = "wm"
 CREDIT_HISTORY = "hist"
+CREDIT_AI = "ai"
 
 CREDIT_KINDS: dict[str, tuple[str, str, int]] = {
     # کد: (عنوان، توضیح، قیمت پیش‌فرض هر واحد)
@@ -29,6 +31,11 @@ CREDIT_KINDS: dict[str, tuple[str, str, int]] = {
         "🕓 اعتبار کپی پیام‌های گذشته",
         "هر پیام قدیمی که کپی شود، یک واحد کم می‌شود.",
         HISTORY_UNIT_TOMAN,
+    ),
+    CREDIT_AI: (
+        "🤖 اعتبار هوش مصنوعی",
+        "هر بازنویسی، ترجمه یا خلاصه‌ی یک پست، یک واحد کم می‌شود.",
+        AI_UNIT_TOMAN,
     ),
 }
 

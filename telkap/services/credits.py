@@ -13,7 +13,7 @@ import logging
 
 from telkap.db import get_session, log_activity
 from telkap.models import User
-from telkap.plans import CREDIT_HISTORY, CREDIT_WATERMARK
+from telkap.plans import CREDIT_AI, CREDIT_HISTORY, CREDIT_WATERMARK
 
 log = logging.getLogger(__name__)
 
@@ -21,6 +21,7 @@ log = logging.getLogger(__name__)
 _FIELDS = {
     CREDIT_WATERMARK: "watermark_credits",
     CREDIT_HISTORY: "history_credits",
+    CREDIT_AI: "ai_credits",
 }
 
 

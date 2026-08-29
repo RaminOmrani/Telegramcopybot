@@ -51,6 +51,7 @@ class User(Base):
     # اعتبارهای خریداری‌شده‌ی جدا از اشتراک (هر واحد = یک تصویر یا یک پیام)
     watermark_credits: Mapped[int] = mapped_column(Integer, default=0)
     history_credits: Mapped[int] = mapped_column(Integer, default=0)
+    ai_credits: Mapped[int] = mapped_column(Integer, default=0)
 
     # سقف‌ها و قابلیت‌های اختصاصی این کاربر که ادمین دستی تعیین کرده و
     # روی طرحش سوار می‌شود. کلید نبود یعنی «همان مقدار طرح».
