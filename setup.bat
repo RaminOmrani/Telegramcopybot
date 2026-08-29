@@ -41,5 +41,5 @@ echo.
 echo [*] برای ساخت FERNET_KEY این را اجرا کنید و خروجی را در .env بگذارید:
 echo     .venv\Scripts\python.exe -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())"
 echo.
-echo [*] نصب تمام شد. بعد از پر کردن .env، start.bat را اجرا کنید.
+echo [*] نصب تمام شد. بعد از پر کردن .env، run.bat را اجرا کنید.
 pause
