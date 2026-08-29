@@ -72,6 +72,49 @@ def test_telethon_includes_auth():
     assert cfg["password"] == "secret"
 
 
+def test_aiogram_maps_socks5h_to_socks5():
+    """socks5h را python_socks نمی‌شناسد و با ValueError رد می‌کند.
+
+    تبدیل به socks5 چیزی از دست نمی‌دهد: python_socks برای socks5 وقتی
+    rdns داده نشده باشد آن را True می‌گیرد، یعنی تبدیل نام همان طرفِ
+    تونل انجام می‌شود — همان چیزی که socks5h می‌خواهد.
+    """
+    assert proxy.for_aiogram("socks5h://127.0.0.1:12334") == (
+        "socks5://127.0.0.1:12334"
+    )
+    assert proxy.for_aiogram("socks4a://p.local:1080") == "socks4://p.local:1080"
+
+
+def test_aiogram_keeps_credentials():
+    assert proxy.for_aiogram("socks5h://ali:secret@10.0.0.5:1080") == (
+        "socks5://ali:secret@10.0.0.5:1080"
+    )
+
+
+@pytest.mark.parametrize(
+    "url",
+    [
+        "socks5://127.0.0.1:10808",
+        "socks5h://127.0.0.1:12334",
+        "socks4://p.local:1080",
+        "socks4a://p.local:1080",
+        "http://127.0.0.1:10809",
+        "https://127.0.0.1:8080",
+        "socks5h://ali:secret@10.0.0.5:1080",
+    ],
+)
+def test_aiogram_accepts_every_supported_form(url):
+    """خروجی را به خودِ کتابخانه می‌دهیم، نه اینکه با رشته مقایسه کنیم.
+
+    اشکالِ socks5h تا روی سرور واقعی پیدا نشد، چون هیچ تستی خروجی
+    for_aiogram را دست کتابخانه نمی‌داد. مقایسه‌ی رشته‌ای هر شکلی را
+    «درست» نشان می‌دهد؛ فقط خودِ aiogram می‌گوید قبولش دارد یا نه.
+    """
+    from aiogram.client.session.aiohttp import AiohttpSession
+
+    AiohttpSession(proxy=proxy.for_aiogram(url))
+
+
 def test_describe_hides_password():
     text = proxy.describe("socks5://ali:secret@10.0.0.5:1080")
     assert "secret" not in text

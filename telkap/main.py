@@ -121,10 +121,22 @@ async def main() -> None:
         except proxy.ProxyError as exc:
             log.error("PROXY_URL نامعتبر است: %s", exc)
             return
-        except Exception:
+        except ImportError:
             log.exception(
-                "ساخت اتصال پروکسی ناموفق بود. برای پروکسی socks این را نصب کنید:\n"
-                "    pip install aiohttp-socks"
+                "کتابخانه‌ی پروکسی socks نصب نیست:\n"
+                "    .venv\\Scripts\\pip install aiohttp-socks python-socks"
+            )
+            return
+        except Exception:
+            # پیام قبلی همیشه می‌گفت «aiohttp-socks را نصب کنید»، حتی وقتی
+            # نصب بود و ایراد از خودِ نشانی می‌آمد — که آدم را دنبال مشکلی
+            # می‌فرستد که وجود ندارد.
+            log.exception(
+                "ساخت اتصال پروکسی ناموفق بود.\n"
+                "PROXY_URL فعلی: %s\n"
+                "نشانی باید شکلی مثل socks5h://127.0.0.1:12334 داشته باشد.\n"
+                "با .\\nettest.bat می‌توانید درستی‌اش را بسنجید.",
+                cfg.proxy_url,
             )
             return
 

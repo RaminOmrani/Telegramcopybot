@@ -77,9 +77,42 @@ def for_telethon(url: str):
 
 
 def for_aiogram(url: str) -> str | None:
-    """aiogram خودِ نشانی را می‌پذیرد؛ فقط اعتبارسنجی می‌کنیم."""
+    """نشانی را به شکلی درمی‌آورد که python_socks بفهمد.
+
+    aiogram نشانی را به python_socks می‌سپارد و آن فقط socks5 و socks4 و
+    http را می‌شناسد؛ socks5h را با ValueError رد می‌کند. پس همان‌جا
+    تبدیلش می‌کنیم.
+
+    تبدیل socks5h به socks5 چیزی را از دست نمی‌دهد: python_socks برای
+    socks5 وقتی rdns مشخص نشده باشد آن را True می‌گیرد، یعنی تبدیل نام
+    همان طرفِ تونل انجام می‌شود — همان کاری که socks5h می‌خواهد. این با
+    DNS مسموم تعیین‌کننده است، چون تبدیل نام در این سمت به آدرس صفحه‌ی
+    فیلترینگ می‌رسد.
+    """
     parts = parse(url)
-    return url.strip() if parts else None
+    if parts is None:
+        return None
+
+    scheme = parts["scheme"]
+    if scheme == "socks5h":
+        scheme = "socks5"
+    elif scheme == "https":
+        # python_socks فقط http را می‌شناسد. خودِ گفتگو با پروکسی روی
+        # همان اتصال است؛ https اینجا فقط املای دیگری از همان است.
+        scheme = "http"
+    elif scheme == "socks4a":
+        # socks4 در python_socks پیش‌فرض rdns=False دارد و راهی برای
+        # عوض کردنش از راه نشانی نیست. با DNS سالم مشکلی ندارد.
+        log.warning(
+            "socks4a به socks4 تبدیل شد؛ تبدیل نام این سمت انجام می‌شود. "
+            "اگر DNS شبکه جواب جعلی می‌دهد، به‌جایش socks5h بگذارید."
+        )
+        scheme = "socks4"
+
+    auth = ""
+    if parts["username"]:
+        auth = f"{parts['username']}:{parts['password'] or ''}@"
+    return f"{scheme}://{auth}{parts['host']}:{parts['port']}"
 
 
 def describe(url: str) -> str:
