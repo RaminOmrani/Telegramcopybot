@@ -35,6 +35,30 @@ DATA_CENTERS = [
 
 TIMEOUT = 10
 
+# پورتی که هر برنامه‌ی پروکسی باز می‌کند فرق دارد و کاربر معمولاً نمی‌داند
+# کدام است. به‌جای حدس زدن، همه‌ی پورت‌های رایج امتحان می‌شوند و آن‌که
+# واقعاً به تلگرام می‌رسد معرفی می‌شود.
+PROXY_PORTS = [
+    (2334, "Hiddify"),
+    (12334, "Hiddify"),
+    (2335, "Hiddify"),
+    (10808, "v2rayN — socks"),
+    (10809, "v2rayN — http"),
+    (2080, "Nekoray / sing-box"),
+    (2081, "sing-box"),
+    (7890, "Clash / Mihomo"),
+    (7891, "Clash — socks"),
+    (1080, "استاندارد socks"),
+    (1081, "استاندارد socks"),
+    (8086, "متفرقه"),
+    (20170, "Netch"),
+    (20171, "Netch"),
+]
+
+# برای پورت‌های روی همین دستگاه، رد شدن آنی است؛ پس صبر زیاد فقط وقت تلف
+# کردن است.
+LOCAL_TIMEOUT = 1.5
+
 
 def ok(message: str) -> None:
     print(f"  [✓] {message}")
@@ -80,13 +104,69 @@ def poisoned(addresses: list[str]) -> bool:
     return False
 
 
-def tcp_open(host: str, port: int) -> str | None:
+def tcp_open(host: str, port: int, timeout: float = TIMEOUT) -> str | None:
     """None یعنی وصل شد؛ وگرنه متن خطا برمی‌گردد."""
     try:
-        with socket.create_connection((host, port), timeout=TIMEOUT):
+        with socket.create_connection((host, port), timeout=timeout):
             return None
     except OSError as exc:
         return str(exc)
+
+
+def socks5_reaches(sock: socket.socket, host: str, port: int) -> bool:
+    """آیا از این SOCKS5 می‌شود به host رسید؟
+
+    نام مقصد خام فرستاده می‌شود (نوع ۰x۰۳) نه آدرس عددی، تا تبدیل نام هم
+    آن طرفِ تونل انجام شود — همان کاری که socks5h می‌کند.
+    """
+    sock.sendall(b"\x05\x01\x00")                    # سلام، بدون احراز هویت
+    if sock.recv(2) != b"\x05\x00":
+        return False
+
+    name = host.encode("idna")
+    sock.sendall(
+        b"\x05\x01\x00\x03" + bytes([len(name)]) + name + port.to_bytes(2, "big")
+    )
+    reply = sock.recv(4)
+    return len(reply) >= 2 and reply[0] == 0x05 and reply[1] == 0x00
+
+
+def http_reaches(sock: socket.socket, host: str, port: int) -> bool:
+    """آیا این پروکسیِ HTTP اجازه‌ی CONNECT به مقصد را می‌دهد؟"""
+    sock.sendall(
+        f"CONNECT {host}:{port} HTTP/1.1\r\nHost: {host}:{port}\r\n\r\n".encode()
+    )
+    return b" 200 " in sock.recv(128)
+
+
+def probe(host: str, port: int) -> str | None:
+    """اگر اینجا پروکسیِ سالمی هست که به تلگرام می‌رسد، نوعش را برمی‌گرداند."""
+    for scheme, reaches in (("socks5h", socks5_reaches), ("http", http_reaches)):
+        try:
+            with socket.create_connection((host, port), timeout=TIMEOUT) as sock:
+                sock.settimeout(TIMEOUT)
+                if reaches(sock, BOT_API, 443):
+                    return scheme
+        except OSError:
+            return None                 # پورت باز نیست؛ نوع دوم را هم لازم نیست
+        except Exception:               # noqa: BLE001 — پروتکل نخواند، نوع بعدی
+            continue
+    return None
+
+
+def scan() -> list[tuple[int, str, str]]:
+    print("\nگشتن دنبال پروکسی روی پورت‌های رایج …")
+    found = []
+    for port, name in PROXY_PORTS:
+        if tcp_open("127.0.0.1", port, LOCAL_TIMEOUT):
+            continue                    # بسته است؛ سراغ دست‌دادن هم نمی‌رویم
+        scheme = probe("127.0.0.1", port)
+        if scheme:
+            ok(f"پورت {port} ({name}) — {scheme} و به تلگرام می‌رسد")
+            found.append((port, scheme, name))
+    if not found:
+        bad("روی هیچ‌کدام از پورت‌های رایج پروکسی سالمی نبود")
+    return found
 
 
 def check_dns() -> tuple[bool, bool]:
@@ -163,15 +243,22 @@ def check_proxy(url: str) -> bool:
     error = tcp_open(parsed.hostname, parsed.port)
     if error:
         bad(f"خودِ پروکسی جواب نمی‌دهد: {error}")
-        print("      یعنی برنامه‌ی پروکسی (v2ray/xray/…) روی سرور روشن نیست")
-        print("      یا پورتش با چیزی که در .env نوشته‌اید فرق دارد.")
+        print("      یعنی برنامه‌ی پروکسی (Hiddify/v2rayN/…) روشن نیست، یا")
+        print("      روشن است ولی پورت دیگری باز کرده — هر برنامه پورت خودش")
+        print("      را دارد و ۱۰۸۰۸ فقط پیش‌فرضِ v2rayN است.")
         return False
-    ok("پروکسی روشن است و پورتش باز است")
+    ok("پورت باز است")
 
-    if parsed.scheme.lower().startswith("socks"):
-        print("      (این تست فقط می‌گوید پروکسی روشن است، نه اینکه راهش")
-        print("       به تلگرام باز است. آن را خودِ ربات نشان می‌دهد.)")
-    return True
+    # باز بودن پورت یعنی چیزی آنجا هست، نه اینکه راهش به تلگرام باز است.
+    # پس واقعاً از همان پروکسی به api.telegram.org وصل می‌شویم.
+    if probe(parsed.hostname, parsed.port):
+        ok("و از همین پروکسی به تلگرام می‌رسد ✓")
+        return True
+
+    bad("ولی راهش به تلگرام باز نیست")
+    print("      پروکسی روشن است ولی خودش به تلگرام وصل نمی‌شود — کانفیگش")
+    print("      منقضی شده یا سرورش جواب نمی‌دهد. در خودِ برنامه امتحان کنید.")
+    return False
 
 
 def main() -> None:
@@ -192,6 +279,10 @@ def main() -> None:
     # آدرس جعلی می‌رسد؛ socks5h تبدیل نام را به خودِ پروکسی می‌سپارد.
     scheme = "socks5h" if fake_dns else "socks5"
 
+    # هیچ راهی کار نکرد؛ شاید برنامه‌ی پروکسی روشن باشد ولی روی پورت دیگری.
+    # پیش از اعلام نتیجه می‌گردیم، تا نتیجه بتواند پورت درست را نام ببرد.
+    found = scan() if not direct and not proxy_ok else []
+
     print("\n" + "=" * 46)
     print("نتیجه:")
     if direct:
@@ -206,11 +297,20 @@ def main() -> None:
         else:
             print("  ربات را دوباره اجرا کنید؛ باید از پروکسی رد شود.")
     else:
-        print("  نه دسترسی مستقیم هست و نه پروکسی سالمی تنظیم شده.")
-        print("  ربات تا وقتی این درست نشود بالا نمی‌آید. دو راه:")
-        print("    ۱) VPN سرور را در حالت TUN / Global روشن کنید")
-        print("    ۲) یا یک پروکسی روی خود سرور بالا بیاورید و در .env بگذارید:")
-        print(f"       PROXY_URL={scheme}://127.0.0.1:10808")
+        if found:
+            port, found_scheme, name = found[0]
+            print(f"  پروکسی پیدا شد: {name} روی پورت {port}.")
+            print("  همین یک خط را در .env بگذارید (خط PROXY_URL فعلی را عوض کنید):")
+            print(f"\n       PROXY_URL={found_scheme}://127.0.0.1:{port}\n")
+            print("  بعد دوباره .\\nettest.bat را بزنید تا تأیید شود.")
+        else:
+            print("  نه دسترسی مستقیم هست و نه پروکسی سالمی روی این سرور.")
+            print("  اگر Hiddify یا v2rayN روشن است، پورتش را از خود برنامه")
+            print("  بردارید و در .env بگذارید:")
+            print(f"\n       PROXY_URL={scheme}://127.0.0.1:<همان پورت>\n")
+            print("  در Hiddify: تنظیمات ← پیکربندی ← «پورت پروکسی».")
+            print("  اگر برنامه حالت TUN دارد، آن را روشن کنید تا کل سیستم")
+            print("  از تونل رد شود؛ آن وقت PROXY_URL را خالی بگذارید.")
         sys.exit(1)
 
 
