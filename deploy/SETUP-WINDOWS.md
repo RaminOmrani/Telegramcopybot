@@ -21,7 +21,7 @@
 روی **همان دستگاهی که ربات الان رویش اجرا می‌شود** (سیستم خودتان):
 
 ```bat
-backup.bat
+.\backup.bat
 ```
 
 یک فایل `telkap-backup-<تاریخ>.zip` کنار پروژه ساخته می‌شود که شامل پوشه‌ی
@@ -81,7 +81,7 @@ cd Telegramcopybot
 ### ۱.۴ نصب وابستگی‌ها
 
 ```bat
-setup.bat
+.\setup.bat
 ```
 
 این کار `.venv` می‌سازد، کتابخانه‌ها را نصب می‌کند و یک `.env` خالی از روی
@@ -171,7 +171,7 @@ curl https://api.telegram.org
 ## بخش ۴ — تست اولیه
 
 ```bat
-run.bat
+.\run.bat
 ```
 
 چند ثانیه صبر کنید. باید لاگ راه‌اندازی را ببینید و خطایی نباشد.
@@ -390,9 +390,9 @@ nssm start Caddy
 ```bat
 cd C:\Telegramcopybot
 
-backup.bat                  rem ۱. اول پشتیبان
+.\backup.bat                  rem ۱. اول پشتیبان
 nssm stop TelkapBot         rem ۲. خاموش کردن
-update.bat                  rem ۳. گرفتن نسخه‌ی تازه
+.\update.bat                  rem ۳. گرفتن نسخه‌ی تازه
 nssm start TelkapBot        rem ۴. روشن کردن دوباره
 ```
 
@@ -418,18 +418,28 @@ nssm start TelkapBot        rem ۴. روشن کردن دوباره
 ## مشکلات رایج
 
 **`'setup.bat' is not recognized` با اینکه فایل آنجاست**
-پایان‌خط فایل یونیکسی (LF) است و cmd نمی‌تواند بخواندش. از نسخه‌ی امروز به
-بعد `.gitattributes` جلوی این را می‌گیرد، ولی اگر پیش از آن clone کرده‌اید،
-ساده‌ترین راه گرفتن دوباره‌ی پروژه است:
+
+**همیشه `.\` را جلوی نام بگذارید:**
 
 ```bat
-cd C:\
-rmdir /s /q Telegramcopybot
-git clone https://github.com/RaminOmrani/Telegramcopybot.git
+.\setup.bat
 ```
 
-<i>پوشه‌ی `data` و فایل `.env` را پیش از پاک کردن جای دیگری کپی کنید اگر
-داخلشان چیزی دارید.</i>
+ویندوز سرور معمولاً `NoDefaultCurrentDirectoryInExePath` را روشن دارد؛ این
+تنظیم امنیتی جلوی جستجوی پوشه‌ی جاری را می‌گیرد، پس `setup.bat` پیدا
+نمی‌شود ولی `.\setup.bat` می‌شود. پیام خطا این را نمی‌گوید و آدم را دنبال
+مشکل PATH می‌فرستد.
+
+اگر با `.\` هم نشد، این سه را ببینید:
+
+```bat
+dir *.bat
+echo %PATHEXT%
+set NoDefaultCurrentDirectory
+```
+
+اولی می‌گوید فایل‌ها آنجا هستند یا نه، دومی باید `.BAT` را داشته باشد، و
+سومی همان تنظیم امنیتی را نشان می‌دهد.
 
 **`Windows cannot find '.bat'`**
 `start` یک دستور داخلی خودِ ویندوز است، پس `start.bat` به‌صورت
