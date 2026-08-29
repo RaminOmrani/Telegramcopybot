@@ -16,6 +16,11 @@ def _int_list(raw: str) -> list[int]:
     return [int(part) for part in raw.replace(" ", "").split(",") if part]
 
 
+def _flag(raw: str) -> bool:
+    """مقدار بله/خیر در .env؛ هرچه جز این‌ها باشد خاموش حساب می‌شود."""
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     bot_token: str
@@ -51,6 +56,19 @@ class Settings:
     # پشتیبان‌گیری بیرون از سرور: شناسه‌ی کانال خصوصی که ربات در آن ادمین
     # است. خالی یعنی فقط نسخه‌ی محلی گرفته می‌شود.
     backup_chat_id: str = ""
+
+    # ── پنل وب ────────────────────────────────────────────────────────
+    # پنل داخل همان پروسه‌ی ربات بالا می‌آید، پس چیز تازه‌ای نصب نمی‌شود.
+    # پیش‌فرض خاموش است: تا خودتان روشنش نکنید هیچ پورتی باز نمی‌شود.
+    web_enabled: bool = False
+    # روی 127.0.0.1 یعنی فقط از خود سرور در دسترس است و باید یک وب‌سرور
+    # جلویش بگذارید. برای دسترسی مستقیم از بیرون 0.0.0.0 بگذارید — ولی
+    # آن‌وقت بدون HTTPS، کوکی ورود روی شبکه لخت می‌رود.
+    web_host: str = "127.0.0.1"
+    web_port: int = 8080
+    # آدرسی که کاربر در مرورگر می‌بیند، مثل https://botpanel.softmiliac.com
+    # لینک ورود از روی همین ساخته می‌شود.
+    web_base_url: str = ""
 
     def is_admin(self, user_id: int) -> bool:
         return user_id in self.admin_ids
@@ -92,6 +110,10 @@ def load_settings() -> Settings:
         system_version=os.getenv("SYSTEM_VERSION", "Windows 10").strip() or "Windows 10",
         app_version=os.getenv("APP_VERSION", "4.16.8").strip() or "4.16.8",
         backup_chat_id=os.getenv("BACKUP_CHAT_ID", "").strip(),
+        web_enabled=_flag(os.getenv("WEB_ENABLED", "")),
+        web_host=os.getenv("WEB_HOST", "127.0.0.1").strip() or "127.0.0.1",
+        web_port=int(os.getenv("WEB_PORT", "8080")),
+        web_base_url=os.getenv("WEB_BASE_URL", "").strip().rstrip("/"),
     )
 
 

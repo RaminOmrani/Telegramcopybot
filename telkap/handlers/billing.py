@@ -474,23 +474,10 @@ async def cb_approve(call: CallbackQuery) -> None:
     await call.answer("تأیید شد")
     await _mark_reviewed(call, f"✅ تأیید شد توسط {call.from_user.full_name}")
 
-    if sub is not None:
-        plan = get_plan(request.plan_code)
-        note = (
-            f"🎉 پرداخت شما تأیید شد!\n\n"
-            f"اشتراک <b>{plan.title if plan else request.plan_code}</b> فعال است "
-            f"تا {sub.expires_at:%Y-%m-%d}.\n\n"
-            "حالا می‌توانید کار کپی بسازید."
-        )
-    else:
-        left = await credits.balance(request.user_id, request.plan_code)
-        note = (
-            f"🎉 پرداخت شما تأیید شد!\n\n"
-            f"<b>{payments.describe(request)}</b> به حساب شما اضافه شد.\n"
-            f"مانده‌ی اعتبار: <b>{fa_num(left)}</b> واحد"
-        )
     try:
-        await call.bot.send_message(request.user_id, note)
+        await call.bot.send_message(
+            request.user_id, await payments.approval_notice(request, sub)
+        )
     except Exception:
         log.warning("اطلاع تأیید به کاربر %s نرسید", request.user_id, exc_info=True)
 
@@ -509,12 +496,9 @@ async def cb_reject(call: CallbackQuery) -> None:
     await call.answer("رد شد")
     await _mark_reviewed(call, f"❌ رد شد توسط {call.from_user.full_name}")
 
-    support = get_settings().support_username
-    contact = f"\nدر صورت اشتباه با @{support} تماس بگیرید." if support else ""
     try:
         await call.bot.send_message(
-            request.user_id,
-            f"❌ رسید شما (کد {request.id}) تأیید نشد.{contact}",
+            request.user_id, payments.rejection_notice(request)
         )
     except Exception:
         log.warning("اطلاع رد به کاربر %s نرسید", request.user_id, exc_info=True)

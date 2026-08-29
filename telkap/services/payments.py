@@ -125,6 +125,40 @@ def describe(request: PaymentRequest) -> str:
     return plan.title if plan else request.plan_code
 
 
+async def approval_notice(request: PaymentRequest, sub) -> str:
+    """پیامی که پس از تأیید به کاربر می‌رسد.
+
+    اینجاست و نه در هندلر، چون رسید را هم از داخل ربات می‌شود تأیید کرد و هم
+    از پنل وب. دو نسخه از این متن یعنی دیر یا زود دو کاربر دو خبر متفاوت
+    می‌گیرند برای یک اتفاق.
+    """
+    from telkap.texts import fa_num
+
+    if sub is not None:
+        plan = get_plan(request.plan_code)
+        return (
+            "🎉 پرداخت شما تأیید شد!\n\n"
+            f"اشتراک <b>{plan.title if plan else request.plan_code}</b> فعال است "
+            f"تا {sub.expires_at:%Y-%m-%d}.\n\n"
+            "حالا می‌توانید کار کپی بسازید."
+        )
+    left = await credits.balance(request.user_id, request.plan_code)
+    return (
+        "🎉 پرداخت شما تأیید شد!\n\n"
+        f"<b>{describe(request)}</b> به حساب شما اضافه شد.\n"
+        f"مانده‌ی اعتبار: <b>{fa_num(left)}</b> واحد"
+    )
+
+
+def rejection_notice(request: PaymentRequest) -> str:
+    """پیامی که پس از رد شدن رسید به کاربر می‌رسد."""
+    from telkap.config import get_settings
+
+    support = get_settings().support_username
+    contact = f"\nدر صورت اشتباه با @{support} تماس بگیرید." if support else ""
+    return f"❌ رسید شما (کد {request.id}) تأیید نشد.{contact}"
+
+
 async def awaiting_receipt(user_id: int) -> PaymentRequest | None:
     """درخواستی که منتظر رسید کاربر است."""
     async with get_session() as db:

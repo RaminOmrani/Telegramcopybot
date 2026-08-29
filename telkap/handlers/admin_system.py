@@ -25,6 +25,8 @@ def _menu_kb() -> InlineKeyboardBuilder:
         InlineKeyboardButton(text="🛠 حالت تعمیر", callback_data="sys:maint"),
     )
     kb.row(InlineKeyboardButton(text="🆔 گرفتن شناسه‌ی کانال", callback_data="sys:chatid"))
+    if get_settings().web_enabled:
+        kb.row(InlineKeyboardButton(text="🖥 پنل وب", callback_data="sys:web"))
     kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm:home"))
     return kb
 
@@ -54,6 +56,48 @@ async def cb_system(call: CallbackQuery) -> None:
             "سرورند. «🆔 گرفتن شناسه‌ی کانال» را بزنید."
         ),
         _menu_kb(),
+    )
+
+
+@router.callback_query(F.data == "sys:web")
+async def cb_web_panel(call: CallbackQuery) -> None:
+    """لینک یک‌بارمصرف ورود به پنل وب.
+
+    رمز عبوری در کار نیست: هویت ادمین را همین چت تلگرام تأیید کرده. لینک
+    پنج دقیقه اعتبار دارد و با اولین باز شدن می‌سوزد.
+    """
+    if await guard(call, roles.CAP_SYSTEM):
+        return
+    cfg = get_settings()
+    if not cfg.web_enabled:
+        await call.answer("پنل وب روشن نیست.", show_alert=True)
+        return
+    if not cfg.web_base_url:
+        await call.answer()
+        await call.message.answer(
+            "🖥 <b>پنل وب</b>\n\n"
+            "پنل بالا آمده ولی <code>WEB_BASE_URL</code> در فایل <code>.env</code> "
+            "خالی است، پس نمی‌دانم چه آدرسی به شما بدهم.\n\n"
+            "آدرس عمومی پنل را آنجا بگذارید و ربات را ری‌استارت کنید، مثل:\n"
+            "<code>WEB_BASE_URL=https://botpanel.softmiliac.com</code>"
+        )
+        return
+
+    from telkap.web import auth as web_auth
+
+    token = web_auth.issue_login_token(call.from_user.id)
+    await call.answer()
+    await call.message.answer(
+        "🖥 <b>ورود به پنل وب</b>\n\n"
+        f"{cfg.web_base_url}/enter?t={token}\n\n"
+        "⏳ این لینک <b>۵ دقیقه</b> اعتبار دارد و با اولین باز شدن می‌سوزد.\n"
+        "🔒 آن را برای کسی نفرستید — هرکس بازش کند با نام شما وارد می‌شود.",
+        disable_web_page_preview=True,
+    )
+    await log_activity(
+        user_id=call.from_user.id,
+        event="web_login_link",
+        detail="لینک ورود به پنل وب ساخته شد",
     )
 
 

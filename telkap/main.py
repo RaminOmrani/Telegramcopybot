@@ -13,7 +13,7 @@ from aiogram.exceptions import TelegramNetworkError
 from aiogram.fsm.storage.memory import MemoryStorage
 from sqlalchemy import select
 
-from telkap import proxy
+from telkap import proxy, web
 from telkap.config import get_settings
 from telkap.db import close_db, get_session, init_db
 from telkap.handlers import approvals as approval_handlers
@@ -206,10 +206,17 @@ async def main() -> None:
 
     log.info("ربات @%s آماده است", me.username)
 
+    # پنل وب اگر در .env روشن باشد؛ اگر بالا نیاید ربات نباید زمین بخورد
+    try:
+        await web.start_panel(bot)
+    except Exception:
+        log.exception("پنل وب بالا نیامد؛ ربات بدون آن ادامه می‌دهد")
+
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await dispatcher.start_polling(bot)
     finally:
+        await web.stop_panel()
         for task in background:
             task.cancel()
         await asyncio.gather(*background, return_exceptions=True)
