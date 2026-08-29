@@ -12,7 +12,7 @@ from telkap.config import get_settings
 from telkap.db import log_activity
 from telkap.handlers.admin_reports import guard
 from telkap.handlers.common import Flow, parse_int
-from telkap.services import backup, maintenance, roles
+from telkap.services import ai, backup, maintenance, roles
 
 log = logging.getLogger(__name__)
 router = Router(name="admin-system")
@@ -27,6 +27,7 @@ def _menu_kb() -> InlineKeyboardBuilder:
     kb.row(InlineKeyboardButton(text="🆔 گرفتن شناسه‌ی کانال", callback_data="sys:chatid"))
     if get_settings().web_enabled:
         kb.row(InlineKeyboardButton(text="🖥 پنل وب", callback_data="sys:web"))
+    kb.row(InlineKeyboardButton(text="🤖 هوش مصنوعی", callback_data="sys:ai"))
     kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm:home"))
     return kb
 
@@ -57,6 +58,26 @@ async def cb_system(call: CallbackQuery) -> None:
         ),
         _menu_kb(),
     )
+
+
+@router.callback_query(F.data == "sys:ai")
+async def cb_ai_status(call: CallbackQuery) -> None:
+    """هر چهار مدل را واقعاً صدا می‌زند و می‌گوید کدام جواب داد.
+
+    نام مدل‌ها باید مو‌به‌مو با فهرست سرویس بخوانند. به‌جای اینکه کسی
+    حدس بزند و بعد در لاگ دنبال ۴۰۴ بگردد، همین‌جا معلوم می‌شود.
+    """
+    if await guard(call, roles.CAP_SYSTEM):
+        return
+    await call.answer("در حال تست…")
+    _ok, report = await ai.health()
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="🔄 تست دوباره", callback_data="sys:ai"))
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm:sys"))
+    try:
+        await call.message.edit_text(report, reply_markup=kb.as_markup())
+    except Exception:
+        await call.message.answer(report, reply_markup=kb.as_markup())
 
 
 @router.callback_query(F.data == "sys:web")

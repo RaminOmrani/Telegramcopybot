@@ -241,11 +241,64 @@ def similarity(first: list[float], second: list[float]) -> float:
     return max(0.0, min(1.0, dot / (size_a * size_b)))
 
 
-async def health() -> tuple[bool, str]:
-    """آیا سرویس جواب می‌دهد؟ برای دکمه‌ی «تست اتصال» در پنل ادمین."""
-    if not configured():
-        return False, "کلید یا آدرس سرویس در .env تنظیم نشده است."
-    reply = await chat("بگو: سلام", role=ROLE_SMALL, max_tokens=20)
+async def check_role(role: str) -> tuple[bool, str]:
+    """یک نقش را واقعاً امتحان می‌کند.
+
+    نام مدل باید مو‌به‌مو با فهرست سرویس بخواند؛ یک حرف اضافه یعنی ۴۰۴. این
+    تابع هست تا به‌جای حدس زدن، جواب را از خود سرویس بگیریم.
+    """
+    name = model_for(role)
+    if not name:
+        return False, "نامی تنظیم نشده"
+
+    if role == ROLE_EMBED:
+        vector = await embed_one("سلام")
+        if vector is None:
+            return False, "جواب نداد — نام مدل یا دسترسی حساب"
+        return True, f"سالم، بردار {len(vector)} بُعدی"
+
+    reply = await chat("فقط بنویس: سلام", role=role, max_tokens=20)
     if reply is None:
-        return False, "سرویس جواب نداد. آدرس، کلید و دسترسی شبکه را ببینید."
-    return True, f"وصل است. مدل {reply.model} پاسخ داد."
+        return False, "جواب نداد — نام مدل یا دسترسی حساب"
+    return True, f"سالم، {reply.usage.total} توکن"
+
+
+async def health() -> tuple[bool, str]:
+    """هر چهار نقش را تست می‌کند و گزارشی خوانا می‌دهد."""
+    if not configured():
+        return False, (
+            "❌ <b>تنظیم نشده</b>\n\n"
+            "<code>AI_API_KEY</code> در فایل <code>.env</code> خالی است. "
+            "تا پر نشود هیچ قابلیت هوش مصنوعی فعال نمی‌شود."
+        )
+
+    labels = {
+        ROLE_SMALL: "دسته‌بندی (small)",
+        ROLE_MAIN: "بازنویسی (main)",
+        ROLE_VISION: "تصویر (vision)",
+        ROLE_EMBED: "بردار معنایی (embed)",
+    }
+    lines: list[str] = []
+    healthy = 0
+    for role, label in labels.items():
+        ok, note = await check_role(role)
+        healthy += ok
+        lines.append(
+            f"{'✅' if ok else '❌'} <b>{label}</b>\n"
+            f"    <code>{model_for(role)}</code> — {note}"
+        )
+
+    head = (
+        f"🤖 <b>هوش مصنوعی</b> — {healthy} از {len(labels)} مدل سالم\n"
+        f"سرویس: <code>{get_settings().ai_base_url}</code>\n"
+    )
+    tail = (
+        ""
+        if healthy == len(labels)
+        else (
+            "\n\n<i>مدلی که ❌ خورده یا نامش با فهرست سرویس نمی‌خواند، یا حساب "
+            "شما به آن دسترسی ندارد. نام درست را از پنل سرویس بردارید و در "
+            "<code>.env</code> بگذارید.</i>"
+        )
+    )
+    return healthy == len(labels), head + "\n" + "\n".join(lines) + tail

@@ -165,3 +165,55 @@ async def test_all_three_credit_kinds_show_up_together(tmp_path, monkeypatch):
         }
     finally:
         await db_module.close_db()
+
+
+# ------------------------------------------------ گزارش سلامت مدل‌ها
+@pytest.mark.asyncio
+async def test_the_health_report_says_what_is_missing(monkeypatch):
+    """بدون کلید، گزارش باید بگوید کجا را درست کنند نه فقط «خطا»."""
+    from telkap.services import ai
+
+    _with(monkeypatch, ai_api_key="")
+    ok, report = await ai.health()
+    assert ok is False
+    assert "AI_API_KEY" in report
+    assert ".env" in report
+
+
+@pytest.mark.asyncio
+async def test_the_health_report_names_every_role_and_its_model(monkeypatch):
+    """گزارشی که نگوید کدام مدل افتاده، کمکی به پیدا کردنش نمی‌کند."""
+    from telkap.services import ai
+
+    _with(
+        monkeypatch,
+        ai_api_key="k",
+        ai_base_url="https://api.avalai.ir/v1",
+        ai_model_small="مدل-کوچک",
+        ai_model_main="مدل-اصلی",
+        ai_model_vision="مدل-تصویر",
+        ai_model_embed="مدل-بردار",
+    )
+    # هیچ تماسی واقعاً نباید برقرار شود
+    async def refuse(path, payload):
+        return None
+
+    monkeypatch.setattr(ai, "_post", refuse)
+
+    ok, report = await ai.health()
+    assert ok is False
+    for name in ("مدل-کوچک", "مدل-اصلی", "مدل-تصویر", "مدل-بردار"):
+        assert name in report, name
+    # فقط ردیف‌های خودِ مدل‌ها شمرده می‌شوند، نه ❌ داخل متن راهنما
+    assert sum(1 for line in report.splitlines() if line.startswith("❌")) == 4
+    assert "0 از 4" in report
+
+
+@pytest.mark.asyncio
+async def test_a_role_with_no_model_name_fails_clearly(monkeypatch):
+    from telkap.services import ai
+
+    _with(monkeypatch, ai_api_key="k", ai_model_small="")
+    ok, note = await ai.check_role(ai.ROLE_SMALL)
+    assert ok is False
+    assert "تنظیم نشده" in note
