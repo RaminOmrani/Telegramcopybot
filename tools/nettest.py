@@ -116,17 +116,21 @@ def tcp_open(host: str, port: int, timeout: float = TIMEOUT) -> str | None:
 def socks5_reaches(sock: socket.socket, host: str, port: int) -> bool:
     """آیا از این SOCKS5 می‌شود به host رسید؟
 
-    نام مقصد خام فرستاده می‌شود (نوع ۰x۰۳) نه آدرس عددی، تا تبدیل نام هم
-    آن طرفِ تونل انجام شود — همان کاری که socks5h می‌کند.
+    اگر مقصد نام باشد، خامِ نام فرستاده می‌شود (نوع ۰x۰۳) نه آدرس عددی، تا
+    تبدیل نام هم آن طرفِ تونل انجام شود — همان کاری که socks5h می‌کند و با
+    DNS مسموم تنها راه درست است. مقصدهای عددی (مرکز داده‌ها) نوع ۰x۰۱.
     """
     sock.sendall(b"\x05\x01\x00")                    # سلام، بدون احراز هویت
     if sock.recv(2) != b"\x05\x00":
         return False
 
-    name = host.encode("idna")
-    sock.sendall(
-        b"\x05\x01\x00\x03" + bytes([len(name)]) + name + port.to_bytes(2, "big")
-    )
+    try:
+        target = b"\x01" + ipaddress.IPv4Address(host).packed
+    except ipaddress.AddressValueError:
+        name = host.encode("idna")
+        target = b"\x03" + bytes([len(name)]) + name
+
+    sock.sendall(b"\x05\x01\x00" + target + port.to_bytes(2, "big"))
     reply = sock.recv(4)
     return len(reply) >= 2 and reply[0] == 0x05 and reply[1] == 0x00
 
@@ -139,13 +143,13 @@ def http_reaches(sock: socket.socket, host: str, port: int) -> bool:
     return b" 200 " in sock.recv(128)
 
 
-def probe(host: str, port: int) -> str | None:
-    """اگر اینجا پروکسیِ سالمی هست که به تلگرام می‌رسد، نوعش را برمی‌گرداند."""
+def probe(host: str, port: int, target: str = BOT_API) -> str | None:
+    """اگر اینجا پروکسیِ سالمی هست که به مقصد می‌رسد، نوعش را برمی‌گرداند."""
     for scheme, reaches in (("socks5h", socks5_reaches), ("http", http_reaches)):
         try:
             with socket.create_connection((host, port), timeout=TIMEOUT) as sock:
                 sock.settimeout(TIMEOUT)
-                if reaches(sock, BOT_API, 443):
+                if reaches(sock, target, 443):
                     return scheme
         except OSError:
             return None                 # پورت باز نیست؛ نوع دوم را هم لازم نیست
@@ -218,23 +222,36 @@ def check_direct() -> bool:
     return True
 
 
-def check_data_centers() -> bool:
-    print("\n۳) مرکز داده‌های تلگرام (برای «اتصال اکانت») باز است؟")
+def check_data_centers(via: tuple[str, int] | None) -> bool:
+    """مرکز داده‌ها را از همان راهی می‌سنجد که ربات هم می‌رود.
+
+    اگر پروکسی دارد، تست مستقیم بی‌معنی است: Telethon هم از پروکسی رد
+    می‌شود، پس بسته بودنِ راه مستقیم چیزی درباره‌ی «اتصال اکانت» نمی‌گوید.
+    """
+    where = "از راه پروکسی" if via else "مستقیم"
+    print(f"\n۴) مرکز داده‌های تلگرام ({where}) — برای «اتصال اکانت»")
+
     healthy = False
     for name, ip in DATA_CENTERS:
-        error = tcp_open(ip, 443)
+        if via:
+            reached = probe(via[0], via[1], target=ip) is not None
+            error = None if reached else "از پروکسی رد نشد"
+        else:
+            error = tcp_open(ip, 443)
+
         if error:
             bad(f"{name} {ip}:443 — {error}")
         else:
             ok(f"{name} {ip}:443 باز است")
             healthy = True
+
     if not healthy:
-        print("      ربات شاید کار کند ولی «اتصال اکانت» نه.")
+        print("      ربات کار می‌کند ولی «اتصال اکانت» کاربران نه.")
     return healthy
 
 
 def check_proxy(url: str) -> bool:
-    print(f"\n۴) پروکسی داخل .env: {url}")
+    print(f"\n۳) پروکسی داخل .env: {url}")
     parsed = urlparse(url)
     if not parsed.hostname or not parsed.port:
         bad("نشانی ناقص است؛ باید مثل socks5://127.0.0.1:10808 باشد")
@@ -267,13 +284,20 @@ def main() -> None:
 
     dns, fake_dns = check_dns()
     direct = check_direct() if dns and not fake_dns else False
-    check_data_centers()
 
+    # پروکسی پیش از مرکز داده‌ها سنجیده می‌شود، چون تعیین می‌کند آن‌ها را
+    # از کدام راه باید سنجید.
     env = read_env()
     proxy_url = env.get("PROXY_URL", "").strip()
     proxy_ok = check_proxy(proxy_url) if proxy_url else None
     if proxy_ok is None:
-        print("\n۴) پروکسی داخل .env: تنظیم نشده")
+        print("\n۳) پروکسی داخل .env: تنظیم نشده")
+
+    via = None
+    if proxy_ok:
+        parsed = urlparse(proxy_url)
+        via = (parsed.hostname or "127.0.0.1", parsed.port or 0)
+    check_data_centers(via)
 
     # با DNS مسموم، socks5 ساده نام را خودش تبدیل می‌کند و باز به همان
     # آدرس جعلی می‌رسد؛ socks5h تبدیل نام را به خودِ پروکسی می‌سپارد.
