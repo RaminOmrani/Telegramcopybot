@@ -6,6 +6,10 @@ venv/
 env/
 
 .env
+# پشتیبان‌های .env و zipهای backup.bat هم توکن و FERNET_KEY دارند؛ اگر
+# نادیده گرفته نشوند، یک git add -A روی سرور کلیدها را به مخزن می‌فرستد.
+.env.bak-*
+telkap-backup-*.zip
 *.session
 *.session-journal
 data/
