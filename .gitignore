@@ -18,6 +18,8 @@ data/
 downloads/
 logs/
 *.log
+# خروجی tools/ai_models.py — هر بار تازه ساخته می‌شود
+ai-models.json
 .DS_Store
 .idea/
 .vscode/
