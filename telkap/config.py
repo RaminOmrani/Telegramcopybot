@@ -77,10 +77,12 @@ class Settings:
     ai_api_key: str = ""
     # نقش‌ها جدا هستند چون هزینه‌شان ده‌ها برابر فرق می‌کند: دسته‌بندی با
     # مدل کوچک همان نتیجه را می‌دهد، بازنویسی فارسی نه.
-    ai_model_small: str = "qwen3.8-flash"
-    ai_model_main: str = "qwen3.8-flash"
-    ai_model_vision: str = "gemini-3.5-flash-lite"
-    ai_model_embed: str = "cohere.embed-multilingual-v3"
+    # این چهار نام از فهرست زنده‌ی API انتخاب شده‌اند نه از صفحه‌ی وب —
+    # و معیار اصلی سقف نرخ بود نه قیمت. جزئیات: docs/AI-MODELS.md
+    ai_model_small: str = "gpt-5-nano"
+    ai_model_main: str = "qwen3.5-flash"
+    ai_model_vision: str = "qwen3.5-flash"
+    ai_model_embed: str = "text-embedding-3-small"
 
     def is_admin(self, user_id: int) -> bool:
         return user_id in self.admin_ids
@@ -128,10 +130,10 @@ def load_settings() -> Settings:
         web_base_url=os.getenv("WEB_BASE_URL", "").strip().rstrip("/"),
         ai_base_url=os.getenv("AI_BASE_URL", "https://api.avalai.ir/v1").strip(),
         ai_api_key=os.getenv("AI_API_KEY", "").strip(),
-        ai_model_small=os.getenv("AI_MODEL_SMALL", "qwen3.8-flash").strip(),
-        ai_model_main=os.getenv("AI_MODEL_MAIN", "qwen3.8-flash").strip(),
-        ai_model_vision=os.getenv("AI_MODEL_VISION", "gemini-3.5-flash-lite").strip(),
-        ai_model_embed=os.getenv("AI_MODEL_EMBED", "cohere.embed-multilingual-v3").strip(),
+        ai_model_small=os.getenv("AI_MODEL_SMALL", "gpt-5-nano").strip(),
+        ai_model_main=os.getenv("AI_MODEL_MAIN", "qwen3.5-flash").strip(),
+        ai_model_vision=os.getenv("AI_MODEL_VISION", "qwen3.5-flash").strip(),
+        ai_model_embed=os.getenv("AI_MODEL_EMBED", "text-embedding-3-small").strip(),
     )
 
 
