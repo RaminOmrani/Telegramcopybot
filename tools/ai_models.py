@@ -81,7 +81,7 @@ def price_fields(models: list[dict]) -> list[str]:
         for field, value in model.items():
             if field in ("id", "object", "created", "owned_by"):
                 continue
-            if isinstance(value, (int, float, str, dict)) and any(
+            if isinstance(value, int | float | str | dict) and any(
                 hint in field.lower() for hint in PRICE_HINTS
             ):
                 seen.add(field)
