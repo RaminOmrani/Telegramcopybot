@@ -169,9 +169,8 @@ def check_proxy(url: str) -> bool:
     ok("پروکسی روشن است و پورتش باز است")
 
     if parsed.scheme.lower().startswith("socks"):
-        print("      (تست عبورِ واقعی از socks کتابخانه‌ی جداگانه می‌خواهد؛")
-        print("       اگر ربات باز هم وصل نشد، این را نصب کنید:")
-        print("       .venv\\Scripts\\pip install aiohttp-socks python-socks)")
+        print("      (این تست فقط می‌گوید پروکسی روشن است، نه اینکه راهش")
+        print("       به تلگرام باز است. آن را خودِ ربات نشان می‌دهد.)")
     return True
 
 
