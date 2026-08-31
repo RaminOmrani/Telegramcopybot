@@ -54,6 +54,7 @@ from telkap.services import (
     entitlement,
     health,
     pending,
+    richtext,
     routing,
 )
 from telkap.services.filters import MessageFacts, content_hash, should_copy
@@ -254,6 +255,28 @@ def fingerprint_of(facts: MessageFacts) -> Fingerprint:
         normalized=dedupe.normalized_hash(facts.media_kind, facts.text),
         fuzzy=dedupe.simhash(facts.text),
     )
+
+
+def with_own_entities(result: str, cfg: dict, entities):
+    """قالب‌بندیِ امضا، هدر و فوتر کاربر را به پست نهایی برمی‌گرداند.
+
+    این متن‌ها را خودِ کاربر در ربات نوشته و ممکن است ایموجی پریمیوم یا
+    بولد داشته باشند. entity هایشان هنگام تنظیم ذخیره شده و اینجا روی
+    جای تازه‌شان می‌نشینند.
+
+    ترتیب مهم است: تلگرام entity ها را مرتب‌شده می‌خواهد.
+    """
+    extra = []
+    for key, from_end in (("header", False), ("footer", True), ("signature", True)):
+        spans = cfg.get(richtext.entities_key(key))
+        if spans:
+            extra.extend(richtext.place(result, cfg.get(key) or "", spans, from_end=from_end))
+
+    if not extra:
+        return entities
+    merged = list(entities or []) + extra
+    merged.sort(key=lambda e: getattr(e, "offset", 0))
+    return merged
 
 
 def build_facts(message) -> MessageFacts:
@@ -567,7 +590,9 @@ class Copier:
         text = apply_transforms(source_text, cfg, rules)
         # فرمت‌ها و ایموجی پریمیوم فقط وقتی حفظ می‌شوند که متن اصلی
         # دست‌نخورده مانده باشد؛ در غیر این صورت آفست‌ها معتبر نیستند
-        entities = remap_entities(facts.text, text, src_entities)
+        entities = with_own_entities(
+            text, cfg, remap_entities(facts.text, text, src_entities)
+        )
         # تأخیر کاملاً یکنواخت الگوی ماشینی می‌سازد، پس ±۱۵٪ پراکندگی
         # می‌گیرد. وقتی کاربر تأخیری نخواسته چیزی اضافه نمی‌شود: کپی باید
         # لحظه‌ای بماند، و فاصله‌گذاری واقعی را محدودکننده‌ی نرخ انجام
@@ -595,7 +620,10 @@ class Copier:
             if spec.overrides:
                 dest_cfg = {**cfg, **spec.overrides}
                 dest_text = apply_transforms(source_text, dest_cfg, rules)
-                dest_entities = remap_entities(facts.text, dest_text, src_entities)
+                dest_entities = with_own_entities(
+                    dest_text, dest_cfg,
+                    remap_entities(facts.text, dest_text, src_entities),
+                )
             else:
                 dest_cfg, dest_text, dest_entities = cfg, text, entities
 

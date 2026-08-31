@@ -15,7 +15,7 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from telkap.db import get_session
 from telkap.keyboards import MEDIA_LABELS
 from telkap.models import Task, User
-from telkap.services import cache
+from telkap.services import cache, richtext
 from telkap.services.copier import build_facts, classify_media, within_active_hours
 from telkap.services.filters import should_copy
 from telkap.services.transform import apply_transforms, has_custom_emoji
@@ -152,6 +152,17 @@ async def cb_test(call: CallbackQuery) -> None:
                     "کانال شما به ایموجی ساده تبدیل می‌شوند. بقیه‌ی فرمت‌ها "
                     "دست‌نخورده می‌مانند.</i>"
                 )
+
+    # امضا و هدر و فوتر هم می‌توانند ایموجی پریمیوم داشته باشند. اینها
+    # یک بار گفته می‌شوند نه برای هر پست، چون به تنظیمات کار مربوط‌اند
+    # نه به پست مبدا.
+    if any(cfg.get(richtext.entities_key(key)) for key in richtext.RICH_KEYS):
+        blocks.append(
+            "\n━━━━━━━━━━\n<i>💎 متن‌های خودتان (امضا، هدر، فوتر) قالب‌بندی "
+            "و ایموجی پریمیوم دارند. اینجا ساده دیده می‌شوند چون ربات "
+            "نمی‌تواند نمایششان بدهد، ولی در کانال شما همان‌طور که "
+            "نوشتید منتشر می‌شوند.</i>"
+        )
 
     kb = InlineKeyboardBuilder()
     kb.row(InlineKeyboardButton(text="🔄 تست دوباره", callback_data=f"task:test:{task_id}"))

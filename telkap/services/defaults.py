@@ -39,6 +39,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "header": "",               # متن ابتدای پست
     "footer": "",               # متن انتهای پست (مثلاً آیدی کانال شما)
     "signature": "",            # جایگزین امضای مبدا
+    # قالب‌بندی همان سه متن بالا — بولد، لینک و مهم‌تر از همه ایموجی
+    # پریمیوم. ایموجی پریمیوم متن نیست، یک entity کنار متن است؛ بدون
+    # این سه کلید، امضای پریمیوم ساده می‌شد. ساختارشان در richtext.py.
+    "header_entities": [],
+    "footer_entities": [],
+    "signature_entities": [],
 
     # --- رسانه ---
     "allowed_media": list(MEDIA_KINDS),

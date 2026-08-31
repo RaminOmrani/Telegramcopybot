@@ -28,9 +28,10 @@ from telkap.keyboards import (
 )
 from telkap.models import PendingPost, Rule, Task
 from telkap.plans import CREDIT_AI, FEAT_WATERMARK
-from telkap.services import aiskills, cache, credits, dedupe, pending
+from telkap.services import aiskills, cache, credits, dedupe, pending, richtext
 from telkap.services.defaults import merged_settings
 from telkap.services.subscription import active_plan_for
+from telkap.services.transform import utf16_len
 from telkap.texts import (
     ASK_ALLOW_WORD,
     ASK_BLOCK_WORD,
@@ -570,6 +571,16 @@ async def cb_ask(call: CallbackQuery, state: FSMContext) -> None:
     await call.message.answer(prompt + "\n\nانصراف: /cancel")
 
 
+def _strip_shift(raw: str) -> int:
+    """چند واحد UTF-16 از ابتدای متن با strip حذف می‌شود.
+
+    آفست entity ها نسبت به متنِ خام است. چون پیش از ذخیره strip
+    می‌کنیم، بدون این تصحیح همه‌ی قالب‌ها به اندازه‌ی فاصله‌های ابتدایی
+    جابه‌جا می‌مانند.
+    """
+    return utf16_len(raw) - utf16_len(raw.lstrip())
+
+
 @router.message(Flow.ask_value)
 async def got_value(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
@@ -600,6 +611,15 @@ async def got_value(message: Message, state: FSMContext) -> None:
 
     cfg = merged_settings(task.settings)
     cfg[key] = value
+
+    # امضا و هدر و فوتر ممکن است ایموجی پریمیوم یا بولد داشته باشند.
+    # آن‌ها متن نیستند، entity کنار متن‌اند — و تا امروز دور ریخته
+    # می‌شدند، پس کاربر امضایش را ساده در کانالش می‌دید.
+    if key in richtext.RICH_KEYS:
+        cfg[richtext.entities_key(key)] = richtext.capture(
+            message.entities, shift=_strip_shift(message.text or ""),
+        ) if value else []
+
     await _save_settings(task_id, cfg)
     await state.clear()
     await message.answer("✅ ذخیره شد.")
