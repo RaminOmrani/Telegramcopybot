@@ -167,8 +167,14 @@ def test_every_page_but_the_gate_needs_a_session():
         for route in app.router.routes()
         if route.resource is not None
     }
-    # فقط این دو باید بدون ورود باز شوند
-    assert paths - {"/enter", "/healthz"} == {
+
+    # فهرست معافیت‌ها صریح است و اینجا مو‌به‌مو سنجیده می‌شود. اگر روزی
+    # مسیری به آن اضافه شود، این تست می‌ایستد و کسی مجبور می‌شود
+    # تصمیمش را توضیح بدهد — به‌جای اینکه پنل بی‌صدا عمومی شود.
+    assert server.PUBLIC_PATHS == {"/enter", "/healthz", "/pay/zarinpal"}
+
+    # و هرچه معاف نیست باید پشت ورود بماند
+    assert paths - server.PUBLIC_PATHS == {
         "/",
         "/payments",
         "/payments/{id}/approve",

@@ -40,7 +40,7 @@ from telkap.plans import (
     purchasable,
     toman,
 )
-from telkap.services import credits, crypto, payments, roles
+from telkap.services import credits, crypto, payments, roles, zarinpal
 from telkap.services.subscription import active_subscription, remaining_days
 from telkap.texts import fa_num
 
@@ -237,33 +237,49 @@ async def cb_pay(call: CallbackQuery, state: FSMContext) -> None:
         f"مدت: {fa_num(plan.days)} روز"
     )
 
-    # تتر فقط وقتی پیشنهاد می‌شود که هم نشانی تنظیم شده باشد هم نرخ؛
-    # وگرنه یک راه پرداخت است که به بن‌بست می‌رسد.
-    if await crypto.available():
+    # هر راه اضافی فقط وقتی پیشنهاد می‌شود که کامل تنظیم شده باشد؛
+    # وگرنه دکمه‌ای است که به بن‌بست می‌رسد.
+    usdt_ready = await crypto.available()
+    gateway_ready = zarinpal.configured()
+    if usdt_ready or gateway_ready:
         await state.update_data(request_id=request.id)
         await call.message.answer(
             f"{headline}\n\nاز کدام راه می‌خواهید بپردازید؟",
-            reply_markup=_method_menu(request.id),
+            reply_markup=_method_menu(
+                request.id, gateway=gateway_ready, usdt=usdt_ready
+            ),
         )
         return
 
     await _card_screen(call.message, state, request, headline)
 
 
-def _method_menu(request_id: int) -> InlineKeyboardMarkup:
+def _method_menu(
+    request_id: int, *, gateway: bool = False, usdt: bool = True
+) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
+    # درگاه اول می‌آید چون تنها راهی است که همان لحظه فعال می‌شود؛
+    # بقیه منتظر تأیید دستی می‌مانند.
+    if gateway:
+        kb.row(
+            InlineKeyboardButton(
+                text=payments.METHOD_LABELS[payments.METHOD_GATEWAY],
+                callback_data=f"paym:gate:{request_id}",
+            )
+        )
     kb.row(
         InlineKeyboardButton(
-            text=crypto.METHOD_LABELS[crypto.METHOD_CARD],
+            text=payments.METHOD_LABELS[payments.METHOD_CARD],
             callback_data=f"paym:card:{request_id}",
         )
     )
-    kb.row(
-        InlineKeyboardButton(
-            text=crypto.METHOD_LABELS[crypto.METHOD_USDT],
-            callback_data=f"paym:usdt:{request_id}",
+    if usdt:
+        kb.row(
+            InlineKeyboardButton(
+                text=payments.METHOD_LABELS[payments.METHOD_USDT],
+                callback_data=f"paym:usdt:{request_id}",
+            )
         )
-    )
     kb.row(InlineKeyboardButton(text="❌ انصراف", callback_data="pay:cancel"))
     return kb.as_markup()
 
@@ -448,9 +464,13 @@ async def cb_pay_method(call: CallbackQuery, state: FSMContext) -> None:
         f"مبلغ قابل پرداخت: <b>{toman(request.amount_toman)}</b>"
     )
 
-    if method == crypto.METHOD_CARD:
-        await payments.set_method(request_id, crypto.METHOD_CARD)
+    if method == payments.METHOD_CARD:
+        await payments.set_method(request_id, payments.METHOD_CARD)
         await _card_screen(call.message, state, request, headline)
+        return
+
+    if method == payments.METHOD_GATEWAY:
+        await _gateway_screen(call, state, request)
         return
 
     priced = await crypto.quote(request.amount_toman)
@@ -459,13 +479,13 @@ async def cb_pay_method(call: CallbackQuery, state: FSMContext) -> None:
         await call.message.answer(
             "پرداخت تتری موقتاً در دسترس نیست. با کارت بانکی ادامه می‌دهیم."
         )
-        await payments.set_method(request_id, crypto.METHOD_CARD)
+        await payments.set_method(request_id, payments.METHOD_CARD)
         await _card_screen(call.message, state, request, headline)
         return
 
     await payments.set_method(
         request_id,
-        crypto.METHOD_USDT,
+        payments.METHOD_USDT,
         usdt_amount=priced["usdt_text"],
         usdt_rate=priced["rate"],
     )
@@ -483,6 +503,42 @@ async def cb_pay_method(call: CallbackQuery, state: FSMContext) -> None:
         "پس از واریز، <b>هش تراکنش</b> را همین‌جا بفرستید.\n\n"
         "⚠️ فقط از شبکه‌ی TRC20 بفرستید. واریز از شبکه‌ی دیگر "
         "(ERC20، BEP20) به این نشانی <b>قابل بازگشت نیست</b>.",
+        reply_markup=kb.as_markup(),
+    )
+
+
+async def _gateway_screen(call: CallbackQuery, state: FSMContext, request) -> None:
+    """کاربر را به درگاه زرین‌پال می‌فرستد.
+
+    برخلاف دو راه دیگر، اینجا حالت گفتگویی لازم نیست: کاربر از مرورگر
+    برمی‌گردد و مسیر بازگشت خودش اشتراک را فعال می‌کند.
+    """
+    authority = await zarinpal.start(
+        request.amount_toman, payments.describe(request), request_id=request.id
+    )
+    if authority is None:
+        await call.message.answer(
+            "⚠️ اتصال به درگاه ممکن نشد. لطفاً راه دیگری انتخاب کنید.",
+            reply_markup=_method_menu(
+                request.id, gateway=False, usdt=await crypto.available()
+            ),
+        )
+        return
+
+    await payments.set_method(request.id, payments.METHOD_GATEWAY)
+    await state.clear()
+
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        InlineKeyboardButton(text="🏦 رفتن به درگاه پرداخت", url=zarinpal.pay_url(authority))
+    )
+    await call.message.answer(
+        f"🧾 <b>{payments.describe(request)}</b>\n"
+        f"مبلغ: <b>{toman(request.amount_toman)}</b>\n\n"
+        "روی دکمه‌ی زیر بزنید و پرداخت را کامل کنید.\n"
+        "پس از پرداخت، اشتراکتان <b>همان لحظه</b> فعال می‌شود و همین‌جا "
+        "خبرش را می‌گیرید.\n\n"
+        f"<i>کد پیگیری: {request.id}</i>",
         reply_markup=kb.as_markup(),
     )
 
@@ -558,9 +614,9 @@ async def _notify_admins(message: Message, request: PaymentRequest) -> None:
         InlineKeyboardButton(text="✅ تأیید", callback_data=f"pay:ok:{request.id}"),
         InlineKeyboardButton(text="❌ رد", callback_data=f"pay:no:{request.id}"),
     )
-    method = crypto.METHOD_LABELS.get(request.pay_method, request.pay_method)
+    method = payments.METHOD_LABELS.get(request.pay_method, request.pay_method)
     extra = ""
-    if request.pay_method == crypto.METHOD_USDT:
+    if request.pay_method == payments.METHOD_USDT:
         # هش کامل می‌آید تا ادمین بتواند مستقیم در کاوشگر بلاک‌چین
         # بازش کند؛ کوتاه کردنش یعنی کپی‌کردن دستی از دو تکه.
         extra = (
@@ -582,7 +638,7 @@ async def _notify_admins(message: Message, request: PaymentRequest) -> None:
 
     for admin_id in cfg.admin_ids:
         try:
-            if request.pay_method == crypto.METHOD_USDT:
+            if request.pay_method == payments.METHOD_USDT:
                 await message.bot.send_message(
                     admin_id, caption, reply_markup=kb.as_markup(),
                     disable_web_page_preview=True,

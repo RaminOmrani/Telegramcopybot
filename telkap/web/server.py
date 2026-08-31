@@ -16,7 +16,7 @@ from telkap import i18n
 from telkap.config import get_settings
 from telkap.db import get_session
 from telkap.models import PaymentRequest, Subscription, Task, User, utcnow
-from telkap.services import analytics, payments, roles
+from telkap.services import analytics, payments, roles, zarinpal
 from telkap.web import auth, render
 from telkap.web.render import card, esc, money, page, table
 
@@ -86,9 +86,20 @@ async def _deny(request: web.Request, cap: str) -> web.Response | None:
 
 
 # ------------------------------------------------------------ میدل‌ور
+# مسیرهایی که بدون ورود باز می‌شوند. صریح نوشته شده‌اند و تست می‌سنجدشان،
+# چون مسیری که بی‌صدا به این فهرست اضافه شود، پنل را عمومی می‌کند.
+#
+#   /enter    خودِ ورود است
+#   /healthz  فقط «زنده‌ام» می‌گوید
+#   بازگشت درگاه — مرورگر کاربر به آن هدایت می‌شود و کاربر ادمین نیست،
+#   پس نمی‌تواند پشت ورود بماند. چیزی جز نتیجه‌ی همان پرداخت نشان
+#   نمی‌دهد و به پارامترهای نشانی هم اعتماد نمی‌کند.
+PUBLIC_PATHS = frozenset({"/enter", "/healthz", zarinpal.CALLBACK_PATH})
+
+
 @web.middleware
 async def auth_middleware(request: web.Request, handler):
-    if request.path in {"/enter", "/healthz"}:
+    if request.path in PUBLIC_PATHS:
         return await handler(request)
 
     session = auth.get_session(request.cookies.get(auth.COOKIE_NAME))
@@ -498,6 +509,71 @@ async def user_list(request: web.Request) -> web.Response:
     )
 
 
+# --------------------------------------------- بازگشت از درگاه زرین‌پال
+async def zarinpal_return(request: web.Request) -> web.Response:
+    """کاربر از درگاه برگشته است.
+
+    <b>به هیچ‌کدام از پارامترهای این نشانی اعتماد نمی‌شود.</b> مرورگر
+    کاربر `Status=OK` را می‌آورد و هرکسی می‌تواند همین نشانی را دستی
+    باز کند. تنها چیزی که پرداخت را ثابت می‌کند، تماس سمت سرور با
+    زرین‌پال است — و مبلغی که به آن تماس می‌دهیم از دیتابیس خودمان
+    می‌آید، نه از این نشانی.
+    """
+    def done(message: str, *, bad: bool = False) -> web.Response:
+        return web.Response(
+            text=render.gate(message, bad=bad), content_type="text/html"
+        )
+
+    request_id = _int_or_zero(request.query.get("rid"))
+    authority = (request.query.get("Authority") or "").strip()
+    status = (request.query.get("Status") or "").strip().upper()
+
+    payment = await payments.get_request(request_id) if request_id else None
+    if payment is None:
+        return done("این پرداخت پیدا نشد.", bad=True)
+
+    if payment.status == PaymentRequest.STATUS_APPROVED:
+        # کاربر صفحه را دوباره باز کرده؛ نباید دوباره اشتراک بدهیم
+        return done("این پرداخت قبلاً تأیید شده و اشتراکتان فعال است.")
+
+    if status != "OK" or not authority:
+        return done("پرداخت انجام نشد یا لغو شد. می‌توانید دوباره تلاش کنید.")
+
+    receipt_data = await zarinpal.verify(authority, payment.amount_toman)
+    if receipt_data is None:
+        return done(
+            "تأیید پرداخت ناموفق بود. اگر مبلغ از حسابتان کم شده، با "
+            "پشتیبانی تماس بگیرید و کد پیگیری را بدهید: " + str(payment.id),
+            bad=True,
+        )
+
+    await payments.attach_reference(payment.id, receipt_data["ref_id"])
+    approved, sub = await payments.approve(payment.id, admin_id=0)
+    if approved is None:
+        return done("فعال‌سازی ناموفق بود. با پشتیبانی تماس بگیرید.", bad=True)
+
+    bot = request.app[BOT]
+    try:
+        await bot.send_message(
+            approved.user_id, await payments.approval_notice(approved, sub)
+        )
+    except Exception:
+        log.warning("اطلاع فعال‌سازی به کاربر %s نرسید", approved.user_id, exc_info=True)
+
+    return done(
+        f"پرداخت تأیید شد و اشتراکتان فعال است.\n"
+        f"شماره پیگیری: {receipt_data['ref_id']}\n"
+        "می‌توانید به تلگرام برگردید."
+    )
+
+
+def _int_or_zero(raw) -> int:
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
+
+
 # ------------------------------------------------------- بالا آوردن
 def build_app(bot) -> web.Application:
     app = web.Application(middlewares=[auth_middleware])
@@ -505,6 +581,7 @@ def build_app(bot) -> web.Application:
     app.add_routes(
         [
             web.get("/healthz", healthz),
+            web.get(zarinpal.CALLBACK_PATH, zarinpal_return),
             web.get("/enter", enter),
             web.get("/logout", logout),
             web.get("/", dashboard),

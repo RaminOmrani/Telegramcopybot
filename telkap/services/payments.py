@@ -18,6 +18,19 @@ from telkap.services.subscription import grant
 
 log = logging.getLogger(__name__)
 
+# راه‌های پرداخت. اینجا می‌نشینند نه در ماژول تتر، چون درگاه بانکی
+# ربطی به رمزارز ندارد و هر سه به همان درخواستِ پرداخت می‌رسند.
+METHOD_CARD = "card"
+METHOD_USDT = "usdt"
+METHOD_GATEWAY = "gate"
+METHODS = (METHOD_CARD, METHOD_USDT, METHOD_GATEWAY)
+
+METHOD_LABELS = {
+    METHOD_CARD: "💳 کارت بانکی",
+    METHOD_USDT: "₮ تتر (TRC20)",
+    METHOD_GATEWAY: "🏦 درگاه بانکی (زرین‌پال)",
+}
+
 
 async def _fresh_request(db, user_id: int) -> None:
     """درخواست‌های نیمه‌کاره‌ی قبلی همین کاربر کنار گذاشته می‌شوند."""
@@ -216,7 +229,7 @@ async def set_method(
     مبلغ تتری و نرخ همین‌جا قفل می‌شوند؛ اگر هر بار از نو حساب می‌شدند،
     کاربری که ده دقیقه بعد واریز می‌کند مبلغ دیگری می‌دید.
     """
-    if method not in crypto.METHODS:
+    if method not in METHODS:
         return None
     async with get_session() as db:
         request = await db.get(PaymentRequest, request_id)
@@ -240,6 +253,24 @@ async def attach_tx(request_id: int, tx_hash: str) -> PaymentRequest | None:
         if request is None:
             return None
         request.tx_hash = cleaned
+        request.receipt_kind = "text"
+        await db.commit()
+        await db.refresh(request)
+        return request
+
+
+async def attach_reference(request_id: int, ref_id: str) -> PaymentRequest | None:
+    """شماره پیگیری درگاه را ثبت می‌کند — مدرک پرداختِ زرین‌پال.
+
+    در همان ستون هش تراکنش می‌نشیند: هر دو یک نقش دارند (رشته‌ای که
+    پرداخت را در سامانه‌ی طرف مقابل پیدا می‌کند)، و ستون سوم فقط
+    پرس‌وجوهای «مدرک دارد؟» را پیچیده‌تر می‌کرد.
+    """
+    async with get_session() as db:
+        request = await db.get(PaymentRequest, request_id)
+        if request is None:
+            return None
+        request.tx_hash = str(ref_id)[:70]
         request.receipt_kind = "text"
         await db.commit()
         await db.refresh(request)

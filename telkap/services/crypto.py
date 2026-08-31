@@ -26,15 +26,6 @@ log = logging.getLogger(__name__)
 RATE_KEY = "usdt_rate"          # تومان به ازای هر ۱ تتر
 ADDRESS_KEY = "usdt_address"    # نشانی ولت TRC20
 
-METHOD_CARD = "card"
-METHOD_USDT = "usdt"
-METHODS = (METHOD_CARD, METHOD_USDT)
-
-METHOD_LABELS = {
-    METHOD_CARD: "💳 کارت بانکی",
-    METHOD_USDT: "₮ تتر (TRC20)",
-}
-
 # نشانی ترون همیشه با T شروع می‌شود و ۳۴ نویسه‌ی Base58 است. این فقط
 # غلط تایپی را می‌گیرد نه نشانی جعلی را — ولی همان هم ارزش دارد، چون
 # نشانی اشتباه یعنی پولِ رفته.

@@ -194,5 +194,10 @@ async def test_no_quote_when_the_method_is_not_ready(monkeypatch):
     assert await crypto.quote(129_000) is None
 
 
-def test_both_methods_have_labels():
-    assert all(crypto.METHOD_LABELS[m] for m in crypto.METHODS)
+def test_every_payment_method_has_a_label():
+    """راه‌های پرداخت در payments زندگی می‌کنند نه در ماژول تتر —
+    درگاه بانکی ربطی به رمزارز ندارد."""
+    from telkap.services import payments
+
+    assert all(payments.METHOD_LABELS[m] for m in payments.METHODS)
+    assert payments.METHOD_USDT in payments.METHODS

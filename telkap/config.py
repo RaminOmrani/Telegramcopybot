@@ -84,6 +84,13 @@ class Settings:
     ai_model_vision: str = "qwen3.5-flash"
     ai_model_embed: str = "text-embedding-3-small"
 
+    # ── درگاه زرین‌پال ────────────────────────────────────────────────
+    # کد پذیرنده از پنل زرین‌پال. خالی که باشد، درگاه در منوی پرداخت
+    # ظاهر نمی‌شود و فقط کارت و تتر می‌مانند.
+    # نشانی بازگشت از WEB_BASE_URL ساخته می‌شود، پس پنل وب باید روی یک
+    # دامنه‌ی عمومی با HTTPS بالا باشد.
+    zarinpal_merchant: str = ""
+
     def is_admin(self, user_id: int) -> bool:
         return user_id in self.admin_ids
 
@@ -134,6 +141,7 @@ def load_settings() -> Settings:
         ai_model_main=os.getenv("AI_MODEL_MAIN", "qwen3.5-flash").strip(),
         ai_model_vision=os.getenv("AI_MODEL_VISION", "qwen3.5-flash").strip(),
         ai_model_embed=os.getenv("AI_MODEL_EMBED", "text-embedding-3-small").strip(),
+        zarinpal_merchant=os.getenv("ZARINPAL_MERCHANT", "").strip(),
     )
 
 
