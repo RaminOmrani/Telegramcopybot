@@ -46,6 +46,7 @@ from telkap.models import (
 )
 from telkap.plans import FEAT_MESSAGES, FEAT_WATERMARK
 from telkap.services import (
+    aipass,
     alerts,
     cache,
     dedupe,
@@ -552,7 +553,18 @@ class Copier:
             await self._pause_task(task_id, "اکانت کاربری متصل نیست")
             return False
 
-        text = apply_transforms(facts.text, cfg, rules)
+        # مرحله‌ی هوش مصنوعی یک بار روی متن خام اجرا می‌شود و نتیجه‌اش
+        # ورودی همه‌ی مقصدها می‌گردد؛ وگرنه کاری که یک بار لازم است به
+        # تعداد مقصدها هزینه می‌برد بی‌آنکه نتیجه فرق کند.
+        ai_pass = await aipass.enhance(facts.text, cfg, user_id)
+        source_text = ai_pass.text
+        if ai_pass.changed or ai_pass.out_of_credit:
+            await log_activity(
+                user_id=user_id, task_id=task_id, event="ai",
+                detail=aipass.summary(ai_pass),
+            )
+
+        text = apply_transforms(source_text, cfg, rules)
         # فرمت‌ها و ایموجی پریمیوم فقط وقتی حفظ می‌شوند که متن اصلی
         # دست‌نخورده مانده باشد؛ در غیر این صورت آفست‌ها معتبر نیستند
         entities = remap_entities(facts.text, text, src_entities)
@@ -582,7 +594,7 @@ class Copier:
             # مقصدی که امضا یا فوتر اختصاصی دارد، متنش جدا ساخته می‌شود
             if spec.overrides:
                 dest_cfg = {**cfg, **spec.overrides}
-                dest_text = apply_transforms(facts.text, dest_cfg, rules)
+                dest_text = apply_transforms(source_text, dest_cfg, rules)
                 dest_entities = remap_entities(facts.text, dest_text, src_entities)
             else:
                 dest_cfg, dest_text, dest_entities = cfg, text, entities
