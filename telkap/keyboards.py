@@ -20,7 +20,7 @@ from telkap.plans import (
     purchasable,
     toman,
 )
-from telkap.services import dedupe
+from telkap.services import ai, aiskills, dedupe
 from telkap.services.defaults import MEDIA_KINDS
 from telkap.services.watermark import POSITIONS
 from telkap.texts import fa_num, on_off
@@ -144,6 +144,14 @@ def task_menu(
                 text="🧩 کانفیگ پروکسی", callback_data=f"set:cfg:{task.id}"
             )
         )
+        # فقط وقتی سرویس تنظیم شده باشد؛ دکمه‌ای که به بن‌بست می‌رسد
+        # بدتر از نبودنش است.
+        if ai.configured():
+            kb.row(
+                InlineKeyboardButton(
+                    text="🤖 هوش مصنوعی", callback_data=f"set:ai:{task.id}"
+                )
+            )
 
     kb.row(_divider("انتشار"))
     if pro:
@@ -374,6 +382,55 @@ def configs_menu(task_id: int, cfg: dict) -> InlineKeyboardMarkup:
                 callback_data=f"ask:file_rename:{task_id}",
             )
         )
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"task:open:{task_id}"))
+    return kb.as_markup()
+
+
+def ai_menu(task_id: int, cfg: dict, *, balance: int = 0) -> InlineKeyboardMarkup:
+    """قابلیت‌های هوش مصنوعی این کار.
+
+    گزینه‌های هر قابلیت فقط وقتی نشان داده می‌شوند که خودش روشن باشد؛
+    لحنِ بازنویسیِ خاموش چیزی برای تنظیم کردن ندارد و فقط منو را شلوغ
+    می‌کند.
+    """
+    kb = InlineKeyboardBuilder()
+
+    kb.row(
+        InlineKeyboardButton(
+            text=f"🤖 اعتبار باقی‌مانده: {fa_num(balance)}",
+            callback_data="credits:open",
+        )
+    )
+
+    kb.row(_flag("خلاصه‌سازی", bool(cfg.get("ai_summarize")), f"flag:ai_summarize:{task_id}"))
+    if cfg.get("ai_summarize"):
+        kb.row(
+            InlineKeyboardButton(
+                text=f"   ↳ در {fa_num(int(cfg.get('ai_sentences') or 2))} جمله",
+                callback_data=f"aisent:{task_id}",
+            )
+        )
+
+    kb.row(_flag("بازنویسی", bool(cfg.get("ai_rewrite")), f"flag:ai_rewrite:{task_id}"))
+    if cfg.get("ai_rewrite"):
+        style = str(cfg.get("ai_style") or "same")
+        kb.row(
+            InlineKeyboardButton(
+                text=f"   ↳ لحن: {aiskills.STYLES.get(style, style)}",
+                callback_data=f"aistyle:{task_id}",
+            )
+        )
+
+    kb.row(_flag("ترجمه", bool(cfg.get("ai_translate")), f"flag:ai_translate:{task_id}"))
+    if cfg.get("ai_translate"):
+        lang = str(cfg.get("ai_language") or "en")
+        kb.row(
+            InlineKeyboardButton(
+                text=f"   ↳ زبان: {aiskills.LANGUAGES.get(lang, lang)}",
+                callback_data=f"ailang:{task_id}",
+            )
+        )
+
     kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"task:open:{task_id}"))
     return kb.as_markup()
 

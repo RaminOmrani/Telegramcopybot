@@ -14,6 +14,7 @@ from telkap.db import get_session
 from telkap.handlers.common import Flow, parse_int
 from telkap.handlers.tasks import show_task
 from telkap.keyboards import (
+    ai_menu,
     clean_menu,
     configs_menu,
     engagement_menu,
@@ -26,8 +27,8 @@ from telkap.keyboards import (
     watermark_menu,
 )
 from telkap.models import PendingPost, Rule, Task
-from telkap.plans import FEAT_WATERMARK
-from telkap.services import cache, dedupe, pending
+from telkap.plans import CREDIT_AI, FEAT_WATERMARK
+from telkap.services import aiskills, cache, credits, dedupe, pending
 from telkap.services.defaults import merged_settings
 from telkap.services.subscription import active_plan_for
 from telkap.texts import (
@@ -88,6 +89,15 @@ PANELS = {
         "روشنشان نکنید، هیچ پستی معطل نمی‌ماند.</i>",
         time_menu,
     ),
+    "ai": (
+        "🤖 <b>هوش مصنوعی</b>\n"
+        "هر پست پیش از انتشار از این مرحله‌ها رد می‌شود.\n\n"
+        "<i>ترتیب اجرا: خلاصه ← بازنویسی ← ترجمه. هر مرحله روی خروجی "
+        "مرحله‌ی قبل کار می‌کند، و هرکدام روی هر پست یک واحد اعتبار "
+        "می‌برد. اگر اعتبار تمام شود یا سرویس جواب ندهد، پست بدون تغییر "
+        "منتشر می‌شود — کپی هیچ‌وقت به‌خاطر این متوقف نمی‌شود.</i>",
+        ai_menu,
+    ),
 }
 
 # متن پرسش و اعتبارسنجی برای هر تنظیم متنی/عددی
@@ -128,6 +138,18 @@ async def _save_settings(task_id: int, cfg: dict) -> None:
     cache.invalidate_task(task_id)
 
 
+async def _extras(panel: str, user_id: int) -> dict:
+    """چیزهایی که یک پنل خاص علاوه بر تنظیمات لازم دارد.
+
+    پنل هوش مصنوعی باید مانده‌ی اعتبار را نشان بدهد، وگرنه کاربر تازه
+    وقتی می‌فهمد اعتبار ندارد که پست‌هایش بی‌تغییر رفته‌اند. بقیه‌ی
+    پنل‌ها چیزی لازم ندارند، پس این پرسش برای آن‌ها اجرا نمی‌شود.
+    """
+    if panel != "ai":
+        return {}
+    return {"balance": await credits.balance(user_id, CREDIT_AI)}
+
+
 async def _render(call: CallbackQuery, panel: str, task_id: int) -> None:
     task = await _owned_task(call.from_user.id, task_id)
     if task is None:
@@ -135,10 +157,11 @@ async def _render(call: CallbackQuery, panel: str, task_id: int) -> None:
         return
     title, builder = PANELS[panel]
     cfg = merged_settings(task.settings)
+    markup = builder(task_id, cfg, **await _extras(panel, call.from_user.id))
     try:
-        await call.message.edit_text(title, reply_markup=builder(task_id, cfg))
+        await call.message.edit_text(title, reply_markup=markup)
     except Exception:
-        await call.message.answer(title, reply_markup=builder(task_id, cfg))
+        await call.message.answer(title, reply_markup=markup)
 
 
 async def _render_message(message: Message, panel: str, task_id: int) -> None:
@@ -148,7 +171,8 @@ async def _render_message(message: Message, panel: str, task_id: int) -> None:
         return
     title, builder = PANELS[panel]
     cfg = merged_settings(task.settings)
-    await message.answer(title, reply_markup=builder(task_id, cfg))
+    markup = builder(task_id, cfg, **await _extras(panel, message.from_user.id))
+    await message.answer(title, reply_markup=markup)
 
 
 @router.callback_query(F.data.startswith("set:"))
@@ -188,7 +212,64 @@ FLAG_PANEL = {
     "rewrite_files": "cfg",
     "approval": "time",
     "hold_outside_hours": "time",
+    "ai_summarize": "ai",
+    "ai_rewrite": "ai",
+    "ai_translate": "ai",
 }
+
+
+def _cycle(values, current, fallback):
+    """گزینه‌ی بعدی در یک چرخه. مقدار ناشناخته به اولی برمی‌گردد."""
+    items = list(values)
+    if current not in items:
+        return fallback
+    return items[(items.index(current) + 1) % len(items)]
+
+
+@router.callback_query(F.data.startswith("aistyle:"))
+async def cb_ai_style(call: CallbackQuery) -> None:
+    """چرخش بین لحن‌های بازنویسی."""
+    task_id = int(call.data.split(":")[1])
+    task = await _owned_task(call.from_user.id, task_id)
+    if task is None:
+        await call.answer("دسترسی ندارید", show_alert=True)
+        return
+    cfg = merged_settings(task.settings)
+    cfg["ai_style"] = _cycle(aiskills.STYLES, cfg.get("ai_style"), "same")
+    await _save_settings(task_id, cfg)
+    await call.answer(aiskills.STYLES[cfg["ai_style"]])
+    await _render(call, "ai", task_id)
+
+
+@router.callback_query(F.data.startswith("ailang:"))
+async def cb_ai_language(call: CallbackQuery) -> None:
+    """چرخش بین زبان‌های ترجمه."""
+    task_id = int(call.data.split(":")[1])
+    task = await _owned_task(call.from_user.id, task_id)
+    if task is None:
+        await call.answer("دسترسی ندارید", show_alert=True)
+        return
+    cfg = merged_settings(task.settings)
+    cfg["ai_language"] = _cycle(aiskills.LANGUAGES, cfg.get("ai_language"), "en")
+    await _save_settings(task_id, cfg)
+    await call.answer(aiskills.LANGUAGES[cfg["ai_language"]])
+    await _render(call, "ai", task_id)
+
+
+@router.callback_query(F.data.startswith("aisent:"))
+async def cb_ai_sentences(call: CallbackQuery) -> None:
+    """چرخش تعداد جمله‌های خلاصه بین ۱ تا ۴."""
+    task_id = int(call.data.split(":")[1])
+    task = await _owned_task(call.from_user.id, task_id)
+    if task is None:
+        await call.answer("دسترسی ندارید", show_alert=True)
+        return
+    cfg = merged_settings(task.settings)
+    current = int(cfg.get("ai_sentences") or 2)
+    cfg["ai_sentences"] = current % 4 + 1
+    await _save_settings(task_id, cfg)
+    await call.answer()
+    await _render(call, "ai", task_id)
 
 
 @router.callback_query(F.data.startswith("hour:"))

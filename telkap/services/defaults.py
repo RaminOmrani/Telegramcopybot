@@ -116,6 +116,16 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "rewrite_files": False,     # نام داخل فایل‌های پیوست را هم عوض کن
     "config_tag": "",           # نام تازه؛ خالی = از امضا یا فوتر برداشته می‌شود
     "file_rename": "{tag}",     # الگوی نام فایل تازه؛ {tag} و {name} پذیرفته است
+
+    # --- هوش مصنوعی ---
+    # هر سه پیش‌فرض خاموش‌اند و هرکدام روی هر پست یک واحد اعتبار می‌برند،
+    # پس روشن شدنشان باید تصمیم خودِ کاربر باشد نه پیش‌فرض ما.
+    "ai_summarize": False,
+    "ai_rewrite": False,
+    "ai_translate": False,
+    "ai_style": "same",         # لحن بازنویسی؛ کلیدهای aiskills.STYLES
+    "ai_language": "en",        # زبان ترجمه؛ کلیدهای aiskills.LANGUAGES
+    "ai_sentences": 2,          # خلاصه در چند جمله
 }
 
 
