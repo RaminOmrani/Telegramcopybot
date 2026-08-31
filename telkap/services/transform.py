@@ -401,6 +401,15 @@ def remap_entities(original: str, result: str, entities):
     return mapped or None
 
 
+def has_custom_emoji(entities) -> bool:
+    """آیا این پست ایموجی پریمیوم دارد؟
+
+    مقایسه با نام کلاس انجام می‌شود تا این ماژول به Telethon وابسته نشود،
+    مثل `drop_custom_emoji`.
+    """
+    return any(type(e).__name__ == "MessageEntityCustomEmoji" for e in entities or ())
+
+
 def drop_custom_emoji(entities):
     """ایموجی‌های پریمیوم را از فهرست entity ها بیرون می‌کشد.
 

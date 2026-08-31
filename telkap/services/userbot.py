@@ -157,6 +157,7 @@ class UserbotManager:
             user.phone = pending.phone
             user.account_id = me.id
             user.account_name = " ".join(filter(None, [me.first_name, me.last_name])) or me.username
+            user.account_premium = bool(getattr(me, "premium", False))
             await db.commit()
         self._pending.pop(user_id, None)
         # همان کلاینت متصل را به‌عنوان رانتایم نگه می‌داریم

@@ -41,6 +41,10 @@ class User(Base):
     session_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     account_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     account_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # ارسال ایموجی پریمیوم فقط با اکانت پریمیوم ممکن است. این را هنگام
+    # ورود می‌گیریم تا بشود پیش از کپی به کاربر گفت، نه بعد از اینکه
+    # پست‌هایش ساده منتشر شدند.
+    account_premium: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # احراز هویت دو مرحله‌ای در سطح ربات (پین عددی)
     pin_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)

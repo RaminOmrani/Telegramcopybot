@@ -14,11 +14,11 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from telkap.db import get_session
 from telkap.keyboards import MEDIA_LABELS
-from telkap.models import Task
+from telkap.models import Task, User
 from telkap.services import cache
 from telkap.services.copier import build_facts, classify_media, within_active_hours
 from telkap.services.filters import should_copy
-from telkap.services.transform import apply_transforms
+from telkap.services.transform import apply_transforms, has_custom_emoji
 from telkap.services.userbot import manager
 from telkap.texts import NO_LOGIN, fa_num
 
@@ -60,6 +60,10 @@ async def cb_test(call: CallbackQuery) -> None:
     if snapshot is None:
         await notice.edit_text("این کار پیدا نشد.")
         return
+
+    async with get_session() as db:
+        account = await db.get(User, call.from_user.id)
+        premium = bool(account and account.account_premium)
 
     source = snapshot.source_id or snapshot.source_ref
     try:
@@ -125,9 +129,29 @@ async def cb_test(call: CallbackQuery) -> None:
         if result.strip() != (facts.text or "").strip():
             blocks.append("\n<i>↑ متن طبق تنظیمات شما تغییر کرده است</i>")
             blocks.append(
-                "<i>ℹ️ فرمت‌ها و ایموجی پریمیوم حفظ می‌شوند؛ فقط آن‌هایی که "
-                "دقیقاً روی متنِ تغییریافته بوده‌اند حذف می‌گردند.</i>"
+                "<i>ℹ️ فرمت‌ها (بولد، لینک، اسپویلر) حفظ می‌شوند؛ فقط "
+                "آن‌هایی که دقیقاً روی متنِ تغییریافته بوده‌اند حذف "
+                "می‌گردند.</i>"
             )
+
+        # پیش‌نمایش را خودِ ربات می‌فرستد و entity ها را حمل نمی‌کند، پس
+        # ایموجی پریمیوم اینجا همیشه ساده دیده می‌شود — حتی وقتی در کپی
+        # واقعی سالم می‌رود. بدون این توضیح، کاربر پیش‌نمایش را با نتیجه
+        # اشتباه می‌گیرد و دنبال اشکالی می‌گردد که وجود ندارد.
+        if has_custom_emoji(getattr(message, "entities", None)):
+            if premium:
+                blocks.append(
+                    "\n<i>💎 این پست ایموجی پریمیوم دارد. در این پیش‌نمایش "
+                    "ساده دیده می‌شود چون ربات نمی‌تواند نمایششان بدهد، ولی "
+                    "در کپی واقعی با اکانت شما سالم منتشر می‌شود.</i>"
+                )
+            else:
+                blocks.append(
+                    "\n<i>💎 این پست ایموجی پریمیوم دارد، ولی اکانت متصل شما "
+                    "پریمیوم نیست — تلگرام اجازه‌ی ارسالشان را نمی‌دهد و در "
+                    "کانال شما به ایموجی ساده تبدیل می‌شوند. بقیه‌ی فرمت‌ها "
+                    "دست‌نخورده می‌مانند.</i>"
+                )
 
     kb = InlineKeyboardBuilder()
     kb.row(InlineKeyboardButton(text="🔄 تست دوباره", callback_data=f"task:test:{task_id}"))
