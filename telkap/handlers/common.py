@@ -37,6 +37,7 @@ class Flow(StatesGroup):
     fwd_value = State()
 
     receipt = State()
+    tx_hash = State()          # هش تراکنش تتر، به‌جای تصویر رسید
     credit_amount = State()
     coupon_code = State()
     gift_code = State()
@@ -49,6 +50,9 @@ class Flow(StatesGroup):
 
     pin_set = State()
     pin_verify = State()
+
+    usdt_address = State()
+    usdt_rate = State()
 
     admin_grant = State()
     admin_broadcast = State()

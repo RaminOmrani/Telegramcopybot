@@ -112,6 +112,10 @@ def _add_missing_columns(conn) -> None:
             ("discount_toman", "INTEGER DEFAULT 0"),
             ("credit_toman", "INTEGER DEFAULT 0"),
             ("list_toman", "INTEGER DEFAULT 0"),
+            ("pay_method", "VARCHAR(8) DEFAULT 'card'"),
+            ("usdt_amount", "VARCHAR(24) DEFAULT ''"),
+            ("usdt_rate", "INTEGER DEFAULT 0"),
+            ("tx_hash", "VARCHAR(70) DEFAULT ''"),
         ],
     }
     for table, columns in additions.items():

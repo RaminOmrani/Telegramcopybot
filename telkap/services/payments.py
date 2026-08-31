@@ -8,12 +8,12 @@ from __future__ import annotations
 
 import logging
 
-from sqlalchemy import select
+from sqlalchemy import and_, or_, select
 
 from telkap.db import get_session, log_activity
 from telkap.models import PaymentRequest, utcnow
 from telkap.plans import CREDIT_KINDS, get_plan
-from telkap.services import credits
+from telkap.services import credits, crypto
 from telkap.services.subscription import grant
 
 log = logging.getLogger(__name__)
@@ -159,15 +159,28 @@ def rejection_notice(request: PaymentRequest) -> str:
     return f"❌ رسید شما (کد {request.id}) تأیید نشد.{contact}"
 
 
+# «مدرک پرداخت» بسته به راهِ پرداخت فرق می‌کند: کارت تصویر رسید دارد و
+# تتر هش تراکنش. هر جا می‌پرسیم «مدرکش رسیده؟» باید هر دو را ببیند،
+# وگرنه پرداخت تتری هرگز به فهرست بررسی ادمین نمی‌رسد.
+HAS_PROOF = or_(
+    PaymentRequest.receipt_file_id.is_not(None),
+    PaymentRequest.tx_hash != "",
+)
+NO_PROOF = and_(
+    PaymentRequest.receipt_file_id.is_(None),
+    PaymentRequest.tx_hash == "",
+)
+
+
 async def awaiting_receipt(user_id: int) -> PaymentRequest | None:
-    """درخواستی که منتظر رسید کاربر است."""
+    """درخواستی که منتظر مدرک پرداخت کاربر است."""
     async with get_session() as db:
         rows = await db.execute(
             select(PaymentRequest)
             .where(
                 PaymentRequest.user_id == user_id,
                 PaymentRequest.status == PaymentRequest.STATUS_PENDING,
-                PaymentRequest.receipt_file_id.is_(None),
+                NO_PROOF,
             )
             .order_by(PaymentRequest.id.desc())
             .limit(1)
@@ -190,14 +203,57 @@ async def attach_receipt(
         return request
 
 
+async def get_request(request_id: int) -> PaymentRequest | None:
+    async with get_session() as db:
+        return await db.get(PaymentRequest, request_id)
+
+
+async def set_method(
+    request_id: int, method: str, *, usdt_amount: str = "", usdt_rate: int = 0
+) -> PaymentRequest | None:
+    """راه پرداخت را روی درخواست می‌نشاند.
+
+    مبلغ تتری و نرخ همین‌جا قفل می‌شوند؛ اگر هر بار از نو حساب می‌شدند،
+    کاربری که ده دقیقه بعد واریز می‌کند مبلغ دیگری می‌دید.
+    """
+    if method not in crypto.METHODS:
+        return None
+    async with get_session() as db:
+        request = await db.get(PaymentRequest, request_id)
+        if request is None:
+            return None
+        request.pay_method = method
+        request.usdt_amount = usdt_amount
+        request.usdt_rate = usdt_rate
+        await db.commit()
+        await db.refresh(request)
+        return request
+
+
+async def attach_tx(request_id: int, tx_hash: str) -> PaymentRequest | None:
+    """هش تراکنش تتر را ثبت می‌کند — همان نقشی که رسید برای کارت دارد."""
+    cleaned = crypto.normalize_tx(tx_hash)
+    if not cleaned:
+        return None
+    async with get_session() as db:
+        request = await db.get(PaymentRequest, request_id)
+        if request is None:
+            return None
+        request.tx_hash = cleaned
+        request.receipt_kind = "text"
+        await db.commit()
+        await db.refresh(request)
+        return request
+
+
 async def pending_requests(limit: int = 20) -> list[PaymentRequest]:
-    """درخواست‌هایی که رسید دارند و منتظر بررسی ادمین‌اند."""
+    """درخواست‌هایی که مدرک پرداخت دارند و منتظر بررسی ادمین‌اند."""
     async with get_session() as db:
         rows = await db.execute(
             select(PaymentRequest)
             .where(
                 PaymentRequest.status == PaymentRequest.STATUS_PENDING,
-                PaymentRequest.receipt_file_id.is_not(None),
+                HAS_PROOF,
             )
             .order_by(PaymentRequest.id)
             .limit(limit)

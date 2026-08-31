@@ -361,6 +361,15 @@ class PaymentRequest(Base):
     # قیمت فهرست پیش از هر کسری
     list_toman: Mapped[int] = mapped_column(Integer, default=0)
 
+    # با کدام راه پرداخت شد. کارت رسید تصویری دارد و تتر هش تراکنش،
+    # ولی هر دو به همان تأیید ادمین می‌رسند.
+    pay_method: Mapped[str] = mapped_column(String(8), default="card")   # card | usdt
+    # مبلغ تتری و نرخ روزِ ساخت درخواست. نرخ ذخیره می‌شود چون فردا عوض
+    # می‌شود و صورتحساب باید بگوید آن روز چند بوده.
+    usdt_amount: Mapped[str] = mapped_column(String(24), default="")
+    usdt_rate: Mapped[int] = mapped_column(Integer, default=0)
+    tx_hash: Mapped[str] = mapped_column(String(70), default="")
+
     receipt_file_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     receipt_kind: Mapped[str] = mapped_column(String(16), default="photo")  # photo | document | text
     note: Mapped[str] = mapped_column(String(400), default="")

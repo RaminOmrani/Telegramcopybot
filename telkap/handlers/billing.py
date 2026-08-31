@@ -10,7 +10,12 @@ import logging
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from telkap.config import get_settings
@@ -35,7 +40,7 @@ from telkap.plans import (
     purchasable,
     toman,
 )
-from telkap.services import credits, payments, roles
+from telkap.services import credits, crypto, payments, roles
 from telkap.services.subscription import active_subscription, remaining_days
 from telkap.texts import fa_num
 
@@ -224,18 +229,55 @@ async def cb_pay(call: CallbackQuery, state: FSMContext) -> None:
         )
         return
 
-    kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="❌ انصراف", callback_data="pay:cancel"))
-
-    holder = f"\nبه نام: <b>{cfg.card_holder}</b>" if cfg.card_holder else ""
     saved = int(request.discount_toman or 0) + int(request.credit_toman or 0)
     saving = f"\n<i>({toman(saved)} کسر شد)</i>" if saved else ""
-    await state.set_state(Flow.receipt)
-    await state.update_data(request_id=request.id)
-    await call.message.answer(
+    headline = (
         f"🧾 <b>{plan.title}</b>\n"
         f"مبلغ قابل پرداخت: <b>{toman(request.amount_toman)}</b>{saving}\n"
-        f"مدت: {fa_num(plan.days)} روز\n\n"
+        f"مدت: {fa_num(plan.days)} روز"
+    )
+
+    # تتر فقط وقتی پیشنهاد می‌شود که هم نشانی تنظیم شده باشد هم نرخ؛
+    # وگرنه یک راه پرداخت است که به بن‌بست می‌رسد.
+    if await crypto.available():
+        await state.update_data(request_id=request.id)
+        await call.message.answer(
+            f"{headline}\n\nاز کدام راه می‌خواهید بپردازید؟",
+            reply_markup=_method_menu(request.id),
+        )
+        return
+
+    await _card_screen(call.message, state, request, headline)
+
+
+def _method_menu(request_id: int) -> InlineKeyboardMarkup:
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        InlineKeyboardButton(
+            text=crypto.METHOD_LABELS[crypto.METHOD_CARD],
+            callback_data=f"paym:card:{request_id}",
+        )
+    )
+    kb.row(
+        InlineKeyboardButton(
+            text=crypto.METHOD_LABELS[crypto.METHOD_USDT],
+            callback_data=f"paym:usdt:{request_id}",
+        )
+    )
+    kb.row(InlineKeyboardButton(text="❌ انصراف", callback_data="pay:cancel"))
+    return kb.as_markup()
+
+
+async def _card_screen(message, state: FSMContext, request, headline: str) -> None:
+    """صفحه‌ی کارت‌به‌کارت — همان چیزی که پیش از تتر هم بود."""
+    cfg = get_settings()
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="❌ انصراف", callback_data="pay:cancel"))
+    holder = f"\nبه نام: <b>{cfg.card_holder}</b>" if cfg.card_holder else ""
+    await state.set_state(Flow.receipt)
+    await state.update_data(request_id=request.id)
+    await message.answer(
+        f"{headline}\n\n"
         f"💳 شماره کارت:\n<code>{cfg.card_number}</code>{holder}\n\n"
         "پس از واریز، <b>تصویر رسید</b> را همین‌جا بفرستید.\n"
         "اشتراک بلافاصله پس از تأیید فعال می‌شود.",
@@ -389,6 +431,87 @@ async def cb_cancel(call: CallbackQuery, state: FSMContext) -> None:
     await call.message.answer("خرید لغو شد.")
 
 
+@router.callback_query(F.data.startswith("paym:"))
+async def cb_pay_method(call: CallbackQuery, state: FSMContext) -> None:
+    """کاربر راه پرداخت را انتخاب کرد."""
+    _, method, raw_id = call.data.split(":")
+    request_id = int(raw_id)
+    await call.answer()
+
+    request = await payments.get_request(request_id)
+    if request is None or request.user_id != call.from_user.id:
+        await call.message.answer("این درخواست پیدا نشد.")
+        return
+
+    headline = (
+        f"🧾 <b>{payments.describe(request)}</b>\n"
+        f"مبلغ قابل پرداخت: <b>{toman(request.amount_toman)}</b>"
+    )
+
+    if method == crypto.METHOD_CARD:
+        await payments.set_method(request_id, crypto.METHOD_CARD)
+        await _card_screen(call.message, state, request, headline)
+        return
+
+    priced = await crypto.quote(request.amount_toman)
+    if priced is None:
+        # بین انتخاب پلن و اینجا، ادمین نرخ یا نشانی را برداشته است
+        await call.message.answer(
+            "پرداخت تتری موقتاً در دسترس نیست. با کارت بانکی ادامه می‌دهیم."
+        )
+        await payments.set_method(request_id, crypto.METHOD_CARD)
+        await _card_screen(call.message, state, request, headline)
+        return
+
+    await payments.set_method(
+        request_id,
+        crypto.METHOD_USDT,
+        usdt_amount=priced["usdt_text"],
+        usdt_rate=priced["rate"],
+    )
+
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="❌ انصراف", callback_data="pay:cancel"))
+    await state.set_state(Flow.tx_hash)
+    await state.update_data(request_id=request_id)
+    await call.message.answer(
+        f"{headline}\n"
+        f"معادل: <b>{priced['usdt_text']} USDT</b>\n"
+        f"<i>نرخ امروز: {toman(priced['rate'])} برای هر تتر</i>\n\n"
+        f"🌐 شبکه: <b>TRC20 (Tron)</b>\n"
+        f"نشانی ولت:\n<code>{priced['address']}</code>\n\n"
+        "پس از واریز، <b>هش تراکنش</b> را همین‌جا بفرستید.\n\n"
+        "⚠️ فقط از شبکه‌ی TRC20 بفرستید. واریز از شبکه‌ی دیگر "
+        "(ERC20، BEP20) به این نشانی <b>قابل بازگشت نیست</b>.",
+        reply_markup=kb.as_markup(),
+    )
+
+
+@router.message(Flow.tx_hash)
+async def got_tx_hash(message: Message, state: FSMContext) -> None:
+    """هش تراکنش تتر — همان نقشی که تصویر رسید برای کارت دارد."""
+    data = await state.get_data()
+    request_id = int(data.get("request_id", 0))
+
+    request = await payments.attach_tx(request_id, message.text or "")
+    if request is None:
+        await message.answer(
+            "⚠️ این هش معتبر نیست.\n\n"
+            "هش تراکنش ترون ۶۴ نویسه است و از صفحه‌ی تراکنش در کیف پول "
+            "یا در tronscan.org کپی می‌شود.\n"
+            "برای انصراف /cancel را بزنید."
+        )
+        return
+
+    await state.clear()
+    await message.answer(
+        "✅ هش تراکنش شما ثبت شد.\n\n"
+        f"کد پیگیری: <code>{request.id}</code>\n"
+        "پس از بررسی، نتیجه همین‌جا اعلام می‌شود."
+    )
+    await _notify_admins(message, request)
+
+
 @router.message(Flow.receipt)
 async def got_receipt(message: Message, state: FSMContext) -> None:
     data = await state.get_data()
@@ -435,18 +558,36 @@ async def _notify_admins(message: Message, request: PaymentRequest) -> None:
         InlineKeyboardButton(text="✅ تأیید", callback_data=f"pay:ok:{request.id}"),
         InlineKeyboardButton(text="❌ رد", callback_data=f"pay:no:{request.id}"),
     )
+    method = crypto.METHOD_LABELS.get(request.pay_method, request.pay_method)
+    extra = ""
+    if request.pay_method == crypto.METHOD_USDT:
+        # هش کامل می‌آید تا ادمین بتواند مستقیم در کاوشگر بلاک‌چین
+        # بازش کند؛ کوتاه کردنش یعنی کپی‌کردن دستی از دو تکه.
+        extra = (
+            f"\nمبلغ تتری: <b>{request.usdt_amount} USDT</b>"
+            f"\nنرخ آن روز: {toman(request.usdt_rate)}"
+            f"\n\nهش تراکنش:\n<code>{request.tx_hash}</code>"
+            f"\nhttps://tronscan.org/#/transaction/{request.tx_hash}"
+        )
+
     caption = (
-        "🧾 <b>رسید جدید</b>\n\n"
+        "🧾 <b>پرداخت جدید</b>\n\n"
         f"کاربر: {user.full_name} ({username})\n"
         f"شناسه: <code>{user.id}</code>\n"
         f"خرید: <b>{payments.describe(request)}</b>\n"
         f"مبلغ: <b>{toman(request.amount_toman)}</b>\n"
+        f"روش: {method}{extra}\n"
         f"کد پیگیری: <code>{request.id}</code>"
     )
 
     for admin_id in cfg.admin_ids:
         try:
-            if request.receipt_kind == "photo":
+            if request.pay_method == crypto.METHOD_USDT:
+                await message.bot.send_message(
+                    admin_id, caption, reply_markup=kb.as_markup(),
+                    disable_web_page_preview=True,
+                )
+            elif request.receipt_kind == "photo":
                 await message.bot.send_photo(
                     admin_id, request.receipt_file_id, caption=caption,
                     reply_markup=kb.as_markup(),

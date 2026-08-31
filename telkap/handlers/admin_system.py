@@ -12,7 +12,8 @@ from telkap.config import get_settings
 from telkap.db import log_activity
 from telkap.handlers.admin_reports import guard
 from telkap.handlers.common import Flow, parse_int
-from telkap.services import ai, backup, maintenance, roles
+from telkap.plans import toman
+from telkap.services import ai, backup, crypto, maintenance, roles
 
 log = logging.getLogger(__name__)
 router = Router(name="admin-system")
@@ -28,6 +29,7 @@ def _menu_kb() -> InlineKeyboardBuilder:
     if get_settings().web_enabled:
         kb.row(InlineKeyboardButton(text="🖥 پنل وب", callback_data="sys:web"))
     kb.row(InlineKeyboardButton(text="🤖 هوش مصنوعی", callback_data="sys:ai"))
+    kb.row(InlineKeyboardButton(text="₮ پرداخت تتر", callback_data="sys:usdt"))
     kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm:home"))
     return kb
 
@@ -78,6 +80,104 @@ async def cb_ai_status(call: CallbackQuery) -> None:
         await call.message.edit_text(report, reply_markup=kb.as_markup())
     except Exception:
         await call.message.answer(report, reply_markup=kb.as_markup())
+
+
+# ─────────────────────────────────────────────────── پرداخت تتر
+async def _usdt_screen(event) -> None:
+    wallet = await crypto.address()
+    rate = await crypto.rate()
+    ready = bool(wallet) and rate > 0
+
+    if ready:
+        head = "₮ <b>پرداخت تتر</b> — فعال ✅\n\n"
+    else:
+        head = (
+            "₮ <b>پرداخت تتر</b> — غیرفعال\n\n"
+            "<i>تا هر دو مقدار پر نشوند، این راه پرداخت به کاربران "
+            "نشان داده نمی‌شود.</i>\n\n"
+        )
+
+    body = (
+        f"نشانی ولت (TRC20):\n<code>{wallet or 'تنظیم نشده'}</code>\n\n"
+        f"نرخ هر تتر: <b>{toman(rate) if rate else 'تنظیم نشده'}</b>\n\n"
+        "<i>نرخ را روزانه به‌روز کنید. مبلغ هر خرید در لحظه‌ی ساخت "
+        "درخواست با همین نرخ قفل می‌شود، پس تغییر نرخ روی پرداخت‌های "
+        "در جریان اثر نمی‌گذارد.</i>"
+    )
+
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="🏦 تغییر نشانی ولت", callback_data="sys:usdtaddr"))
+    kb.row(InlineKeyboardButton(text="💱 تغییر نرخ", callback_data="sys:usdtrate"))
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm:sys"))
+    await _show(event, head + body, kb)
+
+
+@router.callback_query(F.data == "sys:usdt")
+async def cb_usdt(call: CallbackQuery) -> None:
+    if await guard(call, roles.CAP_MONEY):
+        return
+    await _usdt_screen(call)
+
+
+@router.callback_query(F.data == "sys:usdtaddr")
+async def cb_usdt_address(call: CallbackQuery, state: FSMContext) -> None:
+    if await guard(call, roles.CAP_MONEY):
+        return
+    await call.answer()
+    await state.set_state(Flow.usdt_address)
+    await call.message.answer(
+        "نشانی ولت <b>TRC20</b> خود را بفرستید.\n\n"
+        "<i>با T شروع می‌شود و ۳۴ نویسه است. اشتباه بودنش یعنی پولِ "
+        "مشتری به جای دیگری می‌رود، پس دوبار چک کنید.</i>\n\n"
+        "برای انصراف /cancel را بزنید."
+    )
+
+
+@router.message(Flow.usdt_address)
+async def got_usdt_address(message: Message, state: FSMContext) -> None:
+    saved = await crypto.set_address(message.text or "", admin_id=message.from_user.id)
+    if saved is None:
+        await message.answer(
+            "⚠️ این نشانی معتبر نیست. نشانی ترون با T شروع می‌شود و ۳۴ "
+            "نویسه دارد.\nبرای انصراف /cancel را بزنید."
+        )
+        return
+    await state.clear()
+    await log_activity(
+        user_id=message.from_user.id, event="admin", detail="نشانی ولت تتر عوض شد"
+    )
+    await message.answer("✅ نشانی ولت ثبت شد.")
+    await _usdt_screen(message)
+
+
+@router.callback_query(F.data == "sys:usdtrate")
+async def cb_usdt_rate(call: CallbackQuery, state: FSMContext) -> None:
+    if await guard(call, roles.CAP_MONEY):
+        return
+    await call.answer()
+    await state.set_state(Flow.usdt_rate)
+    await call.message.answer(
+        "نرخ هر تتر را به <b>تومان</b> بفرستید.\n\n"
+        "<i>مثلاً اگر هر تتر ۹۵٬۰۰۰ تومان است، بنویسید 95000</i>\n\n"
+        "برای انصراف /cancel را بزنید."
+    )
+
+
+@router.message(Flow.usdt_rate)
+async def got_usdt_rate(message: Message, state: FSMContext) -> None:
+    saved = await crypto.set_rate(message.text or "", admin_id=message.from_user.id)
+    if saved is None:
+        await message.answer(
+            "⚠️ عدد معتبر نیست.\nنرخ را به تومان و بدون جداکننده بنویسید، "
+            "مثل 95000.\nبرای انصراف /cancel را بزنید."
+        )
+        return
+    await state.clear()
+    await log_activity(
+        user_id=message.from_user.id, event="admin", detail=f"نرخ تتر → {saved}"
+    )
+    await message.answer(f"✅ نرخ ثبت شد: {toman(saved)} برای هر تتر.")
+    await _usdt_screen(message)
 
 
 @router.callback_query(F.data == "sys:web")
