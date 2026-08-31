@@ -1,0 +1,717 @@
+<title>کپی‌یار</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Kufi+Arabic:wght@400;600;800&family=Vazirmatn:wght@400;500;700&display=swap');
+
+/* ── نشانه‌ها ────────────────────────────────────────────────────────
+   دو لهجه‌ی رنگی معنا دارند و تزئین نیستند:
+   کهربایی = کانال مبدا، لاجوردی = کانال مقصد شما.
+   کل صفحه از کهربایی به لاجوردی حرکت می‌کند. */
+:root {
+  --paper:      #F8F9FB;
+  --surface:    #FFFFFF;
+  --surface-2:  #EFF3F7;
+  --ink:        #0E1620;
+  --muted:      #5B6B7C;
+  --line:       #DCE3EA;
+  --line-soft:  #E9EEF3;
+
+  --src:        #B8791F;   /* مبدا */
+  --src-weak:   #FBF2E2;
+  --dest:       #1B7FBF;   /* مقصد */
+  --dest-weak:  #E4F1FA;
+  --good:       #1F7A4D;
+  --shadow:     0 1px 2px rgba(14,22,32,.05), 0 12px 32px -12px rgba(14,22,32,.14);
+
+  --display: 'Noto Kufi Arabic', 'Vazirmatn', Tahoma, sans-serif;
+  --body:    'Vazirmatn', 'Segoe UI', Tahoma, sans-serif;
+  --mono:    ui-monospace, 'Cascadia Mono', Consolas, monospace;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper:     #0C1116;
+    --surface:   #141C24;
+    --surface-2: #1A242E;
+    --ink:       #E8EEF4;
+    --muted:     #93A5B6;
+    --line:      #24323E;
+    --line-soft: #1C2731;
+    --src:       #E0A445;
+    --src-weak:  #2A2115;
+    --dest:      #4FB3E8;
+    --dest-weak: #102634;
+    --good:      #48B383;
+    --shadow:    0 1px 2px rgba(0,0,0,.4), 0 12px 32px -12px rgba(0,0,0,.6);
+  }
+}
+
+:root[data-theme="dark"] {
+  --paper:     #0C1116;
+  --surface:   #141C24;
+  --surface-2: #1A242E;
+  --ink:       #E8EEF4;
+  --muted:     #93A5B6;
+  --line:      #24323E;
+  --line-soft: #1C2731;
+  --src:       #E0A445;
+  --src-weak:  #2A2115;
+  --dest:      #4FB3E8;
+  --dest-weak: #102634;
+  --good:      #48B383;
+  --shadow:    0 1px 2px rgba(0,0,0,.4), 0 12px 32px -12px rgba(0,0,0,.6);
+}
+
+* { box-sizing: border-box; }
+
+body {
+  direction: rtl;
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 400 16px/1.75 var(--body);
+  -webkit-font-smoothing: antialiased;
+}
+
+h1, h2, h3, .display { font-family: var(--display); text-wrap: balance; }
+
+.wrap { max-width: 1080px; margin-inline: auto; padding-inline: 24px; }
+.narrow { max-width: 720px; }
+
+/* ── سرصفحه ─────────────────────────────────────────────────────── */
+.top {
+  position: sticky; top: 0; z-index: 40;
+  background: color-mix(in srgb, var(--paper) 88%, transparent);
+  backdrop-filter: blur(12px);
+  border-bottom: 1px solid var(--line-soft);
+}
+.top .wrap { display: flex; align-items: center; gap: 16px; height: 64px; }
+.brand { font-family: var(--display); font-weight: 800; font-size: 20px; letter-spacing: -.01em; }
+.brand span { color: var(--dest); }
+.top nav { margin-inline-start: auto; display: flex; gap: 26px; }
+.top nav a { color: var(--muted); text-decoration: none; font-size: 15px; }
+.top nav a:hover { color: var(--ink); }
+@media (max-width: 780px) { .top nav { display: none; } }
+
+.btn {
+  display: inline-flex; align-items: center; gap: 8px;
+  background: var(--dest); color: #fff;
+  border: 0; border-radius: 8px;
+  padding: 11px 20px;
+  font: 500 15px var(--body); text-decoration: none;
+  cursor: pointer;
+  transition: transform .15s ease, filter .15s ease;
+}
+.btn:hover { filter: brightness(1.08); transform: translateY(-1px); }
+.btn.ghost { background: transparent; color: var(--ink); border: 1px solid var(--line); }
+.btn.ghost:hover { border-color: var(--dest); color: var(--dest); filter: none; }
+.btn.lg { padding: 15px 30px; font-size: 17px; }
+a:focus-visible, button:focus-visible, summary:focus-visible {
+  outline: 2px solid var(--dest); outline-offset: 3px; border-radius: 6px;
+}
+
+/* ── قهرمان ─────────────────────────────────────────────────────── */
+.hero { padding: 76px 0 20px; }
+.eyebrow {
+  display: inline-flex; align-items: center; gap: 9px;
+  font-size: 13px; letter-spacing: .04em; color: var(--muted);
+  border: 1px solid var(--line); border-radius: 100px;
+  padding: 6px 14px 6px 12px; margin-bottom: 26px;
+}
+.dot { width: 7px; height: 7px; border-radius: 50%; background: var(--good); }
+.hero h1 {
+  margin: 0 0 20px;
+  font-size: clamp(34px, 5.6vw, 58px);
+  line-height: 1.22; font-weight: 800; letter-spacing: -.02em;
+}
+.hero h1 em { font-style: normal; color: var(--dest); }
+.lede { font-size: clamp(17px, 2vw, 20px); color: var(--muted); max-width: 60ch; margin: 0 0 32px; }
+.cta-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
+.cta-note { font-size: 14px; color: var(--muted); }
+
+/* ── نمایش تبدیل پست ─────────────────────────────────────────────── */
+.demo { margin: 60px 0 0; }
+.demo-grid {
+  display: grid; gap: 18px;
+  grid-template-columns: 1fr auto 1fr;
+  align-items: stretch;
+}
+@media (max-width: 900px) { .demo-grid { grid-template-columns: 1fr; } }
+
+.post {
+  background: var(--surface);
+  border: 1px solid var(--line);
+  border-radius: 14px;
+  padding: 0; overflow: hidden;
+  box-shadow: var(--shadow);
+}
+.post-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 13px 16px;
+  border-bottom: 1px solid var(--line-soft);
+  font-size: 14px;
+}
+.avatar {
+  width: 26px; height: 26px; border-radius: 50%;
+  display: grid; place-items: center;
+  font: 700 12px var(--display); color: #fff;
+}
+.post.src .avatar { background: var(--src); }
+.post.dest .avatar { background: var(--dest); }
+.post-head .who { font-weight: 500; }
+.tag {
+  margin-inline-start: auto;
+  font-size: 11px; letter-spacing: .05em;
+  padding: 3px 9px; border-radius: 5px;
+}
+.post.src .tag { background: var(--src-weak); color: var(--src); }
+.post.dest .tag { background: var(--dest-weak); color: var(--dest); }
+.post-body { padding: 16px; font-size: 15px; line-height: 1.85; white-space: pre-line; }
+.post-body .strike { color: var(--muted); text-decoration: line-through; text-decoration-thickness: 1px; }
+.post-body .sig { color: var(--dest); font-weight: 500; }
+.post-body .gone {
+  display: inline-block;
+  font-size: 12px; color: var(--muted);
+  border: 1px dashed var(--line); border-radius: 5px;
+  padding: 1px 7px; margin-inline-end: 4px;
+}
+.wm {
+  margin: 12px 16px 16px;
+  border: 1px solid var(--line-soft); border-radius: 9px;
+  background: var(--surface-2);
+  height: 76px; position: relative; overflow: hidden;
+}
+.wm::after {
+  content: '@YourChannel';
+  position: absolute; inset-block-end: 8px; inset-inline-end: 10px;
+  font: 600 12px var(--display); color: var(--dest); opacity: .9;
+}
+.wm::before {
+  content: 'تصویر پست';
+  position: absolute; inset: 0; display: grid; place-items: center;
+  font-size: 12px; color: var(--muted);
+}
+
+/* ستون میانی: خط لوله */
+.pipe {
+  display: flex; flex-direction: column; gap: 7px;
+  justify-content: center; align-items: stretch;
+  min-width: 168px;
+}
+@media (max-width: 900px) {
+  .pipe { flex-direction: row; flex-wrap: wrap; justify-content: center; min-width: 0; }
+}
+.step {
+  font-size: 13px; color: var(--muted);
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 100px; padding: 6px 13px;
+  text-align: center; white-space: nowrap;
+  opacity: .35;
+  transition: opacity .3s ease, color .3s ease, border-color .3s ease;
+}
+.demo.run .step { opacity: 1; color: var(--ink); border-color: var(--dest); }
+.demo.run .step:nth-child(1) { transition-delay: .10s; }
+.demo.run .step:nth-child(2) { transition-delay: .28s; }
+.demo.run .step:nth-child(3) { transition-delay: .46s; }
+.demo.run .step:nth-child(4) { transition-delay: .64s; }
+.demo.run .step:nth-child(5) { transition-delay: .82s; }
+.post.dest { opacity: .4; transition: opacity .5s ease 1s; }
+.demo.run .post.dest { opacity: 1; }
+@media (prefers-reduced-motion: reduce) {
+  .step, .post.dest { opacity: 1 !important; transition: none !important; }
+  .demo .step { color: var(--ink); border-color: var(--dest); }
+}
+
+/* ── بخش‌ها ─────────────────────────────────────────────────────── */
+section { padding: 84px 0; }
+.section-head { margin-bottom: 44px; }
+.kicker {
+  font: 600 12px var(--display); letter-spacing: .14em;
+  color: var(--dest); margin: 0 0 12px;
+}
+.section-head h2 { margin: 0 0 14px; font-size: clamp(26px, 3.6vw, 38px); font-weight: 800; letter-spacing: -.015em; }
+.section-head p { margin: 0; color: var(--muted); max-width: 62ch; font-size: 17px; }
+
+.band { background: var(--surface); border-block: 1px solid var(--line-soft); }
+
+/* چرا بدون ادمین */
+.why { display: grid; grid-template-columns: 1.05fr .95fr; gap: 48px; align-items: center; }
+@media (max-width: 860px) { .why { grid-template-columns: 1fr; gap: 32px; } }
+.why h2 { margin: 0 0 18px; font-size: clamp(25px, 3.4vw, 34px); font-weight: 800; }
+.why p { color: var(--muted); margin: 0 0 16px; }
+.why strong { color: var(--ink); font-weight: 600; }
+
+.wires { display: flex; flex-direction: column; gap: 12px; }
+.wire {
+  display: flex; align-items: center; gap: 14px;
+  background: var(--paper); border: 1px solid var(--line);
+  border-radius: 11px; padding: 15px 17px;
+}
+.wire .num {
+  flex: none; width: 30px; height: 30px; border-radius: 8px;
+  display: grid; place-items: center;
+  font: 700 14px var(--display);
+  background: var(--dest-weak); color: var(--dest);
+}
+.wire b { display: block; font-weight: 600; font-size: 15px; }
+.wire span { font-size: 14px; color: var(--muted); }
+
+/* امکانات */
+.features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line-soft); border: 1px solid var(--line-soft); border-radius: 14px; overflow: hidden; }
+@media (max-width: 900px) { .features { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 600px) { .features { grid-template-columns: 1fr; } }
+.feature { background: var(--paper); padding: 26px 24px; }
+.feature h3 { margin: 0 0 9px; font-size: 17px; font-weight: 600; }
+.feature p { margin: 0; font-size: 14.5px; color: var(--muted); line-height: 1.75; }
+.feature .rule { font-size: 13px; color: var(--src); margin-top: 10px; display: block; }
+
+/* قیمت */
+.plans { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; align-items: start; }
+@media (max-width: 1000px) { .plans { grid-template-columns: repeat(2, 1fr); } }
+@media (max-width: 560px) { .plans { grid-template-columns: 1fr; } }
+.plan {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 14px; padding: 24px 22px;
+  display: flex; flex-direction: column; gap: 16px;
+}
+.plan.pick { border-color: var(--dest); box-shadow: var(--shadow); position: relative; }
+.plan.pick::before {
+  content: 'محبوب‌ترین';
+  position: absolute; inset-block-start: -11px; inset-inline-start: 22px;
+  background: var(--dest); color: #fff;
+  font: 500 12px var(--body); padding: 3px 11px; border-radius: 100px;
+}
+.plan h3 { margin: 0; font-size: 17px; font-weight: 600; }
+.plan .tagline { font-size: 13.5px; color: var(--muted); margin: -10px 0 0; min-height: 40px; }
+.price { display: flex; align-items: baseline; gap: 6px; font-family: var(--display); }
+.price b { font-size: 27px; font-weight: 800; font-variant-numeric: tabular-nums; letter-spacing: -.02em; }
+.price span { font-size: 13px; color: var(--muted); font-family: var(--body); }
+.plan ul { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 9px; font-size: 14px; }
+.plan li { display: flex; gap: 9px; align-items: flex-start; color: var(--muted); }
+.plan li b { color: var(--ink); font-weight: 600; font-variant-numeric: tabular-nums; }
+.check { flex: none; width: 15px; height: 15px; margin-top: 5px; color: var(--good); }
+.dash { flex: none; width: 15px; text-align: center; color: var(--line); margin-top: -1px; }
+.plan .btn { justify-content: center; margin-top: auto; }
+
+.pay-note {
+  margin-top: 26px; display: flex; flex-wrap: wrap; gap: 10px 22px;
+  font-size: 14px; color: var(--muted);
+}
+.pay-note b { color: var(--ink); font-weight: 600; }
+
+/* پرسش‌ها */
+.faq { display: flex; flex-direction: column; gap: 0; border-top: 1px solid var(--line-soft); }
+details { border-bottom: 1px solid var(--line-soft); }
+summary {
+  cursor: pointer; list-style: none;
+  padding: 19px 0; font-size: 16.5px; font-weight: 500;
+  display: flex; align-items: center; gap: 14px;
+}
+summary::-webkit-details-marker { display: none; }
+summary::after {
+  content: '+'; margin-inline-start: auto;
+  font: 400 22px var(--body); color: var(--muted); line-height: 1;
+}
+details[open] summary::after { content: '−'; color: var(--dest); }
+details p { margin: 0 0 20px; color: var(--muted); max-width: 68ch; }
+
+/* پایان */
+.close { text-align: center; padding: 96px 0; }
+.close h2 { font-size: clamp(27px, 4vw, 40px); font-weight: 800; margin: 0 0 16px; }
+.close p { color: var(--muted); font-size: 18px; margin: 0 0 30px; }
+footer {
+  border-top: 1px solid var(--line-soft);
+  padding: 30px 0; font-size: 14px; color: var(--muted);
+}
+footer .wrap { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; }
+</style>
+
+<header class="top">
+  <div class="wrap">
+    <div class="brand">کپی<span>یار</span></div>
+    <nav>
+      <a href="#how">چطور کار می‌کند</a>
+      <a href="#features">امکانات</a>
+      <a href="#plans">تعرفه</a>
+      <a href="#faq">پرسش‌ها</a>
+    </nav>
+    <a class="btn" href="#plans">شروع رایگان</a>
+  </div>
+</header>
+
+<main>
+  <div class="wrap hero">
+    <div class="eyebrow"><span class="dot"></span> یک روز آزمایش رایگان، بدون پرداخت</div>
+    <h1>محتوای هر کانالی را بردارید،<br>تمیز کنید، <em>با نام خودتان</em> منتشر کنید.</h1>
+    <p class="lede">
+      کانال مبدا را معرفی می‌کنید و کانال خودتان را. از آن لحظه به بعد هر پستی که آنجا
+      منتشر شود، در چند ثانیه با قواعد شما پردازش و در کانال شما می‌نشیند —
+      بدون اینکه لازم باشد در کانال مبدا ادمین باشید.
+    </p>
+    <div class="cta-row">
+      <a class="btn lg" href="#plans">رایگان امتحان کنید</a>
+      <a class="btn lg ghost" href="#how">اول ببینم چطور کار می‌کند</a>
+    </div>
+
+    <div class="demo" id="demo">
+      <div class="demo-grid">
+        <article class="post src">
+          <div class="post-head">
+            <div class="avatar">م</div>
+            <div class="who">کانال مبدا</div>
+            <div class="tag">پستِ خام</div>
+          </div>
+          <div class="post-body">🔥 تخفیف ویژه پاییزی 🔥
+گوشی سامسونگ گلکسی A55 — ۱۲٬۴۵۰٬۰۰۰ تومان
+<span class="strike">سفارش: ۰۹۱۲۱۲۳۴۵۶۷</span>
+<span class="strike">example-shop.ir/a55</span>
+<span class="strike">جهت تبلیغات: @AdsChannel</span>
+<span class="strike">@SourceChannel</span></div>
+          <div class="wm"></div>
+        </article>
+
+        <div class="pipe">
+          <div class="step">حذف شماره تماس</div>
+          <div class="step">حذف لینک</div>
+          <div class="step">فیلتر تبلیغات</div>
+          <div class="step">امضای شما</div>
+          <div class="step">واترمارک</div>
+        </div>
+
+        <article class="post dest">
+          <div class="post-head">
+            <div class="avatar">ش</div>
+            <div class="who">کانال شما</div>
+            <div class="tag">منتشر شد</div>
+          </div>
+          <div class="post-body">🔥 تخفیف ویژه پاییزی 🔥
+گوشی سامسونگ گلکسی A55 — ۱۲٬۴۵۰٬۰۰۰ تومان
+<span class="gone">شماره حذف شد</span><span class="gone">لینک حذف شد</span>
+
+<span class="sig">🛍 فروشگاه شما | @YourChannel</span></div>
+          <div class="wm"></div>
+        </article>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── چرا بدون ادمین ─────────────────────────────────────────── -->
+  <section class="band" id="how">
+    <div class="wrap why">
+      <div>
+        <p class="kicker">چطور کار می‌کند</p>
+        <h2>چرا لازم نیست در کانال مبدا ادمین باشید</h2>
+        <p>
+          ربات‌های معمولی تلگرام فقط پیام کانالی را می‌بینند که در آن ادمین باشند.
+          برای همین اکثر ابزارها از شما می‌خواهند اول ادمین کانال مبدا شوید — که
+          در عمل یعنی هیچ‌وقت.
+        </p>
+        <p>
+          کپی‌یار مسیر دیگری می‌رود: <strong>اکانت خودتان</strong> را یک بار وصل
+          می‌کنید. کانال مبدا را با همان اکانت می‌خواند، درست مثل وقتی خودتان
+          آن را باز می‌کنید. پس هر کانالی که <strong>شما</strong> می‌توانید ببینید،
+          ربات هم می‌تواند — از جمله کانال‌های خصوصی و پست‌های قدیمی.
+        </p>
+        <p>
+          نشست اکانتتان با کلید اختصاصی سرور رمز می‌شود و هر وقت بخواهید با یک
+          دکمه قطع می‌شود.
+        </p>
+      </div>
+      <div class="wires">
+        <div class="wire">
+          <div class="num">۱</div>
+          <div>
+            <b>اکانت خود را وصل کنید</b>
+            <span>با شماره‌ی تلفن، یک بار برای همیشه</span>
+          </div>
+        </div>
+        <div class="wire">
+          <div class="num">۲</div>
+          <div>
+            <b>مبدا و مقصد را انتخاب کنید</b>
+            <span>از فهرست کانال‌های خودتان، بدون کپی کردن آیدی</span>
+          </div>
+        </div>
+        <div class="wire">
+          <div class="num">۳</div>
+          <div>
+            <b>قواعد را تنظیم کنید</b>
+            <span>یا یک قالب آماده بزنید و تمام</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── امکانات ────────────────────────────────────────────────── -->
+  <section id="features">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="kicker">امکانات</p>
+        <h2>هر چیزی که یک کانال جدی لازم دارد</h2>
+        <p>
+          نه فقط کپی. کنترل کامل روی اینکه چه چیزی برود، چه شکلی برود و کِی برود.
+        </p>
+      </div>
+
+      <div class="features">
+        <div class="feature">
+          <h3>کپی لحظه‌ای</h3>
+          <p>متن، عکس، ویدیو، گیف، موزیک، ویس، فایل، استیکر و آلبوم. پست مبدا در همان ثانیه پردازش و منتشر می‌شود.</p>
+        </div>
+        <div class="feature">
+          <h3>چند مقصد از یک مبدا</h3>
+          <p>کانال مبدا یک بار خوانده می‌شود و نتیجه به همه‌ی مقصدها می‌رود. هر مقصد می‌تواند امضای خودش را داشته باشد.</p>
+        </div>
+        <div class="feature">
+          <h3>کپی پست‌های گذشته</h3>
+          <p>تا ۱۰۰۰ پست قدیمی یک کانال را با همان قواعد، از قدیم به جدید، به کانال خود بیاورید.</p>
+        </div>
+        <div class="feature">
+          <h3>پاک‌سازی متن</h3>
+          <p>حذف لینک، هشتگ، آیدی، ایمیل و ایموجی — هرکدام جدا. جایگزینی کلمات، و الگوهای پیچیده با regex.</p>
+        </div>
+        <div class="feature">
+          <h3>امضای شما، نه آن‌ها</h3>
+          <p>آیدی کانال مبدا از پای پست برداشته و آیدی شما جایگزین می‌شود. هدر و فوتر ثابت هم اضافه می‌شود.</p>
+        </div>
+        <div class="feature">
+          <h3>فیلتر تبلیغات با امتیازدهی</h3>
+          <p>هر نشانه امتیاز می‌گیرد — شماره تماس، شماره کارت، «جهت تبلیغات»، تعداد لینک. از آستانه که رد شد، پست نمی‌رود.</p>
+          <span class="rule">ارقام فارسی هم شناسایی می‌شوند</span>
+        </div>
+        <div class="feature">
+          <h3>واترمارک روی تصاویر</h3>
+          <p>متن، ایموجی رنگی یا لوگوی خودتان. جادوگر پیش‌نمایش شش حالت آماده را روی یک عکس واقعی از کانال مبدا نشانتان می‌دهد.</p>
+        </div>
+        <div class="feature">
+          <h3>تشخیص پست تکراری</h3>
+          <p>در سه سطح؛ حتی اگر همان خبر از کانال دیگری با امضای متفاوت بیاید، دوباره منتشر نمی‌شود.</p>
+          <span class="rule">روی متن فارسی واقعی کالیبره شده</span>
+        </div>
+        <div class="feature">
+          <h3>فیلتر تعامل</h3>
+          <p>فقط پستی را بردارید که در کانال مبدا گرفته: حداقل بازدید، واکنش یا فوروارد.</p>
+        </div>
+        <div class="feature">
+          <h3>صف تأیید دستی</h3>
+          <p>هیچ پستی خودبه‌خود منتشر نشود؛ با یک دکمه تأیید یا رد کنید. برای کانال‌هایی که آبرویشان مهم است.</p>
+        </div>
+        <div class="feature">
+          <h3>زمان‌بندی و فاصله</h3>
+          <p>کار فقط در ساعت‌های دلخواه فعال باشد، و انفجار بیست پستیِ مبدا با فاصله پخش شود.</p>
+        </div>
+        <div class="feature">
+          <h3>مسیریابی با کلمه‌ی کلیدی</h3>
+          <p>پست‌های «تخفیف» به کانال فروش، بقیه به کانال اصلی — بدون ساختن کار جداگانه.</p>
+        </div>
+        <div class="feature">
+          <h3>بازنویسی کانفیگ پروکسی</h3>
+          <p>نام کانفیگ‌های داخل پست با نام کانال شما عوض می‌شود؛ حتی داخل فایل‌های اشتراک و zip.</p>
+          <span class="rule">قالبی که شناخته نشود دست‌نخورده می‌رود</span>
+        </div>
+        <div class="feature">
+          <h3>تست قبل از انتشار</h3>
+          <p>سه پست آخر مبدا با تنظیمات فعلی پردازش می‌شود و می‌بینید کدام می‌رود، کدام نه و چرا — بدون ارسال به کانال.</p>
+        </div>
+        <div class="feature">
+          <h3>هیچ پستی گم نمی‌شود</h3>
+          <p>اگر ارسال شکست بخورد، پست در صف می‌ماند و دوباره تلاش می‌شود — با نسخه‌ی به‌روزِ همان لحظه.</p>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── تعرفه ──────────────────────────────────────────────────── -->
+  <section class="band" id="plans">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="kicker">تعرفه</p>
+        <h2>با یک روز رایگان شروع کنید</h2>
+        <p>
+          بدون کارت، بدون ثبت‌نام اضافه. اگر به کارتان آمد، همان‌جا داخل ربات ارتقا بدهید.
+        </p>
+      </div>
+
+      <div class="plans">
+        <div class="plan">
+          <h3>آزمایشی</h3>
+          <p class="tagline">تست امکانات پایه</p>
+          <div class="price"><b>رایگان</b><span>۱ روز</span></div>
+          <ul>
+            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۲۰</b> پیام</span></li>
+            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۱</b> کار کپی</span></li>
+            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span>کانال عمومی</span></li>
+            <li><span class="dash">—</span><span>کانال خصوصی</span></li>
+            <li><span class="dash">—</span><span>واترمارک</span></li>
+          </ul>
+          <a class="btn ghost" href="#">شروع کنید</a>
+        </div>
+
+        <div class="plan">
+          <h3>۷ روزه</h3>
+          <p class="tagline">پلن پایه برای شروع</p>
+          <div class="price"><b>۱۲۹٬۰۰۰</b><span>تومان</span></div>
+          <ul>
+            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۲٬۰۰۰</b> پیام</span></li>
+            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۳</b> کار کپی</span></li>
+            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span>تا <b>۳</b> مقصد</span></li>
+            <li><span class="dash">—</span><span>کانال خصوصی</span></li>
+            <li><span class="dash">—</span><span>واترمارک</span></li>
+          </ul>
+          <a class="btn ghost" href="#">خرید</a>
+        </div>
+
+        <div class="plan pick">
+          <h3>۱۴ روزه</h3>
+          <p class="tagline">با کانال خصوصی و واترمارک</p>
+          <div class="price"><b>۲۲۹٬۰۰۰</b><span>تومان</span></div>
+          <ul>
+            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۱۰٬۰۰۰</b> پیام</span></li>
+            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۶</b> کار کپی</span></li>
+            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span>تا <b>۵</b> مقصد</span></li>
+            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span>کانال خصوصی</span></li>
+            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۱۰</b> واترمارک</span></li>
+          </ul>
+          <a class="btn" href="#">خرید</a>
+        </div>
+
+        <div class="plan">
+          <h3>۳۰ روزه</h3>
+          <p class="tagline">حرفه‌ای، با همه‌ی امکانات</p>
+          <div class="price"><b>۴۲۹٬۰۰۰</b><span>تومان</span></div>
+          <ul>
+            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۲۰٬۰۰۰</b> پیام</span></li>
+            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۲۰</b> کار کپی</span></li>
+            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span>تا <b>۱۰</b> مقصد</span></li>
+            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۵۰</b> پیام گذشته</span></li>
+            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span>پشتیبانی ویژه</span></li>
+          </ul>
+          <a class="btn ghost" href="#">خرید</a>
+        </div>
+      </div>
+
+      <div class="pay-note">
+        <span><b>طرح اختصاصی</b> — ۸۹۰٬۰۰۰ تومان، پیام نامحدود، ۵۰ کار، ۲۰ مقصد</span>
+        <span><b>پرداخت</b> کارت‌به‌کارت داخل ربات؛ رسید را می‌فرستید و اشتراک بلافاصله فعال می‌شود</span>
+        <span><b>دعوت دوستان</b> — از هر خرید دعوت‌شده‌هایتان به کیف پول شما برمی‌گردد</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── پرسش‌ها ────────────────────────────────────────────────── -->
+  <section id="faq">
+    <div class="wrap narrow">
+      <div class="section-head">
+        <p class="kicker">پرسش‌های پرتکرار</p>
+        <h2>چیزهایی که معمولاً می‌پرسند</h2>
+      </div>
+
+      <div class="faq">
+        <details open>
+          <summary>واقعاً لازم نیست در کانال مبدا ادمین باشم؟</summary>
+          <p>
+            نه. ربات کانال مبدا را با اکانت خودتان می‌خواند، دقیقاً مثل وقتی خودتان
+            آن را باز می‌کنید. هر کانالی که شما به آن دسترسی دارید کافی است — حتی
+            کانال خصوصی که عضوش هستید.
+          </p>
+        </details>
+        <details>
+          <summary>اکانت من امن است؟</summary>
+          <p>
+            نشست اکانت با کلید اختصاصیِ سرور رمزنگاری و ذخیره می‌شود، و هر وقت
+            بخواهید با یک دکمه قطع می‌شود. ربات خودش را به تلگرام مثل یک کلاینت
+            معمولی معرفی می‌کند و سرعت ارسال را کنترل می‌کند تا اکانتتان محدود نشود.
+            اگر تلگرام محدودیتی اعمال کند، کارها خودکار متوقف می‌شوند تا وضعیت
+            بدتر نشود و به خودتان خبر می‌رسد.
+          </p>
+        </details>
+        <details>
+          <summary>اگر پستی در کانال مبدا ویرایش یا حذف شود چه؟</summary>
+          <p>
+            می‌توانید همگام‌سازی را روشن کنید تا همان ویرایش یا حذف روی پست کانال
+            شما هم اعمال شود. پست‌هایی هم که در صف مانده‌اند، لحظه‌ی انتشار دوباره
+            از مبدا خوانده می‌شوند — پس نسخه‌ی به‌روز می‌رود و پستِ حذف‌شده اصلاً نمی‌رود.
+          </p>
+        </details>
+        <details>
+          <summary>می‌توانم قبل از خرید امتحان کنم؟</summary>
+          <p>
+            بله. با <span style="color:var(--dest)">/start</span> یک اشتراک آزمایشی
+            یک‌روزه فعال می‌شود؛ بدون پرداخت و بدون کارت. برای اینکه ببینید خروجی
+            دقیقاً چه شکلی می‌شود هم دکمه‌ی «تست» هست: سه پست آخر مبدا را با
+            تنظیمات شما پردازش می‌کند و نتیجه را نشان می‌دهد، بدون اینکه چیزی روی
+            کانالتان برود. پیشنهاد می‌کنیم پیش از خرید حتماً از همین دو استفاده کنید.
+          </p>
+        </details>
+        <details>
+          <summary>پرداخت چطور انجام می‌شود؟</summary>
+          <p>
+            داخل خود ربات: طرح را انتخاب می‌کنید، شماره کارت را می‌بینید، رسید را
+            می‌فرستید و پس از تأیید، اشتراک بلافاصله فعال می‌شود. توجه کنید که
+            پرداخت‌ها بازگشت‌پذیر نیستند — برای همین اشتراک آزمایشی رایگان را
+            گذاشته‌ایم تا پیش از خرید مطمئن شوید سرویس به کارتان می‌آید.
+          </p>
+        </details>
+        <details>
+          <summary>اگر سهمیه‌ی طرحم کم بیاید؟</summary>
+          <p>
+            می‌توانید هر زمان به طرح بالاتر ارتقا بدهید؛ ارزش روزهای استفاده‌نشده‌ی
+            طرح فعلی محاسبه و از مبلغ کم می‌شود. برای واترمارک و پیام‌های گذشته هم
+            می‌شود جداگانه اعتبار خرید، بدون عوض کردن طرح.
+          </p>
+        </details>
+        <details>
+          <summary>چند کانال را همزمان می‌توانم کپی کنم؟</summary>
+          <p>
+            بستگی به طرح دارد: از ۱ کار در طرح آزمایشی تا ۵۰ کار در طرح اختصاصی.
+            هر کار هم می‌تواند چند کانال مقصد داشته باشد و مبدا فقط یک بار خوانده
+            می‌شود، پس چند مقصد چند برابر سهمیه نمی‌برد.
+          </p>
+        </details>
+      </div>
+    </div>
+  </section>
+
+  <div class="wrap close">
+    <h2>کانالتان را امروز پر کنید</h2>
+    <p>یک روز رایگان. بدون کارت، بدون تعهد.</p>
+    <a class="btn lg" href="#">شروع در تلگرام</a>
+  </div>
+</main>
+
+<footer>
+  <div class="wrap">
+    <span>کپی‌یار — ربات کپی خودکار محتوای تلگرام</span>
+    <span>پشتیبانی داخل ربات، هر روز</span>
+  </div>
+</footer>
+
+<script>
+// نمایش تبدیل پست وقتی به دید می‌آید یک بار اجرا می‌شود — یک لحظه‌ی
+// هماهنگ، نه افکت‌های پراکنده در کل صفحه.
+(function () {
+  var demo = document.getElementById('demo');
+  if (!demo) return;
+
+  if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
+    demo.classList.add('run');
+    return;
+  }
+
+  if (!('IntersectionObserver' in window)) {
+    demo.classList.add('run');
+    return;
+  }
+
+  var seen = new IntersectionObserver(function (entries) {
+    entries.forEach(function (entry) {
+      if (entry.isIntersecting) {
+        demo.classList.add('run');
+        seen.disconnect();
+      }
+    });
+  }, { threshold: 0.35 });
+
+  seen.observe(demo);
+})();
+</script>
