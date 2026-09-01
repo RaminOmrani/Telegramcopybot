@@ -32,6 +32,13 @@ ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
 warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
 die()  { printf '\n\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
 
+_mark_deployed() {
+    # کامیتی که ربات واقعاً با آن بالا آمد. مالکیت telkap است چون بقیه‌ی
+    # data/ هم همین‌طور است و سرویس آنجا اجازه‌ی نوشتن دارد.
+    printf '%s\n' "$1" > "$APP_DIR/data/.deployed"
+    chown "$APP_USER:$APP_USER" "$APP_DIR/data/.deployed" 2>/dev/null || true
+}
+
 [ "$(id -u)" -eq 0 ] || die "با sudo اجرا کنید: sudo bash $0"
 cd "$APP_DIR" || die "پوشه‌ی $APP_DIR پیدا نشد"
 
@@ -73,22 +80,36 @@ fi
 sudo -u "$APP_USER" git fetch origin "$BRANCH"
 NEW_COMMIT="$(sudo -u "$APP_USER" git rev-parse "origin/$BRANCH")"
 
-if [ "$OLD_COMMIT" = "$NEW_COMMIT" ]; then
+# «کدِ روی دیسک» و «کدی که ربات دارد اجرا می‌کند» دو چیز متفاوت‌اند.
+# اگر کسی دستی git pull بزند، این دو از هم جدا می‌شوند: فایل‌ها تازه‌اند
+# ولی ربات هنوز نسخه‌ی قبلی را در حافظه دارد. بدون این نشانه، اسکریپت
+# می‌گفت «آخرین نسخه است» و ری‌استارت نمی‌کرد — یعنی شما فکر می‌کردید
+# آپدیت شده در حالی که نشده بود.
+DEPLOYED_FILE="$APP_DIR/data/.deployed"
+DEPLOYED="$(cat "$DEPLOYED_FILE" 2>/dev/null || true)"
+
+if [ "$OLD_COMMIT" = "$NEW_COMMIT" ] && [ "$DEPLOYED" = "$NEW_COMMIT" ]; then
     ok "همین حالا آخرین نسخه است — کاری لازم نیست"
     systemctl is-active --quiet "$SERVICE" && ok "ربات در حال اجراست" \
         || warn "ربات خاموش است: systemctl start $SERVICE"
     exit 0
 fi
 
-printf '\n'
-sudo -u "$APP_USER" git log --oneline "$OLD_COMMIT..$NEW_COMMIT" | sed 's/^/  /'
+if [ "$OLD_COMMIT" = "$NEW_COMMIT" ]; then
+    warn "کد تازه است ولی ربات هنوز نسخه‌ی قبلی را اجرا می‌کند — ری‌استارت لازم است"
+else
+    printf '\n'
+    sudo -u "$APP_USER" git log --oneline "$OLD_COMMIT..$NEW_COMMIT" | sed 's/^/  /'
+fi
 
 say "توقف ربات"
 systemctl stop "$SERVICE"
 ok "متوقف شد"
 
-sudo -u "$APP_USER" git merge --ff-only "origin/$BRANCH"
-ok "کد به‌روز شد → $(sudo -u "$APP_USER" git rev-parse --short HEAD)"
+if [ "$OLD_COMMIT" != "$NEW_COMMIT" ]; then
+    sudo -u "$APP_USER" git merge --ff-only "origin/$BRANCH"
+    ok "کد به‌روز شد → $(sudo -u "$APP_USER" git rev-parse --short HEAD)"
+fi
 
 say "نصب کتابخانه‌های تازه"
 sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install -q -r requirements.txt
@@ -116,6 +137,7 @@ done
 
 if systemctl is-active --quiet "$SERVICE" \
    && [ "$(systemctl show -p NRestarts --value "$SERVICE")" = "0" ]; then
+    _mark_deployed "$NEW_COMMIT"
     printf '\n\033[32m✓ نسخه‌ی تازه بالا آمد.\033[0m\n'
     printf '  لاگ زنده:  journalctl -u %s -f\n' "$SERVICE"
     exit 0
@@ -132,6 +154,7 @@ systemctl start "$SERVICE"
 sleep 3
 
 if systemctl is-active --quiet "$SERVICE"; then
+    _mark_deployed "$OLD_COMMIT"
     printf '\n\033[33m! به نسخه‌ی قبلی برگشت و ربات دوباره بالا آمد.\033[0m\n'
     printf '  لاگ بالا را برای من بفرستید تا علت را پیدا کنم.\n'
 else
