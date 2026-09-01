@@ -69,14 +69,26 @@ if systemctl list-unit-files ssh.socket >/dev/null 2>&1 \
         # اضافه می‌شوند نه جایگزین، و اجرای دوباره‌ی اسکریپت پورت‌های
         # قبلی را هم نگه می‌داشت.
         printf 'ListenStream=\n'
-        printf 'ListenStream=22\n'
-        for port in $PORTS; do
-            printf 'ListenStream=%s\n' "$port"
+        #
+        # <b>هر دو خانواده صریحاً.</b> نوشتن «ListenStream=2222» یک سوکت
+        # IPv6 می‌سازد که *معمولاً* IPv4 را هم می‌پذیرد — ولی این به
+        # sysctl مربوط است و روی همه‌ی سرورها یکسان نیست. اگر آن سوکت
+        # فقط IPv6 باشد، هر اتصال IPv4 به یک پورتِ عملاً بسته می‌خورد و
+        # کرنل RST می‌فرستد: همان «Connection refused» که کل دنیا
+        # می‌گیرد در حالی که ss نشان می‌دهد گوش می‌دهد.
+        #
+        # BindIPv6Only=ipv6-only لازم است: بدون آن سوکت IPv6 دوگانه
+        # می‌شود و bind کردن 0.0.0.0 با خطای «آدرس در حال استفاده»
+        # شکست می‌خورد.
+        printf 'BindIPv6Only=ipv6-only\n'
+        for port in 22 $PORTS; do
+            printf 'ListenStream=0.0.0.0:%s\n' "$port"
+            printf 'ListenStream=[::]:%s\n' "$port"
         done
     } > /etc/systemd/system/ssh.socket.d/port.conf
     systemctl daemon-reload
     systemctl restart ssh.socket
-    ok "ssh.socket روی ۲۲ و $PORTS"
+    ok "ssh.socket روی ۲۲ و $PORTS (هم IPv4 هم IPv6)"
 else
     say "پیکربندی sshd_config (روش کلاسیک)"
     mkdir -p /etc/ssh/sshd_config.d
@@ -91,20 +103,35 @@ else
     ok "sshd روی ۲۲ و $PORTS"
 fi
 
-# ── ۳) واقعاً گوش می‌دهند؟ ───────────────────────────────────────────
-say "بررسی"
+# ── ۳) واقعاً وصل می‌شود؟ ────────────────────────────────────────────
+#
+# «ss نشان می‌دهد گوش می‌دهد» کافی نیست — دقیقاً همین اشتباه بود که
+# باعث شد فکر کنیم کار تمام است در حالی که کل دنیا refused می‌گرفت.
+# سوکتِ فقط-IPv6 در ss عادی به نظر می‌رسد. پس واقعاً وصل می‌شویم.
+probe() {
+    timeout 3 bash -c "exec 3<>/dev/tcp/$1/$2" 2>/dev/null
+}
+
+say "بررسی — اتصال واقعی، نه فقط فهرست ss"
 sleep 1
+printf '\n'
+ss -tln | grep -E "[:.](22|$(echo "$PORTS" | tr ' ' '|'))\b" | sed 's/^/  /'
+printf '\n'
+
 listening=""
-for port in $PORTS; do
-    if ss -tln | grep -qE "[:.]$port\b"; then
-        listening="$listening $port"
+for port in 22 $PORTS; do
+    if probe 127.0.0.1 "$port"; then
+        ok "پورت $port — IPv4 ✓"
+        [ "$port" = "22" ] || listening="$listening $port"
+    elif probe ::1 "$port"; then
+        warn "پورت $port فقط IPv6 است — از اینترنت IPv4 «refused» می‌گیرد"
     else
-        warn "پورت $port بالا نیامد"
+        warn "پورت $port اصلاً وصل نمی‌شود"
     fi
 done
-[ -n "$listening" ] || die "هیچ پورتی بالا نیامد. ۲۲ هنوز کار می‌کند، پس چیزی از دست نرفته.
+
+[ -n "$listening" ] || die "هیچ پورت تازه‌ای روی IPv4 بالا نیامد. ۲۲ سر جایش است.
      برای دیدن علت:  journalctl -u ssh --no-pager -n 30"
-ok "گوش می‌دهد روی:$listening"
 
 # ── ۴) چه چیزی را روی ویندوز بزنند ──────────────────────────────────
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
@@ -118,8 +145,9 @@ for port in $listening; do
 done
 printf '\n  هرکدام که رمز پرسید، همان درست است — از این پس همیشه\n'
 printf '  با همان -p وصل شوید.\n\n'
-printf '  اگر همه «Connection refused» دادند، یعنی فایروالِ شبکه‌ی\n'
-printf '  هاست جلوی پورت‌های تازه را گرفته: در پنل ParsPack بخش\n'
-printf '  Firewall را ببینید.\n'
-printf '  اگر همه «timed out» دادند، فیلترینگ روی خودِ پروتکل SSH\n'
-printf '  است نه پورت — آن‌وقت با وی‌پی‌ان امتحان کنید.\n\n'
+printf '  اگر باز هم جواب نداد، از بیرون بسنجید تا معلوم شود مشکل از\n'
+printf '  مسیر ایران است یا از خودِ سرور:\n\n'
+printf '      https://check-host.net/check-tcp?host=%s:%s\n\n' \
+    "$IP" "$(set -- $listening; echo "$1")"
+printf '  اگر «همه‌جای دنیا» رد شد، مشکل سمت سرور یا هاست است.\n'
+printf '  اگر فقط نودهای ایران رد شدند، فیلترینگ مسیر است.\n\n'
