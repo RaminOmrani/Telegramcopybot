@@ -433,3 +433,86 @@ async def test_verify_now_says_nothing_when_the_transfer_is_not_there_yet(
     monkeypatch.setattr(cryptocheck.tron, "incoming_usdt", transfers)
 
     assert await cryptocheck.verify_now(mine.id) == ""
+
+
+# ── هشدار تغییر ولت ──────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_changing_the_wallet_address_alerts_the_admins(tmp_path, monkeypatch):
+    """<b>خطر واقعی، نه خطر خیالی.</b>
+
+    کلید خصوصی ولت هیچ‌وقت روی سرور نیست، پس حتی هکِ کاملِ سرور هم
+    پول موجود را نمی‌برد. ولی کسی که به یک حساب ادمین برسد می‌تواند
+    نشانی را عوض کند و درآمد آینده را به ولت خودش ببرد — و آن تغییر
+    تا وقتی کسی لاگ را نخواند بی‌صدا می‌ماند.
+    """
+    from telkap.services import alerts, crypto
+
+    await _setup(tmp_path, monkeypatch, settings={})
+    good = "T" + "9" * 33
+    evil = "T" + "8" * 33
+
+    sent = []
+
+    async def fake_send(text, **kwargs):
+        sent.append((text, kwargs))
+        return 1
+
+    monkeypatch.setattr(alerts, "send", fake_send)
+
+    await crypto.set_address(good, admin_id=1)
+    sent.clear()                      # اولین ثبت، تغییر حساب نمی‌شود
+    await crypto.set_address(evil, admin_id=99)
+
+    assert len(sent) == 1
+    text, kwargs = sent[0]
+    assert good in text and evil in text     # هم قبلی هم جدید
+    assert "99" in text                      # چه کسی عوضش کرد
+    assert kwargs["cooldown"] == 0           # هشدار امنیتی خفه نمی‌شود
+
+
+@pytest.mark.asyncio
+async def test_setting_the_same_address_again_is_not_an_alert(tmp_path, monkeypatch):
+    """هشدارِ بی‌مورد باعث می‌شود هشدار واقعی هم جدی گرفته نشود."""
+    from telkap.services import alerts, crypto
+
+    await _setup(tmp_path, monkeypatch, settings={})
+    same = "T" + "7" * 33
+
+    sent = []
+
+    async def fake_send(text, **kwargs):
+        sent.append(text)
+        return 1
+
+    monkeypatch.setattr(alerts, "send", fake_send)
+
+    await crypto.set_address(same, admin_id=1)
+    sent.clear()
+    await crypto.set_address(same, admin_id=1)
+
+    assert sent == []
+
+
+@pytest.mark.asyncio
+async def test_changing_the_rate_alerts_too(tmp_path, monkeypatch):
+    """نرخ هم پول است: نرخِ دستکاری‌شده یعنی اشتراکِ تقریباً رایگان."""
+    from telkap.services import alerts, crypto
+
+    await _setup(tmp_path, monkeypatch, settings={})
+
+    sent = []
+
+    async def fake_send(text, **kwargs):
+        sent.append(text)
+        return 1
+
+    monkeypatch.setattr(alerts, "send", fake_send)
+
+    await crypto.set_rate(60_000, admin_id=1)
+    sent.clear()
+    await crypto.set_rate(90_000, admin_id=1)
+
+    assert len(sent) == 1
+    assert "نرخ" in sent[0]

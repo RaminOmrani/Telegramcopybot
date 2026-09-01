@@ -59,6 +59,7 @@ async def _read(key: str):
 async def _write(key: str, value, admin_id: int | None) -> None:
     async with get_session() as db:
         row = await db.get(AppSetting, key)
+        before = row.value if row else None
         if row is None:
             row = AppSetting(key=key)
             db.add(row)
@@ -66,6 +67,42 @@ async def _write(key: str, value, admin_id: int | None) -> None:
         row.updated_by = admin_id
         row.updated_at = utcnow()
         await db.commit()
+
+    if before != value:
+        await _announce(key, before, value, admin_id)
+
+
+async def _announce(key: str, before, after, admin_id: int | None) -> None:
+    """تغییر نشانی یا نرخ را به همه‌ی ادمین‌های مالی خبر می‌دهد.
+
+    <b>چرا این لازم است.</b> کلید خصوصی ولت هیچ‌وقت روی سرور نیست، پس
+    حتی هکِ کاملِ سرور هم پول موجود را نمی‌برد. ولی کسی که به یک حساب
+    ادمین برسد می‌تواند <b>نشانی را عوض کند</b> و درآمد آینده را به ولت
+    خودش ببرد — و این تغییر تا وقتی کسی لاگ را نخواند بی‌صدا می‌ماند.
+
+    یک پیام فوری به بقیه‌ی ادمین‌ها، همان بی‌صدا بودن را از بین می‌برد.
+    """
+    from telkap.services import alerts, roles
+
+    labels = {ADDRESS_KEY: "نشانی ولت تتر", RATE_KEY: "نرخ تتر"}
+    label = labels.get(key)
+    if label is None:
+        return
+
+    who = f"<code>{admin_id}</code>" if admin_id else "سیستم"
+    await alerts.send(
+        f"🔐 <b>{label} عوض شد</b>\n\n"
+        f"از: <code>{before or '—'}</code>\n"
+        f"به: <code>{after}</code>\n"
+        f"توسط: {who}\n\n"
+        "<i>اگر این کار شما نبود، همین حالا برش گردانید و رمز حساب‌های "
+        "ادمین را عوض کنید — پرداخت‌های بعدی به همین نشانی می‌روند.</i>",
+        cap=roles.CAP_MONEY,
+        # هشدار امنیتی هیچ‌وقت خفه نمی‌شود. کلیدِ یکتا یعنی throttle
+        # هرگز جلویش را نمی‌گیرد، حتی اگر پشت سر هم عوض شود.
+        key=f"walletchange:{key}:{after}",
+        cooldown=0,
+    )
 
 
 async def rate() -> int:
