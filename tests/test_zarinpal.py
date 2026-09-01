@@ -16,18 +16,31 @@ import pytest
 from telkap import config
 from telkap.services import zarinpal
 
+CODE = "aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee"
+
 
 @pytest.fixture
 def merchant(monkeypatch):
-    """درگاه تنظیم‌شده، بدون دست زدن به .env واقعی."""
+    """درگاه تنظیم‌شده، بدون دست زدن به .env واقعی.
+
+    کد پذیرنده از دیتابیس خوانده می‌شود، پس اینجا هم جایگزین می‌شود:
+    تست‌های این فایل درباره‌ی <b>شکل درخواست</b> به زرین‌پال‌اند، نه
+    درباره‌ی جای نگهداری کد — و بالا آوردن یک دیتابیس برایشان فقط
+    کندشان می‌کند.
+    """
     base = config.get_settings()
     fake = dataclasses.replace(
         base,
-        zarinpal_merchant="aaaaaaaa-bbbb-cccc-dddd-eeeeeeeeeeee",
+        zarinpal_merchant=CODE,
         web_base_url="https://botpanel.example.com",
     )
     monkeypatch.setattr(config, "get_settings", lambda: fake)
     monkeypatch.setattr(zarinpal, "get_settings", lambda: fake)
+
+    async def stored():
+        return CODE
+
+    monkeypatch.setattr(zarinpal, "merchant", stored)
     return fake
 
 
@@ -51,14 +64,18 @@ async def test_an_unconfigured_gateway_makes_no_calls(monkeypatch):
     async def explode(*args, **kwargs):
         raise AssertionError("نباید تماسی گرفته می‌شد")
 
+    async def no_merchant():
+        return ""
+
     monkeypatch.setattr(zarinpal, "_post", explode)
-    monkeypatch.setattr(zarinpal, "configured", lambda: False)
+    monkeypatch.setattr(zarinpal, "merchant", no_merchant)
 
     assert await zarinpal.start(129_000, "اشتراک", request_id=1) is None
     assert await zarinpal.verify("A000", 129_000) is None
 
 
-def test_both_pieces_are_required(monkeypatch):
+@pytest.mark.asyncio
+async def test_both_pieces_are_required(monkeypatch):
     """بدون کد پذیرنده درخواستی ساخته نمی‌شود، و بدون نشانی عمومی
     زرین‌پال جایی برای برگرداندن کاربر ندارد."""
     base = config.get_settings()
@@ -73,7 +90,12 @@ def test_both_pieces_are_required(monkeypatch):
             base, zarinpal_merchant=merchant_id, web_base_url=base_url
         )
         monkeypatch.setattr(zarinpal, "get_settings", lambda f=fake: f)
-        assert zarinpal.configured() is ready
+
+        async def stored(value=merchant_id):
+            return value
+
+        monkeypatch.setattr(zarinpal, "merchant", stored)
+        assert await zarinpal.configured() is ready
 
 
 # ── شکل درخواست ─────────────────────────────────────────────────────
@@ -213,3 +235,65 @@ def test_a_trailing_slash_does_not_double_up(monkeypatch):
     )
     monkeypatch.setattr(zarinpal, "get_settings", lambda: fake)
     assert zarinpal.callback_url() == "https://x.example.com/pay/zarinpal"
+
+
+# ── کد پذیرنده از پنل ───────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_the_panel_value_wins_over_the_env_file(tmp_path, monkeypatch):
+    """<b>چرا کد پذیرنده از .env به پنل آمد.</b>
+
+    تا امروز فقط در .env بود، یعنی روشن کردن درگاه به SSH نیاز داشت —
+    همان چیزی که شماره کارت را ماه‌ها خالی نگه داشت و هر خرید را به
+    «به پشتیبانی پیام بدهید» می‌رساند.
+    """
+    from tests.test_copier import _setup
+
+    await _setup(tmp_path, monkeypatch, settings={})
+    base = config.get_settings()
+    fake = dataclasses.replace(base, zarinpal_merchant="11111111-1111-1111-1111-111111111111")
+    monkeypatch.setattr(zarinpal, "get_settings", lambda: fake)
+
+    assert await zarinpal.merchant() == "11111111-1111-1111-1111-111111111111"
+
+    await zarinpal.set_merchant("22222222-2222-2222-2222-222222222222", admin_id=1)
+
+    assert await zarinpal.merchant() == "22222222-2222-2222-2222-222222222222"
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_merchant_code_is_refused(tmp_path, monkeypatch):
+    """<b>کد ناقص، تنها نشانه‌اش شکست خوردنِ هر خرید است.</b>
+
+    زرین‌پال کد بد را با یک خطای عمومی رد می‌کند و کاربر فقط می‌بیند
+    «درگاه در دسترس نیست». گرفتنِ غلط تایپی همین‌جا، ارزان‌ترین جای
+    ممکن است.
+    """
+    from tests.test_copier import _setup
+
+    await _setup(tmp_path, monkeypatch, settings={})
+
+    for bad in ["", "کوتاه", "11111111-1111-1111-1111", "zzzzzzzz-1111-1111-1111-111111111111"]:
+        assert await zarinpal.set_merchant(bad, admin_id=1) is None
+
+
+@pytest.mark.asyncio
+async def test_the_stored_code_is_the_one_actually_sent(tmp_path, monkeypatch):
+    """ثبت شدن کافی نیست؛ باید همان به زرین‌پال برود."""
+    from tests.test_copier import _setup
+
+    await _setup(tmp_path, monkeypatch, settings={})
+    base = config.get_settings()
+    fake = dataclasses.replace(base, web_base_url="https://botpanel.example.com")
+    monkeypatch.setattr(zarinpal, "get_settings", lambda: fake)
+
+    await zarinpal.set_merchant("33333333-3333-3333-3333-333333333333", admin_id=1)
+
+    calls = Calls({"data": {"code": 100, "authority": "A123"}})
+    monkeypatch.setattr(zarinpal, "_post", calls.post)
+
+    await zarinpal.start(129_000, "اشتراک", request_id=7)
+
+    _, payload = calls.sent[0]
+    assert payload["merchant_id"] == "33333333-3333-3333-3333-333333333333"

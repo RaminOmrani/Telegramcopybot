@@ -31,10 +31,13 @@ https://github.com/ZarinPal-Lab/Zarinpal-RestAPI-Sample-php
 from __future__ import annotations
 
 import logging
+import re
 
 import aiohttp
 
 from telkap.config import get_settings
+from telkap.db import get_session
+from telkap.models import AppSetting, utcnow
 
 log = logging.getLogger(__name__)
 
@@ -53,14 +56,56 @@ TIMEOUT_SECONDS = 25
 CALLBACK_PATH = "/pay/zarinpal"
 
 
-def configured() -> bool:
+# کد پذیرنده در پنل ذخیره می‌شود، با .env به‌عنوان پیش‌فرض. تا امروز
+# فقط در .env بود، یعنی روشن کردن درگاه به SSH نیاز داشت — همان
+# مشکلی که شماره کارت داشت و فروش را می‌خواباند.
+MERCHANT_KEY = "zarinpal_merchant"
+
+# کد پذیرنده یک UUID است. این بررسی کدِ جعلی را نمی‌گیرد، ولی غلط
+# تایپی و «کپی ناقص» را می‌گیرد — و آن دو، تنها نشانه‌شان این است که
+# هر خرید بی‌دلیل شکست می‌خورد.
+MERCHANT_RE = re.compile(
+    r"^[0-9a-fA-F]{8}-[0-9a-fA-F]{4}-[0-9a-fA-F]{4}-"
+    r"[0-9a-fA-F]{4}-[0-9a-fA-F]{12}$"
+)
+
+
+def valid_merchant(value: str) -> bool:
+    return bool(MERCHANT_RE.match((value or "").strip()))
+
+
+async def merchant() -> str:
+    """کد پذیرنده — از پنل، وگرنه از .env."""
+    async with get_session() as db:
+        row = await db.get(AppSetting, MERCHANT_KEY)
+    stored = str((row.value if row else None) or "").strip()
+    return stored or (get_settings().zarinpal_merchant or "").strip()
+
+
+async def set_merchant(value: str, *, admin_id: int | None = None) -> str | None:
+    """کد پذیرنده‌ی تازه. None یعنی پذیرفته نشد."""
+    cleaned = (value or "").strip().lower()
+    if not valid_merchant(cleaned):
+        return None
+    async with get_session() as db:
+        row = await db.get(AppSetting, MERCHANT_KEY)
+        if row is None:
+            row = AppSetting(key=MERCHANT_KEY)
+            db.add(row)
+        row.value = cleaned
+        row.updated_by = admin_id
+        row.updated_at = utcnow()
+        await db.commit()
+    return cleaned
+
+
+async def configured() -> bool:
     """آیا درگاه آماده‌ی استفاده است؟
 
     هر دو لازم‌اند: بدون کد پذیرنده درخواستی ساخته نمی‌شود، و بدون
     نشانی عمومی زرین‌پال جایی برای برگرداندن کاربر ندارد.
     """
-    cfg = get_settings()
-    return bool(cfg.zarinpal_merchant) and bool(cfg.web_base_url)
+    return bool(await merchant()) and bool(get_settings().web_base_url)
 
 
 def callback_url() -> str:
@@ -108,14 +153,14 @@ async def start(amount_toman: int, description: str, *, request_id: int) -> str 
     None یعنی درگاه درخواست را نپذیرفت؛ صدازننده باید راه دیگری پیشنهاد
     بدهد نه اینکه کاربر را با صفحه‌ی خطا تنها بگذارد.
     """
-    if not configured() or amount_toman <= 0:
+    code_id = await merchant()
+    if not code_id or not get_settings().web_base_url or amount_toman <= 0:
         return None
 
-    cfg = get_settings()
     data = await _post(
         REQUEST_URL,
         {
-            "merchant_id": cfg.zarinpal_merchant,
+            "merchant_id": code_id,
             "amount": int(amount_toman),
             "currency": CURRENCY_TOMAN,
             "callback_url": f"{callback_url()}?rid={request_id}",
@@ -151,14 +196,14 @@ async def verify(authority: str, amount_toman: int) -> dict | None:
     `Status=OK` را می‌آورد و هرکسی می‌تواند همان نشانی را دستی باز کند؛
     تنها چیزی که پرداخت را ثابت می‌کند همین تماس سمت سرور است.
     """
-    if not configured() or not authority or amount_toman <= 0:
+    code_id = await merchant()
+    if not code_id or not authority or amount_toman <= 0:
         return None
 
-    cfg = get_settings()
     data = await _post(
         VERIFY_URL,
         {
-            "merchant_id": cfg.zarinpal_merchant,
+            "merchant_id": code_id,
             "amount": int(amount_toman),
             "authority": authority,
         },

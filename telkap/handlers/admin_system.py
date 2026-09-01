@@ -124,6 +124,22 @@ def _rate_age(when) -> tuple[str, bool]:
     return (f"⚠️ {text}" if old else text), old
 
 
+def _gateway_state(merchant: str, ready: bool) -> str:
+    """چرا درگاه فعال نیست — دقیقاً کدام قطعه کم است.
+
+    دو شرط دارد و پیام باید بگوید کدام‌یک نیست، وگرنه ادمین کد پذیرنده
+    را درست وارد می‌کند و درگاه همچنان خاموش می‌ماند بی‌آنکه بفهمد
+    چیزِ دیگری لازم بوده.
+    """
+    if ready:
+        # کد پذیرنده کامل نشان داده نمی‌شود؛ صفحه‌ی پنل جای دیدنی
+        # نگه داشتنِ اعتبارنامه نیست.
+        return f"فعال — کد پذیرنده: {merchant[:8]}…"
+    if not merchant:
+        return "کد پذیرنده ثبت نشده"
+    return "کد پذیرنده هست، ولی WEB_BASE_URL خالی است — پنل وب لازم دارد"
+
+
 async def _usdt_screen(event) -> None:
     """همه‌ی راه‌های پرداخت در یک صفحه.
 
@@ -136,7 +152,9 @@ async def _usdt_screen(event) -> None:
     wallet = await crypto.address()
     auto = await usdtrate.is_auto()
     ready_coins = await crypto.ready_coins()
-    ready = bool(card) or bool(ready_coins) or zarinpal.configured()
+    gateway = await zarinpal.configured()
+    merchant = await zarinpal.merchant()
+    ready = bool(card) or bool(ready_coins) or gateway
 
     head = "💳 <b>راه‌های پرداخت</b>\n\n"
     if not ready:
@@ -176,8 +194,8 @@ async def _usdt_screen(event) -> None:
         "",
         f"نرخ خودکار: {'✅ روشن' if auto else '❌ خاموش'}",
         "",
-        f"{'✅' if zarinpal.configured() else '❌'} <b>درگاه زرین‌پال</b>",
-        f"<i>{'فعال' if zarinpal.configured() else 'ZARINPAL_MERCHANT در .env خالی است'}</i>",
+        f"{'✅' if gateway else '❌'} <b>درگاه زرین‌پال</b>",
+        f"<i>{_gateway_state(merchant, gateway)}</i>",
     ]
     body = "\n".join(lines)
 
@@ -207,6 +225,7 @@ async def _usdt_screen(event) -> None:
     kb.row(InlineKeyboardButton(text="💳 شماره کارت", callback_data="sys:card"))
     kb.row(InlineKeyboardButton(text="👤 نام صاحب حساب", callback_data="sys:cardname"))
     kb.row(InlineKeyboardButton(text="🏦 نشانی ولت تتر", callback_data="sys:usdtaddr"))
+    kb.row(InlineKeyboardButton(text="🏧 کد پذیرنده‌ی زرین‌پال", callback_data="sys:zarin"))
     kb.row(
         InlineKeyboardButton(
             text=f"🔄 نرخ خودکار: {'روشن' if auto else 'خاموش'}",
@@ -255,6 +274,67 @@ async def got_card(message: Message, state: FSMContext) -> None:
         user_id=message.from_user.id, event="admin", detail="شماره کارت عوض شد"
     )
     await message.answer(f"✅ ثبت شد: <code>{cardinfo.pretty(saved)}</code>")
+    await _usdt_screen(message)
+
+
+@router.callback_query(F.data == "sys:zarin")
+async def cb_zarinpal(call: CallbackQuery, state: FSMContext) -> None:
+    if await guard(call, roles.CAP_MONEY):
+        return
+    await call.answer()
+    await state.set_state(Flow.zarinpal_merchant)
+
+    base = (get_settings().web_base_url or "").rstrip("/")
+    where = (
+        f"<code>{base}{zarinpal.CALLBACK_PATH}</code>"
+        if base
+        else "<i>(اول پنل وب را راه بیندازید)</i>"
+    )
+    await call.message.answer(
+        "🏧 <b>کد پذیرنده‌ی زرین‌پال</b> را بفرستید.\n\n"
+        "از پنل زرین‌پال ← درگاه‌های پرداخت ← مشاهده‌ی کد پذیرنده.\n"
+        "شکلش این است: <code>xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx</code>\n\n"
+        "<b>یک کار دیگر هم لازم است</b> که فراموش کردنش رایج‌ترین علت "
+        "«پول کم شد ولی اشتراک فعال نشد» است: در پنل زرین‌پال، نشانی "
+        f"بازگشت را همین ثبت کنید 👇\n{where}\n\n"
+        "<i>پیام شما بلافاصله پس از ثبت پاک می‌شود.</i>\n\n"
+        "برای انصراف /cancel را بزنید."
+    )
+
+
+@router.message(Flow.zarinpal_merchant)
+async def got_zarinpal(message: Message, state: FSMContext) -> None:
+    """کد پذیرنده را ثبت می‌کند و پیامِ حاوی آن را پاک می‌کند.
+
+    <b>چرا پاک می‌شود.</b> کد پذیرنده اعتبارنامه است و در تاریخچه‌ی چت
+    ماندنش یعنی هرکس روزی به این گوشی یا این اکانت برسد آن را دارد.
+    پاک کردن ممکن است شکست بخورد (پیام‌های قدیمی‌تر از ۴۸ ساعت)، و آن
+    شکست نباید جلوی ثبت را بگیرد.
+    """
+    saved = await zarinpal.set_merchant(
+        message.text or "", admin_id=message.from_user.id
+    )
+    if saved is None:
+        await message.answer(
+            "⚠️ کد پذیرنده باید دقیقاً همان شکل UUID باشد:\n"
+            "<code>xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx</code>\n\n"
+            "برای انصراف /cancel را بزنید."
+        )
+        return
+
+    try:
+        await message.delete()
+    except Exception:                      # noqa: BLE001
+        log.info("پاک کردن پیام کد پذیرنده ممکن نشد", exc_info=True)
+
+    await state.clear()
+    await log_activity(
+        user_id=message.from_user.id, event="admin", detail="کد پذیرنده‌ی زرین‌پال عوض شد"
+    )
+    await message.answer(
+        f"✅ ثبت شد: <code>{saved[:8]}…</code>\n\n"
+        "<i>پیام شما پاک شد. اگر هنوز آنجاست، خودتان حذفش کنید.</i>"
+    )
     await _usdt_screen(message)
 
 

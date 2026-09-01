@@ -56,6 +56,7 @@ class Flow(StatesGroup):
     usdt_margin = State()
     card_number = State()
     card_holder = State()
+    zarinpal_merchant = State()
 
     admin_grant = State()
     admin_broadcast = State()

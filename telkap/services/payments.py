@@ -395,7 +395,7 @@ async def any_method_ready() -> bool:
     return (
         await cardinfo.available()
         or bool(await crypto.ready_coins())
-        or zarinpal.configured()
+        or await zarinpal.configured()
     )
 
 

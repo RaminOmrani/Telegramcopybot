@@ -256,7 +256,7 @@ async def cb_pay(call: CallbackQuery, state: FSMContext) -> None:
     # امروز همیشه نشان داده می‌شد، حتی وقتی شماره‌ای ثبت نشده بود.
     card_ready = await cardinfo.available()
     ready_coins = await crypto.ready_coins()
-    gateway_ready = zarinpal.configured()
+    gateway_ready = await zarinpal.configured()
 
     total = int(card_ready) + int(gateway_ready) + len(ready_coins)
     if total > 1:
