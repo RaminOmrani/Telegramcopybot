@@ -31,6 +31,7 @@ from telkap.services import (
     alerts,
     backup,
     digest,
+    feedworker,
     forcejoin,
     maintenance,
     planstore,
@@ -185,6 +186,7 @@ async def main() -> None:
         asyncio.create_task(renewal.run_forever(notify), name="renewal"),
         asyncio.create_task(maintenance.run_forever(), name="maintenance"),
         asyncio.create_task(alerts.run_forever(bot), name="alerts"),
+        asyncio.create_task(feedworker.run_forever(), name="feeds"),
     ]
 
     try:

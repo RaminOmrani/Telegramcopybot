@@ -23,9 +23,10 @@ from telkap.keyboards import (
 )
 from telkap.models import DailyStat, Destination, PendingPost, Task, User
 from telkap.plans import FEAT_PRIVATE
-from telkap.services import cache, pending
+from telkap.services import cache, feeds, pending
 from telkap.services.copier import today_key
 from telkap.services.defaults import merged_settings
+from telkap.services.feeds import FeedError
 from telkap.services.subscription import active_plan_for
 from telkap.services.userbot import LoginError, manager
 from telkap.texts import (
@@ -54,7 +55,8 @@ async def task_detail_text(task: Task) -> str:
     lines = [
         f"📋 <b>{task.title or 'کار بدون نام'}</b>\n",
         f"وضعیت: {'🟢 فعال' if task.enabled else '🔴 متوقف'}",
-        f"مبدا: <code>{task.source_ref}</code>",
+        f"{'📡 فید' if task.source_kind == Task.SOURCE_RSS else 'مبدا'}: "
+        f"<code>{task.source_ref}</code>",
         f"مقصد: <code>{task.dest_ref}</code>",
         f"شیوه: {'فوروارد' if cfg.get('mode') == 'forward' else 'کپی بدون برچسب'}",
         "",
@@ -305,13 +307,63 @@ async def accept_dest(target: Message, state: FSMContext, user_id: int, ref: str
     await target.answer(ASK_TITLE)
 
 
+_TELEGRAM_HOSTS = ("t.me/", "telegram.me/", "telegram.dog/")
+
+
+def looks_like_feed(ref: str) -> bool:
+    """آیا این ورودی آدرس یک فید است، نه کانال تلگرام.
+
+    لینک تلگرام هم URL است، پس صرفِ «http دارد» کافی نیست. قاعده
+    ساده و قابل پیش‌بینی نگه داشته شده: هر آدرس http(s) که تلگرام
+    نباشد، فید حساب می‌شود.
+    """
+    lowered = ref.strip().lower()
+    if not lowered.startswith(("http://", "https://")):
+        return False
+    return not any(host in lowered for host in _TELEGRAM_HOSTS)
+
+
 @router.message(Flow.task_source)
 async def got_source(message: Message, state: FSMContext) -> None:
     ref = (message.text or "").strip()
     if not ref:
-        await message.answer("⚠️ آیدی یا لینک کانال را بفرستید.")
+        await message.answer("⚠️ آیدی یا لینک کانال یا آدرس فید را بفرستید.")
+        return
+    if looks_like_feed(ref):
+        await accept_feed_source(message, state, ref)
         return
     await accept_source(message, state, message.from_user.id, ref)
+
+
+async def accept_feed_source(target: Message, state: FSMContext, ref: str) -> None:
+    """مبدا یک فید RSS است.
+
+    فید همان‌جا خوانده می‌شود نه بعداً: اگر آدرس اشتباه باشد، کاربر
+    باید همین حالا بفهمد — نه ساعت‌ها بعد وقتی می‌بیند هیچ پستی
+    نیامده و نمی‌داند چرا.
+    """
+    notice = await target.answer("⏳ در حال بررسی فید…")
+    try:
+        items = await feeds.fetch(ref)
+    except FeedError as exc:
+        await notice.edit_text(
+            f"⚠️ {exc}\n\n"
+            "آدرس <b>فید</b> لازم است نه آدرس خودِ سایت. معمولاً چیزی شبیه "
+            "<code>/rss</code> یا <code>/feed</code> ته آدرس است."
+        )
+        return
+
+    title = feeds.clean_html(items[0].title)[:60]
+    await state.update_data(
+        source_ref=ref, source_title=title, source_kind=Task.SOURCE_RSS
+    )
+    await notice.edit_text(
+        f"✅ فید خوانده شد — {fa_num(len(items))} مطلب دارد.\n"
+        f"<b>تازه‌ترین:</b> {title}\n\n"
+        "<i>مطالب فعلی منتشر نمی‌شوند؛ فقط مطلب‌های تازه از این پس.</i>"
+    )
+    await state.set_state(Flow.task_dest)
+    await target.answer(ASK_DEST, reply_markup=picker_button("dest").as_markup())
 
 
 @router.message(Flow.task_dest)
@@ -333,6 +385,7 @@ async def got_title(message: Message, state: FSMContext) -> None:
         task = Task(
             user_id=message.from_user.id,
             title=title,
+            source_kind=data.get("source_kind", Task.SOURCE_TELEGRAM),
             source_ref=data["source_ref"],
             source_title=data.get("source_title", "")[:160],
             dest_ref=data["dest_ref"],

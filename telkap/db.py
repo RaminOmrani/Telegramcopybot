@@ -80,6 +80,9 @@ def _add_missing_columns(conn) -> None:
     """
     additions = {
         "destinations": [("overrides", "JSON DEFAULT '{}'")],
+        "tasks": [
+            ("source_kind", "VARCHAR(16) DEFAULT 'telegram'"),
+        ],
         "users": [
             ("watermark_credits", "INTEGER DEFAULT 0"),
             ("history_credits", "INTEGER DEFAULT 0"),

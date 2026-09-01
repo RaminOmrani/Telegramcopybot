@@ -144,8 +144,18 @@ class Task(Base):
 
     title: Mapped[str] = mapped_column(String(128), default="")
 
+    # مبدا همیشه کانال تلگرام نیست. "rss" یعنی source_ref آدرس یک فید
+    # است و source_id معنایی ندارد. بقیه‌ی کار — مقصدها، قواعد،
+    # فیلترها، امضا — دقیقاً همان است، پس یک ستون کافی است و لازم
+    # نبود جدول تازه‌ای ساخته شود.
+    SOURCE_TELEGRAM = "telegram"
+    SOURCE_RSS = "rss"
+
+    source_kind: Mapped[str] = mapped_column(String(16), default=SOURCE_TELEGRAM)
     source_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    source_ref: Mapped[str] = mapped_column(String(128))
+    # ۴۰۰ نویسه چون آدرس فید می‌تواند بلند باشد؛ آیدی کانال کوتاه است.
+    # SQLite طول را اعمال نمی‌کند، پس دیتابیس‌های موجود دست نمی‌خورند.
+    source_ref: Mapped[str] = mapped_column(String(400))
     source_title: Mapped[str] = mapped_column(String(160), default="")
 
     dest_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)

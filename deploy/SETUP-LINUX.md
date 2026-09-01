@@ -345,14 +345,17 @@ ufw --force enable
 
 ## بخش ۹ — به‌روزرسانی در آینده
 
-**یک دستور، هر بار:**
+**راهنمای کامل و قدم‌به‌قدم (از ویندوز تا سرور): [`UPDATE.md`](UPDATE.md)**
+
+خلاصه‌اش — در `cmd` ویندوز:
 
 ```bash
-sudo bash /opt/telkap/deploy/update.sh
+ssh root@<آی‌پی سرور>                       # وصل شدن به سرور
+sudo bash /opt/telkap/deploy/update.sh      # یک دستور، بقیه‌اش خودکار
 ```
 
-همین. دفعه‌ی اول که این فایل روی سرور نیست، یک بار `git pull` بزنید تا
-بیاید.
+دفعه‌ی اول که `update.sh` روی سرور نیست، یک بار
+`cd /opt/telkap && sudo -u telkap git pull origin main` بزنید تا بیاید.
 
 اسکریپت این کارها را می‌کند:
 
