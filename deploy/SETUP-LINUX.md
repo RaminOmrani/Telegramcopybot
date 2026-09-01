@@ -249,45 +249,64 @@ systemctl start telkap
 ## بخش ۷ — پنل وب روی دامنه با HTTPS
 
 پنل روی `127.0.0.1:8080` است، یعنی از بیرون در دسترس نیست. یک وب‌سرور
-جلویش می‌گذاریم که HTTPS را هم خودش می‌گیرد.
+جلویش می‌گذاریم که HTTPS را هم برساند.
 
-**اول دامنه را به IP سرور تازه ببرید.** در cPanel، رکورد A را برای
-`botpanel.softmiliac.com` روی IP جدید بگذارید و منتظر بمانید تا پخش شود.
+**اول دامنه را به IP سرور ببرید.** در cPanel → Zone Editor، رکورد A را
+برای `botpanel.softmiliac.com` روی IP سرور بگذارید. رکورد را روی خودِ VPS
+نمی‌سازید؛ سرورهای نامِ دامنه دست cPanel است و VPS فقط مقصد است.
 
-بعد Caddy را نصب کنید — گواهی HTTPS را خودکار می‌گیرد و تمدید می‌کند:
-
-```bash
-apt install -y debian-keyring debian-archive-keyring apt-transport-https curl
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/gpg.key' \
-  | gpg --dearmor -o /usr/share/keyrings/caddy-stable-archive-keyring.gpg
-curl -1sLf 'https://dl.cloudsmith.io/public/caddy/stable/debian.deb.txt' \
-  | tee /etc/apt/sources.list.d/caddy-stable.list
-apt update && apt install -y caddy
-```
-
-فایل تنظیماتش:
+بررسی کنید که پخش شده:
 
 ```bash
-nano /etc/caddy/Caddyfile
+nslookup botpanel.softmiliac.com
 ```
 
-محتوا — فقط همین سه خط:
-
-```
-botpanel.softmiliac.com {
-    reverse_proxy 127.0.0.1:8080
-}
-```
+بعد یک دستور، بقیه‌اش خودکار:
 
 ```bash
-systemctl reload caddy
+sudo bash /opt/telkap/deploy/web-setup.sh botpanel.softmiliac.com you@email.com
 ```
 
-حالا `https://botpanel.softmiliac.com` باز می‌شود.
+اسکریپت نصب nginx و certbot، تنظیم `.env`، راه‌اندازی دوباره‌ی ربات،
+پیکربندی nginx، گرفتن گواهی و روشن کردن تمدید خودکار را انجام می‌دهد و
+سر هر قدم می‌گوید کجاست. ایمیل اختیاری است ولی هشدار انقضای گواهی به
+آن می‌رسد.
+
+> **ترتیب کارهایش عمدی است.** اول `.env` و ربات، بعد nginx، آخر گواهی.
+> اگر جایی خطا بدهد دقیقاً می‌دانید کدام حلقه شکسته — نه اینکه ته کار
+> با یک «502 Bad Gateway» بی‌نشانی روبه‌رو شوید.
 
 > **چرا HTTPS اجباری است:** کوکی ورود پنل با پرچم `Secure` فرستاده می‌شود.
 > روی `http` مرورگر آن را نگه نمی‌دارد و شما در حلقه‌ی ورود گیر می‌کنید،
 > بدون هیچ پیام خطایی.
+
+### اگر گواهی گرفته نشد
+
+Let's Encrypt برای صدور گواهی باید از بیرون به **پورت ۸۰** همین دامنه
+برسد. سه علت رایج، به ترتیب احتمال:
+
+| نشانه | علت | کار |
+|---|---|---|
+| `Timeout during connect` | پورت ۸۰ در فایروال مرکز داده بسته است | در پنل ParsPack بازش کنید |
+| `DNS problem: NXDOMAIN` | رکورد A هنوز پخش نشده | چند دقیقه صبر، بعد دوباره |
+| `too many failed authorizations` | امروز چند بار امتحان شده | تا فردا صبر کنید |
+
+nginx در هر سه حالت روی http بالا مانده. بعد از رفع مشکل فقط همین:
+
+```bash
+sudo certbot --nginx -d botpanel.softmiliac.com --redirect
+```
+
+### تمدید خودکار
+
+گواهی نود روزه است و `certbot.timer` خودش تمدیدش می‌کند. اگر آن تایمر
+کار نکند، پنل دقیقاً سه ماه بعد و **بی‌هیچ هشداری** از کار می‌افتد — پس
+اسکریپت همان اول تستش می‌کند. دستی هم می‌شود دید:
+
+```bash
+systemctl list-timers certbot.timer
+sudo certbot renew --dry-run
+```
 
 ### درگاه زرین‌پال (اختیاری)
 
@@ -328,7 +347,7 @@ ufw allow 80,443/tcp
 ufw --force enable
 ```
 
-پورت ۸۰۸۰ را باز نکنید؛ فقط Caddy باید به آن برسد.
+پورت ۸۰۸۰ را باز نکنید؛ فقط nginx باید به آن برسد.
 
 ---
 
@@ -418,7 +437,7 @@ nssm remove TelkapBot confirm
 | `متغیرهای محیطی تنظیم نشده‌اند` | `.env` نیامده یا مالکیتش اشتباه است |
 | ربات بالا می‌آید ولی اکانت‌ها وصل نمی‌شوند | `FERNET_KEY` با نسخه‌ی قدیمی یکی نیست |
 | پنل باز می‌شود ولی مدام به صفحه‌ی ورود برمی‌گردد | با `http` باز کرده‌اید؛ `https` لازم است |
-| `502 Bad Gateway` از Caddy | ربات بالا نیست — `systemctl status telkap` |
+| `502 Bad Gateway` از nginx | ربات بالا نیست — `systemctl status telkap` |
 | صفحه اصلاً باز نمی‌شود | رکورد A هنوز پخش نشده، یا `ufw` بسته است |
 
 ---
