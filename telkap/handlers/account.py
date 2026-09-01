@@ -6,7 +6,13 @@ import logging
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import (
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from telkap.db import get_session
 from telkap.handlers.common import (
@@ -28,7 +34,7 @@ from telkap.plans import (
     FEAT_WATERMARK,
     UNLIMITED,
 )
-from telkap.services import credits, entitlement
+from telkap.services import credits, entitlement, terms
 from telkap.services.subscription import active_entitlement, remaining_days
 from telkap.services.userbot import LoginError, manager
 from telkap.texts import (
@@ -171,8 +177,59 @@ async def cb_login(call: CallbackQuery, state: FSMContext) -> None:
 
 
 async def _begin_login(message: Message, state: FSMContext, user_id: int | None = None) -> None:
+    # اتصال اکانت تنها گلوگاه است: بدون آن هیچ پستی کپی نمی‌شود. پس
+    # شرایط استفاده همین‌جا پرسیده می‌شود، نه سرِ /start — کسی که فقط
+    # دارد ربات را نگاه می‌کند نباید با دیوار متنی روبه‌رو شود.
+    uid = user_id or message.from_user.id
+    if not await terms.accepted(uid):
+        await state.clear()
+        await message.answer(
+            terms.text(), reply_markup=terms_keyboard(), disable_web_page_preview=True
+        )
+        return
+
     await state.set_state(Flow.phone)
     await message.answer(LOGIN_INTRO)
+
+
+def terms_keyboard() -> InlineKeyboardMarkup:
+    """فقط دکمه‌ی پذیرش.
+
+    دکمه‌ی «انصراف» لازم نیست: منوی اصلی همیشه پایین صفحه باز است و
+    کاربری که نپذیرد فقط کافی است دکمه‌ی دیگری بزند.
+    """
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="✅ می‌پذیرم و ادامه می‌دهم", callback_data="terms:ok"))
+    return kb.as_markup()
+
+
+@router.message(Command("terms"))
+async def cmd_terms(message: Message) -> None:
+    """خواندن شرایط، هر وقت که کاربر بخواهد."""
+    await get_or_create_user(message.from_user)
+    seen = await terms.accepted(message.from_user.id)
+    await message.answer(
+        terms.text(),
+        reply_markup=None if seen else terms_keyboard(),
+        disable_web_page_preview=True,
+    )
+
+
+@router.callback_query(F.data == "terms:show")
+async def cb_show_terms(call: CallbackQuery) -> None:
+    """خواندن شرایط از راهنما — بدون دکمه‌ی پذیرش، فقط برای مطالعه."""
+    await call.answer()
+    await call.message.answer(terms.text(), disable_web_page_preview=True)
+
+
+@router.callback_query(F.data == "terms:ok")
+async def cb_accept_terms(call: CallbackQuery, state: FSMContext) -> None:
+    await terms.accept(call.from_user.id)
+    await call.answer("پذیرفته شد")
+    # بلافاصله همان کاری که کاربر می‌خواست ادامه پیدا می‌کند؛ فرستادنش
+    # به منو یعنی باید دوباره راهش را پیدا کند.
+    await state.set_state(Flow.phone)
+    await call.message.answer(LOGIN_INTRO)
 
 
 @router.message(Flow.phone)

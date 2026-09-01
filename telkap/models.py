@@ -49,6 +49,14 @@ class User(Base):
     # احراز هویت دو مرحله‌ای در سطح ربات (پین عددی)
     pin_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
+    # پذیرش شرایط استفاده. صفر یعنی هنوز نپذیرفته. نسخه ذخیره می‌شود نه
+    # یک بله/خیر، چون پذیرشِ متنِ قدیمی پذیرشِ متن تازه نیست — و زمانش
+    # هم می‌ماند، وگرنه پذیرش قابل استناد نیست.
+    terms_version: Mapped[int] = mapped_column(Integer, default=0)
+    terms_accepted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     is_banned: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 

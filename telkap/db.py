@@ -97,6 +97,8 @@ def _add_missing_columns(conn) -> None:
             ("display_level", "VARCHAR(8) DEFAULT 'simple'"),
             ("daily_digest", "BOOLEAN DEFAULT 0"),
             ("account_premium", "BOOLEAN DEFAULT 0"),
+            ("terms_version", "INTEGER DEFAULT 0"),
+            ("terms_accepted_at", "TIMESTAMP"),
         ],
         "activity_log": [
             ("actor_id", "BIGINT"),

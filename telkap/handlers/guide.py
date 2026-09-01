@@ -650,6 +650,7 @@ def _commands() -> str:
         "<code>/progress</code> — پیشرفت کپی پیام‌های گذشته\n"
         "<code>/logs</code> — گزارش فعالیت‌های شما\n"
         "<code>/language</code> — تغییر زبان\n"
+        "<code>/terms</code> — شرایط استفاده\n"
         "<code>/cancel</code> — لغو عملیات نیمه‌کاره\n\n"
         "<i>اگر جایی گیر کردید، /cancel بزنید و از منو دوباره شروع کنید.</i>"
     )
@@ -795,6 +796,10 @@ def _menu(lang: str | None = None) -> InlineKeyboardBuilder:
                 for key in row
             ]
         )
+    # شرایط استفاده عمداً بخشِ راهنما نیست: بخش‌های راهنما باید به هر نُه
+    # زبان ترجمه شوند و ترجمه‌ی بدِ یک متن حقوقی از نبودنش بدتر است.
+    # پس فارسی می‌ماند و دکمه‌ی جدای خودش را دارد.
+    kb.row(InlineKeyboardButton(text="📜 شرایط استفاده", callback_data="terms:show"))
     return kb
 
 
