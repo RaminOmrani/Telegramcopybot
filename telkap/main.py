@@ -30,6 +30,7 @@ from telkap.models import Task
 from telkap.services import (
     alerts,
     backup,
+    cryptocheck,
     digest,
     feedworker,
     forcejoin,
@@ -187,6 +188,7 @@ async def main() -> None:
         asyncio.create_task(maintenance.run_forever(), name="maintenance"),
         asyncio.create_task(alerts.run_forever(bot), name="alerts"),
         asyncio.create_task(feedworker.run_forever(), name="feeds"),
+        asyncio.create_task(cryptocheck.run_forever(notify), name="usdt"),
     ]
 
     try:

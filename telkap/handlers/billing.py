@@ -40,7 +40,7 @@ from telkap.plans import (
     purchasable,
     toman,
 )
-from telkap.services import credits, crypto, payments, roles, zarinpal
+from telkap.services import credits, crypto, cryptocheck, payments, roles, zarinpal
 from telkap.services.subscription import active_subscription, remaining_days
 from telkap.texts import fa_num
 
@@ -560,10 +560,23 @@ async def got_tx_hash(message: Message, state: FSMContext) -> None:
         return
 
     await state.clear()
-    await message.answer(
+
+    # <b>همین‌جا یک بار بلاک‌چین را می‌خوانیم، نه فقط در چرخه‌ی دو
+    # دقیقه‌ای.</b> تراکنشی که کاربر هشش را می‌فرستد معمولاً چند ثانیه
+    # قبل تأیید شده، پس اغلب همین‌جا فعال می‌شود و کاربر اصلاً منتظر
+    # نمی‌ماند. اگر هنوز آماده نباشد، چرخه بعداً می‌گیردش.
+    notice = await message.answer("⏳ در حال بررسی تراکنش روی بلاک‌چین…")
+    activated = await cryptocheck.verify_now(request.id)
+    if activated:
+        await notice.edit_text(activated, disable_web_page_preview=True)
+        return
+
+    await notice.edit_text(
         "✅ هش تراکنش شما ثبت شد.\n\n"
-        f"کد پیگیری: <code>{request.id}</code>\n"
-        "پس از بررسی، نتیجه همین‌جا اعلام می‌شود."
+        f"کد پیگیری: <code>{request.id}</code>\n\n"
+        "<i>تراکنش هنوز روی شبکه تأیید نشده است. به‌محض تأیید، اشتراک "
+        "خودکار فعال می‌شود — معمولاً چند دقیقه طول می‌کشد و لازم نیست "
+        "کاری بکنید.</i>"
     )
     await _notify_admins(message, request)
 
@@ -624,6 +637,12 @@ async def _notify_admins(message: Message, request: PaymentRequest) -> None:
             f"\nنرخ آن روز: {toman(request.usdt_rate)}"
             f"\n\nهش تراکنش:\n<code>{request.tx_hash}</code>"
             f"\nhttps://tronscan.org/#/transaction/{request.tx_hash}"
+            # ادمین باید بداند چرا این پرداخت به دستش رسیده. تأیید
+            # خودکار پیش از این پیام امتحان شده و نگرفته — گفتنِ همین،
+            # جلوی «چرا خودکار نشد؟» را می‌گیرد.
+            "\n\n<i>⚠️ تأیید خودکار این تراکنش را روی بلاک‌چین پیدا "
+            "نکرد. یا هنوز تأیید نشده، یا مبلغش کمتر است، یا به ولت "
+            "دیگری رفته. پیش از تأیید دستی، لینک بالا را ببینید.</i>"
         )
 
     caption = (

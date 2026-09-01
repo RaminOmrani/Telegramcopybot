@@ -91,6 +91,11 @@ class Settings:
     # دامنه‌ی عمومی با HTTPS بالا باشد.
     zarinpal_merchant: str = ""
 
+    # کلید TronGrid برای تأیید خودکار پرداخت‌های تتر. خالی هم کار
+    # می‌کند — فقط سقف نرخِ سخت‌گیرانه‌تری دارد که برای چند پرداخت در
+    # روز کافی است. رایگان از trongrid.io گرفته می‌شود.
+    tron_api_key: str = ""
+
     def is_admin(self, user_id: int) -> bool:
         return user_id in self.admin_ids
 
@@ -142,6 +147,7 @@ def load_settings() -> Settings:
         ai_model_vision=os.getenv("AI_MODEL_VISION", "qwen3.5-flash").strip(),
         ai_model_embed=os.getenv("AI_MODEL_EMBED", "text-embedding-3-small").strip(),
         zarinpal_merchant=os.getenv("ZARINPAL_MERCHANT", "").strip(),
+        tron_api_key=os.getenv("TRON_API_KEY", "").strip(),
     )
 
 
