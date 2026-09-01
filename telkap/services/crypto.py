@@ -89,6 +89,17 @@ async def _announce(key: str, before, after, admin_id: int | None) -> None:
     if label is None:
         return
 
+    # <b>نرخِ خودکار خبر نمی‌دهد، نشانی همیشه خبر می‌دهد.</b>
+    #
+    # نرخ هر ربع ساعت از بازار به‌روز می‌شود؛ هشدار برای هرکدام یعنی
+    # روزی ده‌ها پیام — و هشداری که هر روز می‌آید، روزی که واقعاً مهم
+    # است هم نادیده گرفته می‌شود.
+    #
+    # نشانی فرق دارد: هیچ فرآیند خودکاری عوضش نمی‌کند، پس هر تغییرش
+    # کار یک نفر است و باید دیده شود.
+    if key == RATE_KEY and admin_id is None:
+        return
+
     who = f"<code>{admin_id}</code>" if admin_id else "سیستم"
     await alerts.send(
         f"🔐 <b>{label} عوض شد</b>\n\n"

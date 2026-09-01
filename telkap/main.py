@@ -38,6 +38,7 @@ from telkap.services import (
     planstore,
     reminders,
     renewal,
+    usdtrate,
 )
 from telkap.services.copier import Copier
 from telkap.services.history import HistoryCopier
@@ -189,6 +190,7 @@ async def main() -> None:
         asyncio.create_task(alerts.run_forever(bot), name="alerts"),
         asyncio.create_task(feedworker.run_forever(), name="feeds"),
         asyncio.create_task(cryptocheck.run_forever(notify), name="usdt"),
+        asyncio.create_task(usdtrate.run_forever(), name="usdtrate"),
     ]
 
     try:

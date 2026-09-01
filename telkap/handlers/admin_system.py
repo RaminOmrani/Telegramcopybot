@@ -13,7 +13,17 @@ from telkap.db import log_activity
 from telkap.handlers.admin_reports import guard
 from telkap.handlers.common import Flow, parse_int
 from telkap.plans import toman
-from telkap.services import ai, backup, crypto, maintenance, roles
+from telkap.services import (
+    ai,
+    backup,
+    cardinfo,
+    crypto,
+    maintenance,
+    roles,
+    usdtrate,
+    zarinpal,
+)
+from telkap.texts import fa_num
 
 log = logging.getLogger(__name__)
 router = Router(name="admin-system")
@@ -29,7 +39,7 @@ def _menu_kb() -> InlineKeyboardBuilder:
     if get_settings().web_enabled:
         kb.row(InlineKeyboardButton(text="🖥 پنل وب", callback_data="sys:web"))
     kb.row(InlineKeyboardButton(text="🤖 هوش مصنوعی", callback_data="sys:ai"))
-    kb.row(InlineKeyboardButton(text="₮ پرداخت تتر", callback_data="sys:usdt"))
+    kb.row(InlineKeyboardButton(text="💳 راه‌های پرداخت", callback_data="sys:usdt"))
     kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm:home"))
     return kb
 
@@ -82,34 +92,193 @@ async def cb_ai_status(call: CallbackQuery) -> None:
         await call.message.answer(report, reply_markup=kb.as_markup())
 
 
-# ─────────────────────────────────────────────────── پرداخت تتر
+# ─────────────────────────────────────────────────── راه‌های پرداخت
 async def _usdt_screen(event) -> None:
+    """همه‌ی راه‌های پرداخت در یک صفحه.
+
+    کارت تا امروز فقط در <code>.env</code> بود و از پنل دیده نمی‌شد —
+    یعنی کسی که سرور را بلد نبود اصلاً نمی‌توانست فروش راه بیندازد.
+    حالا هر سه راه یک‌جا و یک‌شکل‌اند.
+    """
+    card = await cardinfo.number()
+    name = await cardinfo.holder()
     wallet = await crypto.address()
     rate = await crypto.rate()
-    ready = bool(wallet) and rate > 0
+    auto = await usdtrate.is_auto()
+    percent = await usdtrate.margin()
 
-    if ready:
-        head = "₮ <b>پرداخت تتر</b> — فعال ✅\n\n"
-    else:
-        head = (
-            "₮ <b>پرداخت تتر</b> — غیرفعال\n\n"
-            "<i>تا هر دو مقدار پر نشوند، این راه پرداخت به کاربران "
-            "نشان داده نمی‌شود.</i>\n\n"
+    usdt_ready = bool(wallet) and rate > 0
+    ready = bool(card) or usdt_ready or zarinpal.configured()
+
+    head = "💳 <b>راه‌های پرداخت</b>\n\n"
+    if not ready:
+        head += (
+            "🚨 <b>هیچ راهی تنظیم نشده — یعنی کسی نمی‌تواند بخرد.</b>\n"
+            "<i>مشتری به‌جای صفحه‌ی پرداخت، به پشتیبانی ارجاع داده "
+            "می‌شود. دست‌کم یکی را کامل کنید.</i>\n\n"
         )
 
     body = (
-        f"نشانی ولت (TRC20):\n<code>{wallet or 'تنظیم نشده'}</code>\n\n"
-        f"نرخ هر تتر: <b>{toman(rate) if rate else 'تنظیم نشده'}</b>\n\n"
-        "<i>نرخ را روزانه به‌روز کنید. مبلغ هر خرید در لحظه‌ی ساخت "
-        "درخواست با همین نرخ قفل می‌شود، پس تغییر نرخ روی پرداخت‌های "
-        "در جریان اثر نمی‌گذارد.</i>"
+        f"{'✅' if card else '❌'} <b>کارت‌به‌کارت</b>\n"
+        f"شماره: <code>{cardinfo.pretty(card) if card else 'تنظیم نشده'}</code>\n"
+        f"به نام: {name or '—'}\n\n"
+        f"{'✅' if usdt_ready else '❌'} <b>تتر (TRC20)</b>\n"
+        f"نشانی: <code>{wallet or 'تنظیم نشده'}</code>\n"
+        f"نرخ هر تتر: <b>{toman(rate) if rate else 'تنظیم نشده'}</b>\n"
+        f"نرخ خودکار: {'✅ روشن' if auto else '❌ خاموش'}"
+        f"{f' (—{fa_num(percent)}٪ زیر بازار)' if auto else ''}\n\n"
+        f"{'✅' if zarinpal.configured() else '❌'} <b>درگاه زرین‌پال</b>\n"
+        f"<i>{'فعال' if zarinpal.configured() else 'ZARINPAL_MERCHANT در .env خالی است'}</i>"
     )
 
+    if auto:
+        note = (
+            "\n\n<i>نرخ هر ربع ساعت از بازار گرفته می‌شود. حاشیه کمی "
+            "<b>زیر</b> بازار است تا تتری که می‌گیرید دست‌کم به اندازه‌ی "
+            "قیمت تومانی بیرزد.</i>"
+        )
+    else:
+        note = (
+            "\n\n<i>نرخ دستی است. با هر تکان بازار یا ضرر می‌کنید یا "
+            "مشتری گران می‌خرد — «نرخ خودکار» این را حل می‌کند.</i>"
+        )
+
     kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="🏦 تغییر نشانی ولت", callback_data="sys:usdtaddr"))
-    kb.row(InlineKeyboardButton(text="💱 تغییر نرخ", callback_data="sys:usdtrate"))
+    kb.row(InlineKeyboardButton(text="💳 شماره کارت", callback_data="sys:card"))
+    kb.row(InlineKeyboardButton(text="👤 نام صاحب حساب", callback_data="sys:cardname"))
+    kb.row(InlineKeyboardButton(text="🏦 نشانی ولت تتر", callback_data="sys:usdtaddr"))
+    kb.row(
+        InlineKeyboardButton(
+            text=f"🔄 نرخ خودکار: {'روشن' if auto else 'خاموش'}",
+            callback_data="sys:autorate",
+        )
+    )
+    if auto:
+        kb.row(
+            InlineKeyboardButton(text="📉 حاشیه‌ی اطمینان", callback_data="sys:margin"),
+            InlineKeyboardButton(text="⏬ گرفتن نرخ الان", callback_data="sys:ratenow"),
+        )
+    else:
+        kb.row(InlineKeyboardButton(text="💱 تغییر نرخ دستی", callback_data="sys:usdtrate"))
     kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm:sys"))
-    await _show(event, head + body, kb)
+    await _show(event, head + body + note, kb)
+
+
+@router.callback_query(F.data == "sys:card")
+async def cb_card(call: CallbackQuery, state: FSMContext) -> None:
+    if await guard(call, roles.CAP_MONEY):
+        return
+    await call.answer()
+    await state.set_state(Flow.card_number)
+    await call.message.answer(
+        "💳 شماره کارت را بفرستید — ۱۶ رقم.\n\n"
+        "<i>با فاصله یا خط تیره هم اشکالی ندارد؛ ارقام فارسی هم "
+        "پذیرفته می‌شود.</i>\n\n"
+        "برای انصراف /cancel را بزنید."
+    )
+
+
+@router.message(Flow.card_number)
+async def got_card(message: Message, state: FSMContext) -> None:
+    saved = await cardinfo.set_number(message.text or "", admin_id=message.from_user.id)
+    if saved is None:
+        await message.answer(
+            "⚠️ شماره کارت باید دقیقاً ۱۶ رقم باشد.\nبرای انصراف /cancel را بزنید."
+        )
+        return
+    await state.clear()
+    await log_activity(
+        user_id=message.from_user.id, event="admin", detail="شماره کارت عوض شد"
+    )
+    await message.answer(f"✅ ثبت شد: <code>{cardinfo.pretty(saved)}</code>")
+    await _usdt_screen(message)
+
+
+@router.callback_query(F.data == "sys:cardname")
+async def cb_card_name(call: CallbackQuery, state: FSMContext) -> None:
+    if await guard(call, roles.CAP_MONEY):
+        return
+    await call.answer()
+    await state.set_state(Flow.card_holder)
+    await call.message.answer(
+        "👤 نام صاحب حساب را بفرستید.\n\n"
+        "<i>مشتری این را کنار شماره کارت می‌بیند. بودنش اعتماد "
+        "می‌سازد، چون معلوم است پول به کجا می‌رود.</i>\n\n"
+        "برای انصراف /cancel را بزنید."
+    )
+
+
+@router.message(Flow.card_holder)
+async def got_card_name(message: Message, state: FSMContext) -> None:
+    saved = await cardinfo.set_holder(message.text or "", admin_id=message.from_user.id)
+    if saved is None:
+        await message.answer("⚠️ نام خالی است.\nبرای انصراف /cancel را بزنید.")
+        return
+    await state.clear()
+    await message.answer(f"✅ ثبت شد: <b>{saved}</b>")
+    await _usdt_screen(message)
+
+
+@router.callback_query(F.data == "sys:autorate")
+async def cb_auto_rate(call: CallbackQuery) -> None:
+    if await guard(call, roles.CAP_MONEY):
+        return
+    turning_on = not await usdtrate.is_auto()
+    await usdtrate.set_auto(turning_on, admin_id=call.from_user.id)
+
+    if turning_on:
+        # همان لحظه یک بار گرفته می‌شود، وگرنه تا ربع ساعت بعد نرخ
+        # قدیمی می‌ماند و کاربر فکر می‌کند کار نکرده
+        fresh = await usdtrate.refresh(force=True)
+        await call.answer(
+            f"روشن شد — نرخ {fresh:,} تومان" if fresh else "روشن شد",
+            show_alert=bool(fresh),
+        )
+    else:
+        await call.answer("خاموش شد")
+    await _usdt_screen(call)
+
+
+@router.callback_query(F.data == "sys:ratenow")
+async def cb_rate_now(call: CallbackQuery) -> None:
+    """گرفتن فوریِ نرخ — بدون محافظِ جهش، چون ادمین خودش خواسته."""
+    if await guard(call, roles.CAP_MONEY):
+        return
+    fresh = await usdtrate.refresh(force=True)
+    await call.answer(
+        f"نرخ تازه: {fresh:,} تومان" if fresh else "نرخ عوض نشد یا خواندن ناموفق بود",
+        show_alert=True,
+    )
+    await _usdt_screen(call)
+
+
+@router.callback_query(F.data == "sys:margin")
+async def cb_margin(call: CallbackQuery, state: FSMContext) -> None:
+    if await guard(call, roles.CAP_MONEY):
+        return
+    await call.answer()
+    await state.set_state(Flow.usdt_margin)
+    await call.message.answer(
+        "📉 حاشیه‌ی اطمینان را به <b>درصد</b> بفرستید (۰ تا ۲۰).\n\n"
+        "<i>نرخ فروش این‌قدر <b>پایین‌تر</b> از بازار گذاشته می‌شود. "
+        "چرا پایین‌تر: مبلغ تتری از تقسیم می‌آید، پس نرخ کمتر یعنی "
+        "مشتری تتر بیشتری می‌دهد — و همین جلوی ضرر شما را می‌گیرد.</i>\n\n"
+        "۲ نقطه‌ی شروع خوبی است.\n\nبرای انصراف /cancel را بزنید."
+    )
+
+
+@router.message(Flow.usdt_margin)
+async def got_margin(message: Message, state: FSMContext) -> None:
+    saved = await usdtrate.set_margin(message.text or "", admin_id=message.from_user.id)
+    if saved is None:
+        await message.answer(
+            "⚠️ عددی بین ۰ تا ۲۰ بفرستید.\nبرای انصراف /cancel را بزنید."
+        )
+        return
+    await state.clear()
+    await usdtrate.refresh(force=True)
+    await message.answer(f"✅ حاشیه روی {fa_num(saved)}٪ تنظیم شد.")
+    await _usdt_screen(message)
 
 
 @router.callback_query(F.data == "sys:usdt")

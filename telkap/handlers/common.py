@@ -53,6 +53,9 @@ class Flow(StatesGroup):
 
     usdt_address = State()
     usdt_rate = State()
+    usdt_margin = State()
+    card_number = State()
+    card_holder = State()
 
     admin_grant = State()
     admin_broadcast = State()

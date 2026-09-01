@@ -40,7 +40,7 @@ from telkap.plans import (
     purchasable,
     toman,
 )
-from telkap.services import credits, crypto, cryptocheck, payments, roles, zarinpal
+from telkap.services import cardinfo, credits, crypto, cryptocheck, payments, roles, zarinpal
 from telkap.services.subscription import active_subscription, remaining_days
 from telkap.texts import fa_num
 
@@ -220,13 +220,18 @@ async def cb_pay(call: CallbackQuery, state: FSMContext) -> None:
         await call.message.answer("⚠️ ثبت درخواست ناموفق بود. دوباره تلاش کنید.")
         return
 
-    if not cfg.card_number:
+    # هیچ راه پرداختی تنظیم نشده باشد، تنها کار ممکن ارجاع به پشتیبانی
+    # است. ولی این حالت یعنی <b>فروش از دست می‌رود</b>، پس به ادمین هم
+    # خبر داده می‌شود — وگرنه ممکن است هفته‌ها ادامه پیدا کند بی‌آنکه
+    # کسی بفهمد چرا کسی نمی‌خرد.
+    if not await payments.any_method_ready():
         support = f"@{cfg.support_username}" if cfg.support_username else "پشتیبانی"
         await call.message.answer(
             f"🧾 <b>{plan.title}</b> — {toman(request.amount_toman)}\n\n"
             f"برای فعال‌سازی با {support} در تماس باشید.\n"
             f"شناسه‌ی شما: <code>{call.from_user.id}</code>"
         )
+        await payments.warn_no_method()
         return
 
     saved = int(request.discount_toman or 0) + int(request.credit_toman or 0)
@@ -237,17 +242,37 @@ async def cb_pay(call: CallbackQuery, state: FSMContext) -> None:
         f"مدت: {fa_num(plan.days)} روز"
     )
 
-    # هر راه اضافی فقط وقتی پیشنهاد می‌شود که کامل تنظیم شده باشد؛
-    # وگرنه دکمه‌ای است که به بن‌بست می‌رسد.
+    # هر راه فقط وقتی پیشنهاد می‌شود که کامل تنظیم شده باشد؛ وگرنه
+    # دکمه‌ای است که به بن‌بست می‌رسد. کارت هم دیگر استثنا نیست: تا
+    # امروز همیشه نشان داده می‌شد، حتی وقتی شماره‌ای ثبت نشده بود.
+    card_ready = await cardinfo.available()
     usdt_ready = await crypto.available()
     gateway_ready = zarinpal.configured()
-    if usdt_ready or gateway_ready:
+
+    if sum((card_ready, usdt_ready, gateway_ready)) > 1:
         await state.update_data(request_id=request.id)
         await call.message.answer(
             f"{headline}\n\nاز کدام راه می‌خواهید بپردازید؟",
             reply_markup=_method_menu(
-                request.id, gateway=gateway_ready, usdt=usdt_ready
+                request.id,
+                card=card_ready,
+                gateway=gateway_ready,
+                usdt=usdt_ready,
             ),
+        )
+        return
+
+    # فقط یک راه هست؛ پرسیدن «کدام؟» وقتی یک گزینه بیشتر نیست، یک
+    # کلیک اضافه است بدون هیچ فایده‌ای
+    if usdt_ready and not card_ready:
+        await state.update_data(request_id=request.id)
+        await _usdt_screen(call.message, state, request, headline)
+        return
+    if gateway_ready and not card_ready:
+        await state.update_data(request_id=request.id)
+        await call.message.answer(
+            f"{headline}\n\nاز کدام راه می‌خواهید بپردازید؟",
+            reply_markup=_method_menu(request.id, card=False, gateway=True, usdt=False),
         )
         return
 
@@ -255,7 +280,7 @@ async def cb_pay(call: CallbackQuery, state: FSMContext) -> None:
 
 
 def _method_menu(
-    request_id: int, *, gateway: bool = False, usdt: bool = True
+    request_id: int, *, card: bool = True, gateway: bool = False, usdt: bool = True
 ) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     # درگاه اول می‌آید چون تنها راهی است که همان لحظه فعال می‌شود؛
@@ -267,12 +292,13 @@ def _method_menu(
                 callback_data=f"paym:gate:{request_id}",
             )
         )
-    kb.row(
-        InlineKeyboardButton(
-            text=payments.METHOD_LABELS[payments.METHOD_CARD],
-            callback_data=f"paym:card:{request_id}",
+    if card:
+        kb.row(
+            InlineKeyboardButton(
+                text=payments.METHOD_LABELS[payments.METHOD_CARD],
+                callback_data=f"paym:card:{request_id}",
+            )
         )
-    )
     if usdt:
         kb.row(
             InlineKeyboardButton(
@@ -286,15 +312,18 @@ def _method_menu(
 
 async def _card_screen(message, state: FSMContext, request, headline: str) -> None:
     """صفحه‌ی کارت‌به‌کارت — همان چیزی که پیش از تتر هم بود."""
-    cfg = get_settings()
     kb = InlineKeyboardBuilder()
     kb.row(InlineKeyboardButton(text="❌ انصراف", callback_data="pay:cancel"))
-    holder = f"\nبه نام: <b>{cfg.card_holder}</b>" if cfg.card_holder else ""
+    # شماره از پنل خوانده می‌شود نه از .env؛ اگر پنل خالی باشد همان
+    # مقدار .env برمی‌گردد، پس نصب‌های قدیمی چیزی از دست نمی‌دهند.
+    name = await cardinfo.holder()
+    holder = f"\nبه نام: <b>{name}</b>" if name else ""
     await state.set_state(Flow.receipt)
     await state.update_data(request_id=request.id)
     await message.answer(
         f"{headline}\n\n"
-        f"💳 شماره کارت:\n<code>{cfg.card_number}</code>{holder}\n\n"
+        # چهارتایی، چون شانزده رقمِ پیوسته را نمی‌شود با کارت مقایسه کرد
+        f"💳 شماره کارت:\n<code>{cardinfo.pretty(await cardinfo.number())}</code>{holder}\n\n"
         "پس از واریز، <b>تصویر رسید</b> را همین‌جا بفرستید.\n"
         "اشتراک بلافاصله پس از تأیید فعال می‌شود.",
         reply_markup=kb.as_markup(),
@@ -473,18 +502,34 @@ async def cb_pay_method(call: CallbackQuery, state: FSMContext) -> None:
         await _gateway_screen(call, state, request)
         return
 
+    await _usdt_screen(call.message, state, request, headline)
+
+
+async def _usdt_screen(message, state: FSMContext, request, headline: str) -> None:
+    """صفحه‌ی پرداخت تتر.
+
+    جدا شد چون دو جا لازم است: وقتی کاربر بین چند راه یکی را انتخاب
+    می‌کند، و وقتی تتر تنها راه تنظیم‌شده است و پرسیدن «کدام راه؟»
+    برای یک گزینه فقط یک کلیک اضافه است.
+    """
     priced = await crypto.quote(request.amount_toman)
     if priced is None:
         # بین انتخاب پلن و اینجا، ادمین نرخ یا نشانی را برداشته است
-        await call.message.answer(
-            "پرداخت تتری موقتاً در دسترس نیست. با کارت بانکی ادامه می‌دهیم."
+        if await cardinfo.available():
+            await message.answer(
+                "پرداخت تتری موقتاً در دسترس نیست. با کارت بانکی ادامه می‌دهیم."
+            )
+            await payments.set_method(request.id, payments.METHOD_CARD)
+            await _card_screen(message, state, request, headline)
+            return
+        await message.answer(
+            "⚠️ پرداخت تتری موقتاً در دسترس نیست. کمی بعد دوباره تلاش کنید."
         )
-        await payments.set_method(request_id, payments.METHOD_CARD)
-        await _card_screen(call.message, state, request, headline)
+        await payments.warn_no_method()
         return
 
     await payments.set_method(
-        request_id,
+        request.id,
         payments.METHOD_USDT,
         usdt_amount=priced["usdt_text"],
         usdt_rate=priced["rate"],
@@ -493,8 +538,8 @@ async def cb_pay_method(call: CallbackQuery, state: FSMContext) -> None:
     kb = InlineKeyboardBuilder()
     kb.row(InlineKeyboardButton(text="❌ انصراف", callback_data="pay:cancel"))
     await state.set_state(Flow.tx_hash)
-    await state.update_data(request_id=request_id)
-    await call.message.answer(
+    await state.update_data(request_id=request.id)
+    await message.answer(
         f"{headline}\n"
         f"معادل: <b>{priced['usdt_text']} USDT</b>\n"
         f"<i>نرخ امروز: {toman(priced['rate'])} برای هر تتر</i>\n\n"
