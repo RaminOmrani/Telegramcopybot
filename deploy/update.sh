@@ -39,36 +39,40 @@ _mark_deployed() {
     chown "$APP_USER:$APP_USER" "$APP_DIR/data/.deployed" 2>/dev/null || true
 }
 
+_backup_db() {
+    # <b>بعد از توقف ربات صدا زده می‌شود، نه قبلش.</b> کپی گرفتن از
+    # دیتابیسی که در حال نوشته شدن است می‌تواند نسخه‌ی نیمه‌کاره بدهد —
+    # و پشتیبانِ خرابْ بدتر از نداشتنش است، چون به آن اعتماد می‌کنید.
+    # با ربات خاموش، دیتابیس آرام است و یک cp ساده کامل و درست است؛
+    # پس sqlite3 هم لازم نیست نصب باشد.
+    local stamp dir
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    dir="$APP_DIR/data/backups"
+    install -d -o "$APP_USER" -g "$APP_USER" "$dir"
+
+    if [ ! -f "$APP_DIR/data/telkap.db" ]; then
+        warn "هنوز دیتابیسی ساخته نشده — چیزی برای پشتیبان‌گیری نیست"
+        return 0
+    fi
+
+    # فایل‌های -wal و -shm بعد از خاموشی تمیز معمولاً نیستند، ولی اگر
+    # ربات ناگهانی مرده باشد می‌مانند و بخشی از داده داخلشان است.
+    for suffix in "" "-wal" "-shm"; do
+        [ -f "$APP_DIR/data/telkap.db$suffix" ] || continue
+        sudo -u "$APP_USER" cp "$APP_DIR/data/telkap.db$suffix" \
+            "$dir/telkap-$stamp.db$suffix"
+    done
+    ok "data/backups/telkap-$stamp.db"
+
+    # فقط چند نسخه‌ی آخر بماند، وگرنه دیسک سرور پر می‌شود
+    ls -1t "$dir"/telkap-*.db 2>/dev/null \
+        | tail -n +$((KEEP_BACKUPS + 1)) | xargs -r rm -f || true
+}
+
 [ "$(id -u)" -eq 0 ] || die "با sudo اجرا کنید: sudo bash $0"
 cd "$APP_DIR" || die "پوشه‌ی $APP_DIR پیدا نشد"
 
-# ── ۱) پشتیبان ──────────────────────────────────────────────────────
-say "پشتیبان‌گیری از دیتابیس"
-STAMP="$(date +%Y%m%d-%H%M%S)"
-BACKUP_DIR="$APP_DIR/data/backups"
-install -d -o "$APP_USER" -g "$APP_USER" "$BACKUP_DIR"
-
-if [ -f "$APP_DIR/data/telkap.db" ]; then
-    # ربات ممکن است همین حالا در حال نوشتن باشد. cp ساده می‌تواند
-    # نسخه‌ی نیمه‌کاره بردارد؛ .backup خودِ sqlite نسخه‌ی سالم می‌دهد.
-    if command -v sqlite3 >/dev/null 2>&1; then
-        sudo -u "$APP_USER" sqlite3 "$APP_DIR/data/telkap.db" \
-            ".backup '$BACKUP_DIR/telkap-$STAMP.db'"
-    else
-        warn "sqlite3 نصب نیست — کپی ساده گرفته می‌شود"
-        sudo -u "$APP_USER" cp "$APP_DIR/data/telkap.db" \
-            "$BACKUP_DIR/telkap-$STAMP.db"
-    fi
-    ok "data/backups/telkap-$STAMP.db"
-
-    # فقط چند نسخه‌ی آخر بماند، وگرنه دیسک سرور پر می‌شود
-    ls -1t "$BACKUP_DIR"/telkap-*.db 2>/dev/null \
-        | tail -n +$((KEEP_BACKUPS + 1)) | xargs -r rm -f || true
-else
-    warn "هنوز دیتابیسی ساخته نشده — چیزی برای پشتیبان‌گیری نیست"
-fi
-
-# ── ۲) گرفتن نسخه‌ی تازه ────────────────────────────────────────────
+# ── ۱) گرفتن نسخه‌ی تازه ────────────────────────────────────────────
 OLD_COMMIT="$(sudo -u "$APP_USER" git rev-parse HEAD)"
 
 say "گرفتن نسخه‌ی تازه از $BRANCH"
@@ -105,6 +109,10 @@ fi
 say "توقف ربات"
 systemctl stop "$SERVICE"
 ok "متوقف شد"
+
+# ── ۲) پشتیبان، حالا که دیتابیس آرام است ────────────────────────────
+say "پشتیبان‌گیری از دیتابیس"
+_backup_db
 
 if [ "$OLD_COMMIT" != "$NEW_COMMIT" ]; then
     sudo -u "$APP_USER" git merge --ff-only "origin/$BRANCH"

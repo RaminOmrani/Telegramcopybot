@@ -16,6 +16,7 @@
 """
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import sys
@@ -98,8 +99,14 @@ def main() -> None:
         print(f"  + {key}")
 
     if not apply:
+        # دستور باید همانی باشد که روی همین سیستم‌عامل کار می‌کند. گفتنِ
+        # «.\envsync.bat» به کاربر لینوکس، فرستادنش دنبال فایلی است که
+        # وجود ندارد.
         print("\nهیچ چیزی نوشته نشد. برای اضافه کردنشان:")
-        print("    .\\envsync.bat --apply")
+        if os.name == "nt":
+            print("    .\\envsync.bat --apply")
+        else:
+            print(f"    sudo -u telkap {sys.executable} tools/envsync.py --apply")
         return
 
     backup = ENV.with_name(f".env.bak-{datetime.now():%Y%m%d-%H%M%S}")
