@@ -20,10 +20,19 @@
 
 set -euo pipefail
 
-say()  { printf '\n\033[1m▸ %s\033[0m\n' "$*"; }
-ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
-warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
-die()  { printf '\n\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+# رنگ فقط وقتی خروجی به یک ترمینال واقعی می‌رود. اجرای از راه دور
+# مثل «ssh bot "bash ..."» ترمینال ندارد، و cmd ویندوز کدهای رنگ را
+# نمی‌فهمد — پس خام چاپشان می‌کند و خروجی پر از «[32m» می‌شود.
+if [ -t 1 ]; then
+    C_B=$'\033[1m'; C_G=$'\033[32m'; C_Y=$'\033[33m'; C_R=$'\033[31m'; C_0=$'\033[0m'
+else
+    C_B=''; C_G=''; C_Y=''; C_R=''; C_0=''
+fi
+
+say()  { printf '\n%s▸ %s%s\n' "$C_B" "$*" "$C_0"; }
+ok()   { printf '  %s✓%s %s\n' "$C_G" "$C_0" "$*"; }
+warn() { printf '  %s!%s %s\n' "$C_Y" "$C_0" "$*"; }
+die()  { printf '\n%s✗ %s%s\n' "$C_R" "$*" "$C_0" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "با root اجرا کنید"
 
@@ -100,9 +109,9 @@ say "بررسی"
 sleep 1
 ss -tln | grep -E '[:.](22|'"$KEEP"')\b' | sed 's/^/  /'
 
-printf '\n\033[32m✓ تمام شد.\033[0m\n\n'
+printf '\n%s✓ تمام شد.%s\n\n' "$C_G" "$C_0"
 printf '  «این پنجره را نبندید» تا در یک پنجره‌ی تازه امتحان کنید:\n\n'
-printf '      \033[1mssh bot\033[0m\n\n'
+printf '      %sssh bot%s\n\n' "$C_B" "$C_0"
 printf '  اگر بدون رمز وارد شد، کار تمام است.\n'
 printf '  اگر نشد، از همین پنجره برگردانید:\n\n'
 printf '      rm /etc/ssh/sshd_config.d/98-harden.conf\n'

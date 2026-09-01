@@ -46,10 +46,19 @@ SERVICE="${SERVICE:-telkap}"
 BRANCH="${BRANCH:-main}"
 KEEP_BACKUPS="${KEEP_BACKUPS:-10}"
 
-say()  { printf '\n\033[1m▸ %s\033[0m\n' "$*"; }
-ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
-warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
-die()  { printf '\n\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+# رنگ فقط وقتی خروجی به یک ترمینال واقعی می‌رود. اجرای از راه دور
+# مثل «ssh bot "bash ..."» ترمینال ندارد، و cmd ویندوز کدهای رنگ را
+# نمی‌فهمد — پس خام چاپشان می‌کند و خروجی پر از «[32m» می‌شود.
+if [ -t 1 ]; then
+    C_B=$'\033[1m'; C_G=$'\033[32m'; C_Y=$'\033[33m'; C_R=$'\033[31m'; C_0=$'\033[0m'
+else
+    C_B=''; C_G=''; C_Y=''; C_R=''; C_0=''
+fi
+
+say()  { printf '\n%s▸ %s%s\n' "$C_B" "$*" "$C_0"; }
+ok()   { printf '  %s✓%s %s\n' "$C_G" "$C_0" "$*"; }
+warn() { printf '  %s!%s %s\n' "$C_Y" "$C_0" "$*"; }
+die()  { printf '\n%s✗ %s%s\n' "$C_R" "$*" "$C_0" >&2; exit 1; }
 
 _mark_deployed() {
     # کامیتی که ربات واقعاً با آن بالا آمد. مالکیت telkap است چون بقیه‌ی
@@ -165,13 +174,13 @@ done
 if systemctl is-active --quiet "$SERVICE" \
    && [ "$(systemctl show -p NRestarts --value "$SERVICE")" = "0" ]; then
     _mark_deployed "$NEW_COMMIT"
-    printf '\n\033[32m✓ نسخه‌ی تازه بالا آمد.\033[0m\n'
+    printf '\n%s✓ نسخه‌ی تازه بالا آمد.%s\n' "$C_G" "$C_0"
     printf '  لاگ زنده:  journalctl -u %s -f\n' "$SERVICE"
     exit 0
 fi
 
 # ── برگشت ───────────────────────────────────────────────────────────
-printf '\n\033[31m✗ ربات با نسخه‌ی تازه بالا نیامد. برمی‌گردم به نسخه‌ی قبلی.\033[0m\n'
+printf '\n%s✗ ربات با نسخه‌ی تازه بالا نیامد. برمی‌گردم به نسخه‌ی قبلی.%s\n' "$C_R" "$C_0"
 journalctl -u "$SERVICE" -n 25 --no-pager | sed 's/^/  /'
 
 systemctl stop "$SERVICE" || true
@@ -182,10 +191,10 @@ sleep 3
 
 if systemctl is-active --quiet "$SERVICE"; then
     _mark_deployed "$OLD_COMMIT"
-    printf '\n\033[33m! به نسخه‌ی قبلی برگشت و ربات دوباره بالا آمد.\033[0m\n'
+    printf '\n%s! به نسخه‌ی قبلی برگشت و ربات دوباره بالا آمد.%s\n' "$C_Y" "$C_0"
     printf '  لاگ بالا را برای من بفرستید تا علت را پیدا کنم.\n'
 else
-    printf '\n\033[31m✗ نسخه‌ی قبلی هم بالا نیامد — یعنی مشکل از کد نیست.\033[0m\n'
+    printf '\n%s✗ نسخه‌ی قبلی هم بالا نیامد — یعنی مشکل از کد نیست.%s\n' "$C_R" "$C_0"
     printf '  احتمالاً شبکه یا .env: journalctl -u %s -n 50\n' "$SERVICE"
 fi
 exit 1

@@ -27,10 +27,19 @@ set -euo pipefail
 # عادی به نظر می‌رسد. ۲۲۲۲ آخر است چون همان است که «refused» گرفت.
 DEFAULT_PORTS="8443 2083 2087 2222"
 
-say()  { printf '\n\033[1m▸ %s\033[0m\n' "$*"; }
-ok()   { printf '  \033[32m✓\033[0m %s\n' "$*"; }
-warn() { printf '  \033[33m!\033[0m %s\n' "$*"; }
-die()  { printf '\n\033[31m✗ %s\033[0m\n' "$*" >&2; exit 1; }
+# رنگ فقط وقتی خروجی به یک ترمینال واقعی می‌رود. اجرای از راه دور
+# مثل «ssh bot "bash ..."» ترمینال ندارد، و cmd ویندوز کدهای رنگ را
+# نمی‌فهمد — پس خام چاپشان می‌کند و خروجی پر از «[32m» می‌شود.
+if [ -t 1 ]; then
+    C_B=$'\033[1m'; C_G=$'\033[32m'; C_Y=$'\033[33m'; C_R=$'\033[31m'; C_0=$'\033[0m'
+else
+    C_B=''; C_G=''; C_Y=''; C_R=''; C_0=''
+fi
+
+say()  { printf '\n%s▸ %s%s\n' "$C_B" "$*" "$C_0"; }
+ok()   { printf '  %s✓%s %s\n' "$C_G" "$C_0" "$*"; }
+warn() { printf '  %s!%s %s\n' "$C_Y" "$C_0" "$*"; }
+die()  { printf '\n%s✗ %s%s\n' "$C_R" "$*" "$C_0" >&2; exit 1; }
 
 [ "$(id -u)" -eq 0 ] || die "با root اجرا کنید"
 
@@ -137,11 +146,11 @@ done
 IP="$(hostname -I 2>/dev/null | awk '{print $1}')"
 IP="${IP:-<آی‌پی سرور>}"
 
-printf '\n\033[32m✓ تمام شد.\033[0m\n\n'
+printf '\n%s✓ تمام شد.%s\n\n' "$C_G" "$C_0"
 printf '  حالا روی ویندوز، در cmd، این‌ها را یکی‌یکی امتحان کنید\n'
 printf '  تا یکی جواب بدهد:\n\n'
 for port in $listening; do
-    printf '      \033[1mssh -p %s root@%s\033[0m\n' "$port" "$IP"
+    printf '      %sssh -p %s root@%s%s\n' "$C_B" "$port" "$IP" "$C_0"
 done
 printf '\n  هرکدام که رمز پرسید، همان درست است — از این پس همیشه\n'
 printf '  با همان -p وصل شوید.\n\n'
