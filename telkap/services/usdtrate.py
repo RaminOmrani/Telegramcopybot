@@ -32,7 +32,7 @@ import aiohttp
 
 from telkap.db import get_session
 from telkap.models import AppSetting, utcnow
-from telkap.services import coins, crypto
+from telkap.services import coins, crypto, dnsfix
 
 log = logging.getLogger(__name__)
 
@@ -202,7 +202,10 @@ async def market_toman(
     low, high = SANE_RANGE.get(spec.code, (MIN_SANE, MAX_SANE))
 
     owned = session is None
-    session = session or aiohttp.ClientSession()
+    # نشستی که اگر نامِ صرافی با DNS سیستم ترجمه نشد، از راه HTTPS
+    # بپرسد. روی سرور خارج از ایران، همین یک قدم فرق بین «قیمت داریم»
+    # و «هیچ منبعی جواب نداد» است.
+    session = session or dnsfix.session()
     problems: list[str] = []
 
     try:
