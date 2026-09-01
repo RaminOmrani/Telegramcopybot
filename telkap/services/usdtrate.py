@@ -73,13 +73,43 @@ class RateError(Exception):
 # ── خواندن از صرافی ──────────────────────────────────────────────────
 
 
-def _dig(payload, path: tuple[str, ...]):
-    """مسیر تودرتو را دنبال می‌کند. None یعنی نبود."""
+def _dig(payload, path: tuple):
+    """مسیر تودرتو را دنبال می‌کند. None یعنی نبود.
+
+    عدد در مسیر یعنی اندیسِ فهرست: پاسخ صرافی‌ها معمولاً
+    <code>asks[0]</code> است، گاهی فهرستی از دیکشنری و گاهی فهرستی
+    از فهرست.
+    """
     for step in path:
-        if not isinstance(payload, dict):
+        if isinstance(step, int):
+            if not isinstance(payload, list | tuple) or len(payload) <= step:
+                return None
+            payload = payload[step]
+        else:
+            if not isinstance(payload, dict):
+                return None
+            payload = payload.get(step)
+        if payload is None:
             return None
-        payload = payload.get(step)
     return payload
+
+
+def _number_at(payload, path: tuple, keys: tuple[str, ...]) -> Decimal | None:
+    """عدد را از انتهای مسیر برمی‌دارد.
+
+    اگر انتهای مسیر خودش عدد باشد (مثل <code>asks[0][0]</code>)
+    همان؛ وگرنه از میان کلیدها گشته می‌شود.
+    """
+    found = _dig(payload, path) if path else payload
+    if found is None:
+        return None
+    if isinstance(found, int | float | str):
+        try:
+            value = Decimal(str(found))
+        except (InvalidOperation, ValueError, TypeError):
+            return None
+        return value if value > 0 else None
+    return _first_number(found, keys)
 
 
 def _first_number(payload, keys) -> Decimal | None:
@@ -136,23 +166,51 @@ def _sources(spec) -> tuple[Source, ...]:
     مسیر <b>بهترین</b> است: قیمت ریالی مستقیم از بازار، بدون هیچ ضرب
     و تبدیلی.
     """
+    low = spec.symbol.lower()
     return (
         Source(
-            name="نوبیتکس (سفارش‌ها)",
+            name="نوبیتکس",
             url=f"https://api.nobitex.ir/v2/orderbook/{spec.market}",
             keys=("lastTradePrice", "last", "latest"),
-            divisor=10,
+            divisor=10,                      # ریال
         ),
         Source(
-            name="نوبیتکس (آمار بازار)",
+            name="نوبیتکس (آمار)",
             url="https://api.nobitex.ir/market/stats",
             method="POST",
-            payload={"srcCurrency": spec.symbol.lower(), "dstCurrency": "rls"},
-            path=("stats", f"{spec.symbol.lower()}-rls"),
+            payload={"srcCurrency": low, "dstCurrency": "rls"},
+            path=("stats", f"{low}-rls"),
             keys=("latest", "last", "lastTradePrice"),
-            divisor=10,
+            divisor=10,                      # ریال
+        ),
+        # ── دامنه‌های غیر .ir ───────────────────────────────────────
+        #
+        # نامِ api.nobitex.ir از بیرون ایران ترجمه نمی‌شود. این دو
+        # صرافی ایرانی‌اند ولی دامنه‌شان .com و .io است، پس شانس
+        # ترجمه شدنشان هست. شکل پاسخ و <b>واحدشان</b> از کدِ در حال
+        # کارِ پروژه‌ی NabiKAZ/arbitrage گرفته شده، نه از حدس.
+        Source(
+            name="راستین",
+            url=f"https://api.raastin.com/api/v1/market/depth/{spec.symbol}IRT/",
+            path=("bids", 0),
+            keys=("price",),
+            divisor=1,                       # تومان
+        ),
+        Source(
+            name="اکسیر",
+            url="https://api.exir.io/v2/orderbook",
+            params={"symbol": f"{low}-irt"},
+            path=("bids", 0, 0),
+            keys=(),
+            divisor=1,                       # تومان
         ),
     )
+
+
+# دو منبع که بیش از این اختلاف داشته باشند، یعنی یکی‌شان را اشتباه
+# می‌خوانیم — به‌احتمال زیاد ریال را تومان گرفته‌ایم. بازارهای واقعی
+# در یک لحظه این‌قدر از هم دور نمی‌شوند.
+MAX_SPREAD_PERCENT = 20
 
 
 # ── مسیر دوم: قیمت جهانی ─────────────────────────────────────────────
@@ -257,7 +315,7 @@ async def _fetch_decimal(source: Source, session: aiohttp.ClientSession) -> Deci
     except (ValueError, TypeError) as exc:
         raise RateError("پاسخ قابل خواندن نبود") from exc
 
-    price = _first_number(_dig(body, source.path) if source.path else body, source.keys)
+    price = _number_at(body, source.path, source.keys)
     if price is None:
         raise RateError("قیمتی در پاسخ نبود")
     return price / source.divisor
@@ -298,7 +356,15 @@ async def market_toman(
     session = session or dnsfix.session()
     problems: list[str] = []
 
+    quotes: list[tuple[str, int]] = []
+
     try:
+        # همه‌ی منبع‌ها خوانده می‌شوند، نه فقط تا اولین موفق.
+        #
+        # <b>چرا همه.</b> بعضی از این صرافی‌ها ریال می‌دهند و بعضی
+        # تومان. اگر واحدِ یکی را اشتباه بفهمیم، عددش ده برابر است —
+        # و آن عدد هنوز «معقول» به نظر می‌رسد، پس هیچ بازه‌ای
+        # نمی‌گیردش. تنها چیزی که می‌گیردش، مقایسه با بقیه است.
         for source in _sources(spec):
             try:
                 toman = await _fetch(source, session)
@@ -313,9 +379,10 @@ async def market_toman(
                 problems.append(f"{source.name}: عدد نامعقول ({toman:,})")
                 continue
 
-            if problems:
-                log.info("نرخ %s از منبع پشتیبان گرفته شد: %s", spec.symbol, source.name)
-            return toman
+            quotes.append((source.name, toman))
+
+        if quotes:
+            return _agree(spec, quotes)
 
         # هیچ منبع تومانی نشد. اگر این ارز از روی تتر قابل حساب کردن
         # است، همان مسیر — وگرنه خطا، و نرخ قبلی سر جایش می‌ماند.
@@ -329,6 +396,31 @@ async def market_toman(
             await session.close()
 
     raise RateError(" — ".join(problems) or "هیچ منبعی پاسخ نداد")
+
+
+def _agree(spec, quotes: list[tuple[str, int]]) -> int:
+    """از چند قیمت، یکی. و اگر با هم نخوانند، هیچ‌کدام.
+
+    <b>وقتی مطمئن نیستیم، قیمت را عوض نمی‌کنیم.</b> اختلاف زیاد بین
+    دو بازار یعنی یکی‌شان را اشتباه می‌خوانیم — و نرخِ کمی قدیمی از
+    نرخِ قاطعانه غلط بی‌نهایت بهتر است. نرخ قبلی سر جایش می‌ماند و
+    ادمین خبردار می‌شود.
+    """
+    values = sorted(value for _name, value in quotes)
+    if len(values) == 1:
+        return values[0]
+
+    spread = (values[-1] - values[0]) * 100 / values[0]
+    if spread > MAX_SPREAD_PERCENT:
+        detail = "، ".join(f"{name} {value:,}" for name, value in quotes)
+        raise RateError(f"منبع‌ها با هم نمی‌خوانند ({detail})")
+
+    # میانه، نه میانگین: یک عددِ پرت میانگین را می‌کشد، ولی وقتی سه
+    # منبع یا بیشتر باشد میانه را تکان نمی‌دهد.
+    middle = len(values) // 2
+    if len(values) % 2:
+        return values[middle]
+    return (values[middle - 1] + values[middle]) // 2
 
 
 async def _from_usdt(spec, session, low: int, high: int) -> int:

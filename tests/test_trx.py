@@ -519,7 +519,10 @@ class _Session:
                 if isinstance(reply, Exception):
                     raise reply
                 return reply
-        raise AssertionError(f"نشانی پیش‌بینی‌نشده: {url}")
+        # منبعی که این تست درباره‌اش نیست، «در دسترس نیست» می‌دهد.
+        # خطا دادن یعنی هر تست مجبور است همه‌ی منبع‌ها را نام ببرد و
+        # با اضافه شدن منبع بعدی بشکند.
+        return _Reply(status=503)
 
     def get(self, url, **kwargs):
         return self._next(url)

@@ -407,7 +407,7 @@ async def test_no_change_is_not_reported_as_a_failure(tmp_path, monkeypatch):
     assert outcome.changed is False
 
 
-# ── منبع پشتیبان ─────────────────────────────────────────────────────
+# ── چند منبع، و مقایسه‌شان ───────────────────────────────────────────
 
 
 class _Reply:
@@ -428,16 +428,23 @@ class _Reply:
 
 
 class _Session:
-    def __init__(self, replies):
-        self.replies = list(replies)
+    """نشست ساختگی: پاسخ بر اساس نشانی انتخاب می‌شود.
+
+    منبعی که تست درباره‌اش نیست «در دسترس نیست» می‌دهد — نه خطا —
+    وگرنه هر تست مجبور بود همه‌ی منبع‌ها را نام ببرد و با اضافه شدن
+    منبع بعدی بشکند.
+    """
+
+    def __init__(self, replies: dict):
+        self.replies = replies
         self.seen = []
 
     def _next(self, url):
         self.seen.append(url)
-        reply = self.replies.pop(0)
-        if isinstance(reply, Exception):
-            raise reply
-        return reply
+        for fragment, reply in self.replies.items():
+            if fragment in url:
+                return reply
+        return _Reply(status=503)
 
     def get(self, url, **kwargs):
         return self._next(url)
@@ -447,59 +454,102 @@ class _Session:
 
 
 @pytest.mark.asyncio
-async def test_the_second_source_is_tried_when_the_first_fails():
+async def test_one_source_answering_is_enough():
     """<b>یک نقطه‌ی اتصال برای قیمت‌گذاری کافی نیست.</b>
 
-    ربات روی سرور خارج از ایران است و صرافی ایرانی؛ هر تکانِ آن سمت
-    بدون منبع دوم یعنی خوابیدنِ قیمت‌گذاری.
+    ربات روی سرور خارج از ایران است و صرافی ایرانی؛ بدون منبع دوم،
+    هر تکانِ آن سمت قیمت‌گذاری را می‌خواباند.
     """
     session = _Session(
-        [
-            _Reply(status=503),                                   # منبع اول
-            _Reply(body={"stats": {"usdt-rls": {"latest": "1200000"}}}),
-        ]
+        {"market/stats": _Reply(body={"stats": {"usdt-rls": {"latest": "1200000"}}})}
     )
 
-    toman = await usdtrate.market_toman(usdtrate.coins.USDT, session=session)
-
-    assert toman == 120_000          # ریال بود، تقسیم بر ده شد
-    assert len(session.seen) == 2    # واقعاً سراغ دومی رفت
+    assert await usdtrate.market_toman(usdtrate.coins.USDT, session=session) == 120_000
 
 
 @pytest.mark.asyncio
-async def test_the_second_source_is_not_tried_when_the_first_works():
-    """منبع پشتیبان یعنی پشتیبان، نه یک درخواست اضافه در هر دور."""
-    session = _Session([_Reply(body={"lastTradePrice": "1200000"})])
+async def test_every_source_is_read_so_they_can_be_cross_checked():
+    """<b>چرا دیگر روی اولین موفق نمی‌ایستیم.</b>
 
-    assert await usdtrate.market_toman(usdtrate.coins.USDT, session=session) == 120_000
-    assert len(session.seen) == 1
+    بعضی از این صرافی‌ها ریال می‌دهند و بعضی تومان. اگر واحدِ یکی را
+    اشتباه بفهمیم عددش ده برابر است — و آن عدد هنوز «معقول» به نظر
+    می‌رسد، پس هیچ بازه‌ای نمی‌گیردش. تنها چیزی که می‌گیردش، مقایسه
+    با بقیه است؛ و مقایسه یعنی همه باید خوانده شوند.
+    """
+    spec = usdtrate.coins.get(usdtrate.coins.USDT)
+    session = _Session({"nobitex.ir/v2": _Reply(body={"lastTradePrice": "1200000"})})
+
+    await usdtrate.market_toman(usdtrate.coins.USDT, session=session)
+
+    assert len(session.seen) == len(usdtrate._sources(spec))
+
+
+@pytest.mark.asyncio
+async def test_sources_that_disagree_change_nothing():
+    """<b>وقتی مطمئن نیستیم، قیمت را عوض نمی‌کنیم.</b>
+
+    اختلاف زیاد بین دو بازار یعنی یکی‌شان را اشتباه می‌خوانیم — به
+    احتمال زیاد ریال را تومان گرفته‌ایم. نرخِ کمی قدیمی از نرخِ
+    قاطعانه غلط بی‌نهایت بهتر است.
+    """
+    session = _Session(
+        {
+            "nobitex.ir/v2": _Reply(body={"lastTradePrice": "1200000"}),   # ۱۲۰٬۰۰۰
+            "raastin": _Reply(body={"bids": [{"price": "12000"}]}),        # ۱۲٬۰۰۰
+        }
+    )
+
+    with pytest.raises(usdtrate.RateError) as caught:
+        await usdtrate.market_toman(usdtrate.coins.USDT, session=session)
+
+    assert "نمی‌خوانند" in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_sources_that_agree_give_the_middle_one():
+    """میانه، نه میانگین: یک عددِ پرت میانگین را می‌کشد."""
+    session = _Session(
+        {
+            "nobitex.ir/v2": _Reply(body={"lastTradePrice": "1200000"}),   # ۱۲۰٬۰۰۰
+            "raastin": _Reply(body={"bids": [{"price": "121000"}]}),       # ۱۲۱٬۰۰۰
+            "exir": _Reply(body={"bids": [["122000", "1"]]}),              # ۱۲۲٬۰۰۰
+        }
+    )
+
+    assert await usdtrate.market_toman(usdtrate.coins.USDT, session=session) == 121_000
 
 
 @pytest.mark.asyncio
 async def test_when_every_source_fails_the_message_names_them_all():
     """وقتی هیچ‌کدام کار نمی‌کند، دانستنِ اینکه هرکدام چه گفت تنها سرنخ است."""
-    session = _Session([_Reply(status=403), _Reply(status=503)])
+    session = _Session(
+        {
+            "nobitex.ir/v2": _Reply(status=403),
+            "market/stats": _Reply(status=502),
+        }
+    )
 
     with pytest.raises(usdtrate.RateError) as caught:
         await usdtrate.market_toman(usdtrate.coins.USDT, session=session)
 
     assert "403" in str(caught.value)
-    assert "503" in str(caught.value)
+    assert "502" in str(caught.value)
 
 
 @pytest.mark.asyncio
-async def test_a_nonsense_price_falls_through_to_the_next_source():
+async def test_a_nonsense_price_is_dropped_not_used():
     """<b>عدد نامعقول بدتر از پاسخ ندادن است.</b>
 
     پاسخِ خراب هنوز «یک عدد» است و بی‌صدا قیمت را عوض می‌کند. رد
-    کردنش و رفتن سراغ منبع بعدی، همان کاری است که با خطای شبکه
-    می‌کنیم.
+    کردنش همان کاری است که با خطای شبکه می‌کنیم.
     """
     session = _Session(
-        [
-            _Reply(body={"lastTradePrice": "12"}),                 # بی‌معنی
-            _Reply(body={"stats": {"usdt-rls": {"latest": "1200000"}}}),
-        ]
+        {
+            "nobitex.ir/v2": _Reply(body={"lastTradePrice": "12"}),        # بی‌معنی
+            "market/stats": _Reply(
+                body={"stats": {"usdt-rls": {"latest": "1200000"}}}
+            ),
+        }
     )
 
     assert await usdtrate.market_toman(usdtrate.coins.USDT, session=session) == 120_000
@@ -508,10 +558,144 @@ async def test_a_nonsense_price_falls_through_to_the_next_source():
 def test_every_source_declares_its_own_unit():
     """<b>تقسیم بر ده نباید یک جای مشترک باشد.</b>
 
-    بعضی سرویس‌ها ریال می‌دهند و بعضی تومان. اگر واحد یک جای ثابت
+    نوبیتکس ریال می‌دهد، راستین و اکسیر تومان. اگر واحد یک جای ثابت
     فرض شود، اضافه کردن منبعِ تومانی یعنی ده برابر خطا در قیمت — و آن
     خطا بی‌صداست، چون عددش هنوز معقول به نظر می‌رسد.
     """
     for code in usdtrate.coins.all_codes():
         for source in usdtrate._sources(usdtrate.coins.get(code)):
             assert source.divisor in (1, 10)
+
+
+def test_a_price_can_be_read_from_a_list_as_well_as_a_dict():
+    """صرافی‌ها هر دو شکل را می‌دهند: asks[0].price و asks[0][0]."""
+    body = {"bids": [{"price": "121000"}], "asks": [["122000", "1"]]}
+
+    assert usdtrate._number_at(body, ("bids", 0), ("price",)) == 121_000
+    assert usdtrate._number_at(body, ("asks", 0, 0), ()) == 122_000
+    assert usdtrate._number_at(body, ("bids", 9), ("price",)) is None
+    assert usdtrate._number_at(body, ("nope", 0), ("price",)) is None
+
+
+# ── وقتی نامِ صرافی ترجمه نمی‌شود ────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_name_is_looked_up_over_https_when_the_system_dns_fails(monkeypatch):
+    """<b>خطایی که روی سرور واقعی دیدیم.</b>
+
+    سرور به اینترنت وصل بود — تلگرام و گیت‌هاب کار می‌کردند — ولی
+    <code>api.nobitex.ir</code> اصلاً به IP ترجمه نمی‌شد. صرافی ما را
+    رد نکرده بود؛ ما اصلاً پیدایش نمی‌کردیم.
+    """
+    from telkap.services import dnsfix
+
+    dnsfix.forget()
+
+    async def no_system_dns(host, port, family):
+        raise OSError("نام ترجمه نشد")
+
+    async def doh(host, session=None):
+        return ["1.2.3.4"]
+
+    monkeypatch.setattr(dnsfix, "_system", no_system_dns)
+    monkeypatch.setattr(dnsfix, "over_https", doh)
+
+    found = await dnsfix.Resolver().resolve("api.nobitex.ir", 443)
+
+    assert found[0]["host"] == "1.2.3.4"
+    # نام باید بماند، وگرنه گواهی TLS با IP سنجیده می‌شود و رد می‌شود
+    assert found[0]["hostname"] == "api.nobitex.ir"
+
+
+@pytest.mark.asyncio
+async def test_the_system_dns_is_tried_first(monkeypatch):
+    """<b>راه معمولی سریع‌تر است و به سرویس بیرونی وابسته نیست.</b>
+
+    اگر همیشه از HTTPS می‌پرسیدیم، برای مسئله‌ای که اغلب وجود ندارد
+    یک وابستگی تازه می‌ساختیم.
+    """
+    from telkap.services import dnsfix
+
+    dnsfix.forget()
+
+    async def system(host, port, family):
+        return [{"hostname": host, "host": "5.6.7.8", "port": port,
+                 "family": 2, "proto": 0, "flags": 0}]
+
+    async def explode(host, session=None):
+        raise AssertionError("نباید از HTTPS پرسیده می‌شد")
+
+    monkeypatch.setattr(dnsfix, "_system", system)
+    monkeypatch.setattr(dnsfix, "over_https", explode)
+
+    found = await dnsfix.Resolver().resolve("api.nobitex.ir", 443)
+
+    assert found[0]["host"] == "5.6.7.8"
+
+
+@pytest.mark.asyncio
+async def test_a_name_that_resolves_nowhere_raises_clearly(monkeypatch):
+    """اگر هیچ راهی جواب ندهد، خطا باید بگوید هر دو راه امتحان شد."""
+    from telkap.services import dnsfix
+
+    dnsfix.forget()
+
+    async def no_system_dns(host, port, family):
+        raise OSError("نام ترجمه نشد")
+
+    async def nothing(host, session=None):
+        return []
+
+    monkeypatch.setattr(dnsfix, "_system", no_system_dns)
+    monkeypatch.setattr(dnsfix, "over_https", nothing)
+
+    with pytest.raises(OSError) as caught:
+        await dnsfix.Resolver().resolve("api.nobitex.ir", 443)
+
+    assert "DoH" in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_only_real_address_records_are_used(monkeypatch):
+    """<b>CNAME یک IP نیست.</b>
+
+    پاسخ DoH رکوردهای دیگری هم دارد. دادنشان به aiohttp یعنی خطای
+    مبهم در لایه‌ی بعد، جایی که دیگر معلوم نیست از کجا آمده.
+    """
+    from telkap.services import dnsfix
+
+    dnsfix.forget()
+    session = _Session(
+        {
+            "cloudflare": _Reply(
+                body={
+                    "Answer": [
+                        {"type": 5, "data": "nobitex.ir.cdn.example."},
+                        {"type": 1, "data": "9.9.9.9"},
+                    ]
+                }
+            )
+        }
+    )
+
+    found = await dnsfix.over_https("api.nobitex.ir", session=session)
+
+    assert found == ["9.9.9.9"]
+
+
+@pytest.mark.asyncio
+async def test_a_resolved_name_is_remembered(monkeypatch):
+    """پرسیدنِ دوباره در هر دور نرخ، یک رفت‌وبرگشت بی‌فایده است."""
+    from telkap.services import dnsfix
+
+    dnsfix.forget()
+    session = _Session(
+        {"cloudflare": _Reply(body={"Answer": [{"type": 1, "data": "9.9.9.9"}]})}
+    )
+
+    await dnsfix.over_https("api.nobitex.ir", session=session)
+    await dnsfix.over_https("api.nobitex.ir", session=session)
+
+    assert len(session.seen) == 1
+    dnsfix.forget()
