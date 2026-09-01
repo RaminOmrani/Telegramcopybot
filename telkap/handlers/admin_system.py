@@ -210,10 +210,13 @@ async def _usdt_screen(event) -> None:
         )
     elif auto:
         note = (
-            "\n\n<i>نرخ هر ربع ساعت از نوبیتکس گرفته می‌شود — بازار "
-            "USDTIRT برای تتر و TRXIRT برای ترون. حاشیه کمی <b>زیر</b> "
-            "بازار است تا ارزی که می‌گیرید دست‌کم به اندازه‌ی قیمت تومانی "
-            "بیرزد. ترون حاشیه‌ی بیشتری دارد چون نوسانش بیشتر است.</i>"
+            "\n\n<i>نرخ هر ربع ساعت تازه می‌شود. اول از نوبیتکس؛ و اگر "
+            "در دسترس نبود، <b>ترون</b> از قیمت جهانی‌اش ضربدر نرخ تتر "
+            "حساب می‌شود.\n\n"
+            "یعنی روی سرور خارج از ایران، <b>نرخ تتر را شما می‌گذارید</b> "
+            "و ترون خودش دنبالش می‌آید. تقسیم کار درست همان‌جاست: تتر "
+            "کند حرکت می‌کند، ترون تند — و آن که فراموش کردنش ضرر "
+            "می‌زند، خودکار است.</i>"
         )
     else:
         note = (
@@ -232,17 +235,22 @@ async def _usdt_screen(event) -> None:
             callback_data="sys:autorate",
         )
     )
+    # دکمه‌های نرخ دستی همیشه هستند، حتی وقتی نرخ خودکار روشن است.
+    #
+    # <b>چرا.</b> روی سرور خارج از ایران، بازار ایرانی در دسترس نیست و
+    # نرخ تتر <b>باید</b> دستی گذاشته شود — ترون از روی همان حساب
+    # می‌شود. قبلاً این دکمه‌ها با روشن شدن نرخ خودکار پنهان می‌شدند،
+    # یعنی ادمین راهی نداشت لنگرِ محاسبه را بگذارد.
+    kb.row(
+        InlineKeyboardButton(text="💱 نرخ تتر", callback_data="sys:usdtrate:usdt"),
+        InlineKeyboardButton(text="💱 نرخ ترون", callback_data="sys:usdtrate:trx"),
+    )
     if auto:
         kb.row(
             InlineKeyboardButton(text="📉 حاشیه‌ی تتر", callback_data="sys:margin:usdt"),
             InlineKeyboardButton(text="📉 حاشیه‌ی ترون", callback_data="sys:margin:trx"),
         )
         kb.row(InlineKeyboardButton(text="⏬ گرفتن نرخ‌ها الان", callback_data="sys:ratenow"))
-    else:
-        kb.row(
-            InlineKeyboardButton(text="💱 نرخ تتر", callback_data="sys:usdtrate:usdt"),
-            InlineKeyboardButton(text="💱 نرخ ترون", callback_data="sys:usdtrate:trx"),
-        )
     kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm:sys"))
     await _show(event, head + body + note, kb)
 

@@ -485,3 +485,210 @@ async def test_both_coins_are_checked_in_the_same_round(tmp_path, monkeypatch):
     await cryptocheck.run_once()
 
     assert calls == {"usdt": 1, "trx": 1}
+
+
+# ── وقتی صرافی ایرانی در دسترس نیست ─────────────────────────────────
+
+
+class _Reply:
+    def __init__(self, status=200, body=None):
+        self.status = status
+        self._body = body if body is not None else {}
+
+    async def json(self, **kwargs):
+        return self._body
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+
+class _Session:
+    """نشست ساختگی: هر نشانی پاسخ خودش را دارد."""
+
+    def __init__(self, replies: dict):
+        self.replies = replies
+        self.seen = []
+
+    def _next(self, url):
+        self.seen.append(url)
+        for fragment, reply in self.replies.items():
+            if fragment in url:
+                if isinstance(reply, Exception):
+                    raise reply
+                return reply
+        raise AssertionError(f"نشانی پیش‌بینی‌نشده: {url}")
+
+    def get(self, url, **kwargs):
+        return self._next(url)
+
+    def post(self, url, **kwargs):
+        return self._next(url)
+
+
+@pytest.mark.asyncio
+async def test_trx_is_priced_from_the_world_when_iran_is_unreachable(
+    tmp_path, monkeypatch
+):
+    """<b>مسئله‌ای که روی سرور واقعی دیدیم.</b>
+
+    نامِ صرافی ایرانی از این سرور اصلاً به IP ترجمه نمی‌شود — نه با
+    DNS سرور، نه از راه DoH. ولی قیمت جهانی ترون از هر جای دنیا
+    خوانده می‌شود، و تتر عملاً همان دلار است:
+
+        تومانِ ترون = (ترون به تتر) × (تومانِ تتر)
+    """
+    from telkap.services import crypto
+
+    await _setup(tmp_path, monkeypatch, settings={})
+    await crypto.set_rate(120_000, coin=coins.USDT, admin_id=1)
+
+    session = _Session(
+        {
+            "nobitex": _Reply(status=503),
+            "binance": _Reply(body={"symbol": "TRXUSDT", "price": "0.05"}),
+        }
+    )
+
+    toman = await usdtrate.market_toman(coins.TRX, session=session)
+
+    assert toman == 6_000                       # ۰٫۰۵ × ۱۲۰٬۰۰۰
+
+
+@pytest.mark.asyncio
+async def test_the_iranian_market_still_wins_when_it_answers(tmp_path, monkeypatch):
+    """<b>مسیر مستقیم بهتر است و اول امتحان می‌شود.</b>
+
+    قیمت ریالی مستقیم از بازار می‌آید، بدون ضرب و بدون تکیه بر عددی
+    که ادمین گذاشته. مسیر جهانی فقط جایگزین است.
+    """
+    from telkap.services import crypto
+
+    await _setup(tmp_path, monkeypatch, settings={})
+    await crypto.set_rate(120_000, coin=coins.USDT, admin_id=1)
+
+    session = _Session({"nobitex": _Reply(body={"lastTradePrice": "70000"})})
+
+    assert await usdtrate.market_toman(coins.TRX, session=session) == 7_000
+    assert not any("binance" in u for u in session.seen)
+
+
+@pytest.mark.asyncio
+async def test_without_a_tether_rate_the_derived_price_is_refused(
+    tmp_path, monkeypatch
+):
+    """<b>ضرب در صفر یعنی ترون رایگان.</b>
+
+    نرخ تتر لنگرِ این محاسبه است. اگر تنظیم نشده باشد، هیچ عددی
+    نباید ساخته شود — نه صفر، نه حدس.
+    """
+    await _setup(tmp_path, monkeypatch, settings={})
+
+    session = _Session(
+        {
+            "nobitex": _Reply(status=503),
+            "binance": _Reply(body={"price": "0.05"}),
+        }
+    )
+
+    with pytest.raises(usdtrate.RateError) as caught:
+        await usdtrate.market_toman(coins.TRX, session=session)
+
+    assert "تتر" in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_tether_itself_is_never_derived(tmp_path, monkeypatch):
+    """<b>تتر لنگر است و نمی‌تواند از خودش حساب شود.</b>
+
+    اگر مسیر جهانی برای تتر هم باز بود، نرخِ ذخیره‌شده در خودش ضرب
+    می‌شد و هر دور همان عدد را «تأیید» می‌کرد — یک حلقه که هیچ‌وقت
+    خطا نمی‌داد و هیچ‌وقت هم درست نبود.
+    """
+    from telkap.services import crypto
+
+    await _setup(tmp_path, monkeypatch, settings={})
+    await crypto.set_rate(120_000, coin=coins.USDT, admin_id=1)
+
+    session = _Session({"nobitex": _Reply(status=503)})
+
+    with pytest.raises(usdtrate.RateError):
+        await usdtrate.market_toman(coins.USDT, session=session)
+
+    assert not any("binance" in u for u in session.seen)
+
+
+@pytest.mark.asyncio
+async def test_a_second_world_exchange_is_tried(tmp_path, monkeypatch):
+    from telkap.services import crypto
+
+    await _setup(tmp_path, monkeypatch, settings={})
+    await crypto.set_rate(120_000, coin=coins.USDT, admin_id=1)
+
+    session = _Session(
+        {
+            "nobitex": _Reply(status=503),
+            "binance": _Reply(status=451),          # بایننس بعضی کشورها را رد می‌کند
+            "kucoin": _Reply(body={"data": {"price": "0.05"}}),
+        }
+    )
+
+    assert await usdtrate.market_toman(coins.TRX, session=session) == 6_000
+
+
+@pytest.mark.asyncio
+async def test_a_nonsense_world_price_is_refused(tmp_path, monkeypatch):
+    """<b>قیمت دلاری تورم ندارد، پس بازه‌اش می‌تواند تنگ باشد.</b>
+
+    ترون هیچ‌وقت یک دلار نبوده. چنین عددی یعنی پاسخ را اشتباه
+    خوانده‌ایم — و بدون این بررسی، نرخ بیست برابر می‌شد.
+    """
+    from telkap.services import crypto
+
+    await _setup(tmp_path, monkeypatch, settings={})
+    await crypto.set_rate(120_000, coin=coins.USDT, admin_id=1)
+
+    session = _Session(
+        {
+            "nobitex": _Reply(status=503),
+            "binance": _Reply(body={"price": "1000"}),
+            "kucoin": _Reply(body={"data": {"price": "1000"}}),
+        }
+    )
+
+    with pytest.raises(usdtrate.RateError):
+        await usdtrate.market_toman(coins.TRX, session=session)
+
+
+@pytest.mark.asyncio
+async def test_the_manual_rate_buttons_never_disappear(tmp_path, monkeypatch):
+    """<b>لنگرِ محاسبه باید همیشه قابل تنظیم باشد.</b>
+
+    وقتی بازار ایرانی در دسترس نیست، نرخ تتر دستی گذاشته می‌شود و
+    ترون از رویش حساب می‌گردد. قبلاً این دکمه‌ها با روشن شدن «نرخ
+    خودکار» پنهان می‌شدند — یعنی ادمینی که نرخ خودکار را روشن کرده
+    بود راهی نداشت آن لنگر را بگذارد، و هر دو ارز خاموش می‌ماندند.
+    """
+    from telkap.handlers import admin_system
+
+    await _setup(tmp_path, monkeypatch, settings={})
+    await usdtrate.set_auto(True, admin_id=1)
+
+    seen = {}
+
+    class FakeMessage:
+        async def answer(self, text, reply_markup=None):
+            seen["text"] = text
+            seen["kb"] = reply_markup
+
+    await admin_system._usdt_screen(FakeMessage())
+
+    buttons = {
+        button.callback_data
+        for row in seen["kb"].inline_keyboard
+        for button in row
+    }
+    assert "sys:usdtrate:usdt" in buttons
+    assert "sys:usdtrate:trx" in buttons

@@ -120,15 +120,21 @@ class Source:
     method: str = "GET"
     path: tuple[str, ...] = ()        # مسیر تودرتو تا خودِ قیمت
     payload: dict | None = None       # برای POST
+    params: dict | None = None        # پارامترهای نشانی
 
 
 def _sources(spec) -> tuple[Source, ...]:
-    """منبع‌های قیمت این ارز، به ترتیبِ امتحان شدن.
+    """منبع‌های <b>تومانی</b> این ارز، به ترتیبِ امتحان شدن.
 
-    <b>چرا بیش از یکی.</b> ربات روی سرور خارج از ایران است و صرافی
-    ایرانی؛ یک نقطه‌ی اتصال یعنی هر تکانِ آن سمت، قیمت‌گذاری را
-    می‌خواباند. هر دو منبع از نوبیتکس‌اند و هر دو ریال می‌دهند، پس
-    عددی که برمی‌گردد یکی است — فقط راهِ رسیدن به آن دو تاست.
+    هر دو از نوبیتکس‌اند و هر دو ریال می‌دهند، پس عددی که برمی‌گردد
+    یکی است — فقط راهِ رسیدن به آن دو تاست.
+
+    <b>روی سرور خارج از ایران هیچ‌کدام کار نمی‌کنند.</b> نامِ
+    <code>api.nobitex.ir</code> از بیرون ایران اصلاً به IP ترجمه
+    نمی‌شود — نه با DNS سرور، نه از راه DoH. اینجا می‌مانند چون اگر
+    روزی ربات روی سرور ایرانی برود یا نوبیتکس نظرش عوض شود، این
+    مسیر <b>بهترین</b> است: قیمت ریالی مستقیم از بازار، بدون هیچ ضرب
+    و تبدیلی.
     """
     return (
         Source(
@@ -149,14 +155,93 @@ def _sources(spec) -> tuple[Source, ...]:
     )
 
 
-async def _fetch(source: Source, session: aiohttp.ClientSession) -> int:
-    """یک منبع را می‌خواند و تومان برمی‌گرداند."""
+# ── مسیر دوم: قیمت جهانی ─────────────────────────────────────────────
+#
+# <b>چرا این مسیر لازم شد.</b> صرافی ایرانی از این سرور در دسترس نیست.
+# ولی قیمت <b>جهانی</b> ترون از هر جای دنیا خوانده می‌شود، و تتر عملاً
+# همان دلار است — پس:
+#
+#     تومانِ ترون  =  (ترون به تتر)  ×  (تومانِ تتر)
+#
+# <b>و این تقسیم کار، درست همان‌جایی می‌افتد که باید.</b> ترون روزی ده
+# درصد تکان می‌خورد و تتر تقریباً ثابت است. با این مسیر، چیزی که
+# دستی می‌ماند همان عددِ کندِ تتر است و چیزی که خودکار می‌شود همان
+# عددِ تندِ ترون — یعنی جایی که فراموش کردنش واقعاً ضرر می‌زند.
+
+
+def _global_sources(spec) -> tuple[Source, ...]:
+    """قیمت این ارز بر حسب <b>تتر</b>، از صرافی‌های جهانی."""
+    return (
+        Source(
+            name="بایننس",
+            url="https://api.binance.com/api/v3/ticker/price",
+            params={"symbol": f"{spec.symbol}USDT"},
+            keys=("price",),
+            divisor=1,
+        ),
+        Source(
+            name="کوکوین",
+            url="https://api.kucoin.com/api/v1/market/orderbook/level1",
+            params={"symbol": f"{spec.symbol}-USDT"},
+            path=("data",),
+            keys=("price",),
+            divisor=1,
+        ),
+    )
+
+
+# قیمت دلاریِ معقول برای هر ارز. اینجا سخت‌گیرانه‌تر از بازه‌ی تومانی
+# است چون قیمت دلاری تورم ندارد: ترون هیچ‌وقت یک دلار نبوده و اگر
+# روزی چنین عددی برگردد، پاسخ را اشتباه خوانده‌ایم.
+SANE_USDT_PRICE = {
+    coins.TRX: (Decimal("0.005"), Decimal("5")),
+}
+
+
+async def usdt_price(
+    coin: str, *, session: aiohttp.ClientSession | None = None
+) -> Decimal:
+    """قیمت این ارز به <b>تتر</b>، از صرافی‌های جهانی."""
+    spec = coins.get(coin)
+    if spec is None:
+        raise RateError(f"ارز ناشناخته: {coin}")
+    if spec.code == coins.USDT:
+        return Decimal(1)
+
+    low, high = SANE_USDT_PRICE.get(spec.code, (Decimal("0.000001"), Decimal("1000")))
+
+    owned = session is None
+    session = session or dnsfix.session()
+    problems: list[str] = []
+
+    try:
+        for source in _global_sources(spec):
+            try:
+                price = await _fetch_decimal(source, session)
+            except RateError as exc:
+                problems.append(f"{source.name}: {exc}")
+                continue
+            if not low <= price <= high:
+                problems.append(f"{source.name}: قیمت نامعقول ({price})")
+                continue
+            return price
+    finally:
+        if owned:
+            await session.close()
+
+    raise RateError(" — ".join(problems) or "هیچ صرافی جهانی پاسخ نداد")
+
+
+async def _fetch_decimal(source: Source, session: aiohttp.ClientSession) -> Decimal:
+    """یک منبع را می‌خواند و عددِ خام (پس از تقسیم بر واحد) می‌دهد."""
     timeout = aiohttp.ClientTimeout(total=TIMEOUT_SECONDS)
     try:
         if source.method == "POST":
-            call = session.post(source.url, json=source.payload, timeout=timeout)
+            call = session.post(
+                source.url, json=source.payload, params=source.params, timeout=timeout
+            )
         else:
-            call = session.get(source.url, timeout=timeout)
+            call = session.get(source.url, params=source.params, timeout=timeout)
         async with call as response:
             if response.status != 200:
                 raise RateError(f"پاسخ {response.status}")
@@ -175,7 +260,12 @@ async def _fetch(source: Source, session: aiohttp.ClientSession) -> int:
     price = _first_number(_dig(body, source.path) if source.path else body, source.keys)
     if price is None:
         raise RateError("قیمتی در پاسخ نبود")
-    return int(price / source.divisor)
+    return price / source.divisor
+
+
+async def _fetch(source: Source, session: aiohttp.ClientSession) -> int:
+    """همان، ولی تومانِ گرد‌شده — برای منبع‌های تومانی."""
+    return int(await _fetch_decimal(source, session))
 
 
 async def market_toman(
@@ -226,11 +316,45 @@ async def market_toman(
             if problems:
                 log.info("نرخ %s از منبع پشتیبان گرفته شد: %s", spec.symbol, source.name)
             return toman
+
+        # هیچ منبع تومانی نشد. اگر این ارز از روی تتر قابل حساب کردن
+        # است، همان مسیر — وگرنه خطا، و نرخ قبلی سر جایش می‌ماند.
+        if spec.code != coins.USDT:
+            try:
+                return await _from_usdt(spec, session, low, high)
+            except RateError as exc:
+                problems.append(str(exc))
     finally:
         if owned:
             await session.close()
 
     raise RateError(" — ".join(problems) or "هیچ منبعی پاسخ نداد")
+
+
+async def _from_usdt(spec, session, low: int, high: int) -> int:
+    """تومانِ این ارز، از قیمت جهانی‌اش ضربدر نرخ تتر.
+
+    <b>نرخ تتر از دیتابیس خودمان می‌آید</b>، نه از بازار — چون بازار
+    ایرانی از این سرور در دسترس نیست. یعنی این مسیر روی عددی تکیه
+    دارد که ادمین گذاشته، و اگر آن عدد کهنه باشد، این هم کهنه است.
+    برای همین سنِ نرخ تتر در پنل دیده می‌شود.
+    """
+    anchor = await crypto.rate(coins.USDT)
+    if anchor <= 0:
+        raise RateError(
+            "نرخ تتر تنظیم نشده، پس قیمت ترون هم قابل حساب کردن نیست"
+        )
+
+    price = await usdt_price(spec.code, session=session)
+    toman = int(price * anchor)
+    if not low <= toman <= high:
+        raise RateError(f"نرخ محاسبه‌شده معقول نیست: {toman:,}")
+
+    log.info(
+        "نرخ %s از قیمت جهانی حساب شد: %s × %s تومان = %s",
+        spec.symbol, price, anchor, toman,
+    )
+    return toman
 
 
 # ── تنظیمات ──────────────────────────────────────────────────────────

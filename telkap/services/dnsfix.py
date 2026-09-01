@@ -107,9 +107,6 @@ class Resolver(AbstractResolver):
     وارد می‌شود که آن راه شکست بخورد.
     """
 
-    def __init__(self) -> None:
-        self._session: aiohttp.ClientSession | None = None
-
     async def resolve(self, host: str, port: int = 0, family=socket.AF_INET):
         try:
             infos = await _system(host, port, family)
@@ -118,13 +115,14 @@ class Resolver(AbstractResolver):
         except OSError as exc:
             log.info("ترجمه‌ی %s با DNS سیستم نشد (%s)؛ از HTTPS می‌پرسیم", host, exc)
 
-        if self._session is None or self._session.closed:
-            # این نشست عمداً از resolver پیش‌فرض استفاده می‌کند: نامِ
-            # خودِ سرویس DoH با DNS معمولی ترجمه می‌شود، وگرنه دور
-            # می‌افتیم.
-            self._session = aiohttp.ClientSession()
-
-        addresses = await over_https(host, session=self._session)
+        # نشست همین‌جا ساخته و بسته می‌شود، نه نگه داشته.
+        #
+        # <b>چرا نه نگه داشتن.</b> aiohttp فقط resolverی را می‌بندد که
+        # خودش ساخته باشد؛ این یکی را ما می‌دهیم، پس بستنِ نشست هرگز
+        # صدا زده نمی‌شد و aiohttp سرِ خاموش شدن «Unclosed client
+        # session» می‌داد. چون پاسخ‌ها پنج دقیقه در حافظه می‌مانند،
+        # ساختنِ یک نشست تازه به‌ندرت اتفاق می‌افتد.
+        addresses = await over_https(host)
         if not addresses:
             raise OSError(f"نام {host} نه با DNS سیستم ترجمه شد نه با DoH")
 
@@ -142,9 +140,8 @@ class Resolver(AbstractResolver):
         ]
 
     async def close(self) -> None:
-        if self._session is not None and not self._session.closed:
-            await self._session.close()
-        self._session = None
+        """چیزی برای بستن نیست؛ هر پرسش نشست خودش را می‌بندد."""
+        return None
 
 
 async def _system(host: str, port: int, family):
