@@ -401,3 +401,25 @@ def test_a_username_or_numeric_id_is_never_a_feed():
 
     for ref in ("@channel", "channel", "-1001234567890", "1234567890"):
         assert looks_like_feed(ref) is False, ref
+
+
+def test_a_never_checked_feed_is_due_even_on_a_freshly_booted_machine():
+    """<b>این باگ را CI پیدا کرد، نه تست‌های محلی.</b>
+
+    loop.time() ساعت یکنواخت سیستم است. روی سروری که تازه بالا آمده،
+    خودش می‌تواند کمتر از ۶۰۰ باشد. با «هرگز خوانده نشده = صفر»،
+    شرطِ now - 0 >= 600 غلط می‌شد و فیدها تا ده دقیقه بعد از هر
+    ری‌استارت خوانده نمی‌شدند — روی سرور واقعی هم، نه فقط در تست.
+    """
+    feedworker._last_check.clear()
+
+    assert feedworker._is_due(1, now=0.0) is True
+    assert feedworker._is_due(1, now=5.0) is True
+
+
+def test_a_just_checked_feed_is_not_due():
+    feedworker._last_check.clear()
+    feedworker._last_check[1] = 1000.0
+
+    assert feedworker._is_due(1, now=1000.0 + feedworker.MIN_CHECK_SECONDS - 1) is False
+    assert feedworker._is_due(1, now=1000.0 + feedworker.MIN_CHECK_SECONDS) is True

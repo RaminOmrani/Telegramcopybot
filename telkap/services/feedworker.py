@@ -280,6 +280,19 @@ async def _note_error(task_id: int, message: str) -> None:
             await db.commit()
 
 
+def _is_due(task_id: int, now: float) -> bool:
+    """آیا وقت خواندن دوباره‌ی این فید رسیده.
+
+    «هرگز خوانده نشده» با <code>None</code> نشان داده می‌شود نه با صفر.
+    این تفاوت واقعی است: <code>loop.time()</code> ساعت یکنواخت سیستم
+    است و روی ماشینی که تازه بالا آمده می‌تواند خودش کمتر از ۶۰۰ باشد —
+    آن‌وقت <code>now - 0 &gt;= 600</code> غلط می‌شود و فیدها تا ده
+    دقیقه بعد از هر ری‌استارت سرور خوانده نمی‌شوند.
+    """
+    last = _last_check.get(task_id)
+    return last is None or now - last >= MIN_CHECK_SECONDS
+
+
 async def _due_tasks() -> list[int]:
     """کارهای فیدِ فعالی که وقت خواندنشان رسیده."""
     now = asyncio.get_running_loop().time()
@@ -290,11 +303,7 @@ async def _due_tasks() -> list[int]:
                 Task.enabled.is_(True),
             )
         )
-    return [
-        task_id
-        for (task_id,) in rows.all()
-        if now - _last_check.get(task_id, 0.0) >= MIN_CHECK_SECONDS
-    ]
+    return [task_id for (task_id,) in rows.all() if _is_due(task_id, now)]
 
 
 async def run_once() -> int:
