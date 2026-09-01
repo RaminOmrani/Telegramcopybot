@@ -25,6 +25,7 @@ from __future__ import annotations
 
 import asyncio
 import logging
+from dataclasses import dataclass
 from decimal import Decimal, InvalidOperation
 
 import aiohttp
@@ -72,6 +73,15 @@ class RateError(Exception):
 # ── خواندن از صرافی ──────────────────────────────────────────────────
 
 
+def _dig(payload, path: tuple[str, ...]):
+    """مسیر تودرتو را دنبال می‌کند. None یعنی نبود."""
+    for step in path:
+        if not isinstance(payload, dict):
+            return None
+        payload = payload.get(step)
+    return payload
+
+
 def _first_number(payload, keys) -> Decimal | None:
     """اولین کلیدی که عدد معتبر بدهد.
 
@@ -93,6 +103,81 @@ def _first_number(payload, keys) -> Decimal | None:
     return None
 
 
+@dataclass(frozen=True)
+class Source:
+    """یک راه گرفتن قیمت.
+
+    <b>واحد در خودِ منبع نوشته می‌شود، نه یک جای مشترک.</b> بعضی
+    سرویس‌ها ریال می‌دهند و بعضی تومان؛ اگر تقسیم بر ده یک جای ثابت
+    باشد، اضافه کردن منبعِ تومانی یعنی ده برابر خطا در قیمت — و آن خطا
+    بی‌صدا است، چون عددش هنوز «یک عدد معقول» به نظر می‌رسد.
+    """
+
+    name: str
+    url: str
+    keys: tuple[str, ...]
+    divisor: int                      # ۱۰ برای ریال، ۱ برای تومان
+    method: str = "GET"
+    path: tuple[str, ...] = ()        # مسیر تودرتو تا خودِ قیمت
+    payload: dict | None = None       # برای POST
+
+
+def _sources(spec) -> tuple[Source, ...]:
+    """منبع‌های قیمت این ارز، به ترتیبِ امتحان شدن.
+
+    <b>چرا بیش از یکی.</b> ربات روی سرور خارج از ایران است و صرافی
+    ایرانی؛ یک نقطه‌ی اتصال یعنی هر تکانِ آن سمت، قیمت‌گذاری را
+    می‌خواباند. هر دو منبع از نوبیتکس‌اند و هر دو ریال می‌دهند، پس
+    عددی که برمی‌گردد یکی است — فقط راهِ رسیدن به آن دو تاست.
+    """
+    return (
+        Source(
+            name="نوبیتکس (سفارش‌ها)",
+            url=f"https://api.nobitex.ir/v2/orderbook/{spec.market}",
+            keys=("lastTradePrice", "last", "latest"),
+            divisor=10,
+        ),
+        Source(
+            name="نوبیتکس (آمار بازار)",
+            url="https://api.nobitex.ir/market/stats",
+            method="POST",
+            payload={"srcCurrency": spec.symbol.lower(), "dstCurrency": "rls"},
+            path=("stats", f"{spec.symbol.lower()}-rls"),
+            keys=("latest", "last", "lastTradePrice"),
+            divisor=10,
+        ),
+    )
+
+
+async def _fetch(source: Source, session: aiohttp.ClientSession) -> int:
+    """یک منبع را می‌خواند و تومان برمی‌گرداند."""
+    timeout = aiohttp.ClientTimeout(total=TIMEOUT_SECONDS)
+    try:
+        if source.method == "POST":
+            call = session.post(source.url, json=source.payload, timeout=timeout)
+        else:
+            call = session.get(source.url, timeout=timeout)
+        async with call as response:
+            if response.status != 200:
+                raise RateError(f"پاسخ {response.status}")
+            body = await response.json(content_type=None)
+    except RateError:
+        raise
+    except TimeoutError as exc:
+        raise RateError(f"در {TIMEOUT_SECONDS} ثانیه پاسخ نداد") from exc
+    except aiohttp.ClientError as exc:
+        # پیام خودِ کتابخانه معمولاً علت واقعی را دارد — DNS، اتصال
+        # رد شده، گواهی. بدون آن، ادمین فقط «نشد» می‌بیند.
+        raise RateError(f"اتصال ممکن نشد ({type(exc).__name__})") from exc
+    except (ValueError, TypeError) as exc:
+        raise RateError("پاسخ قابل خواندن نبود") from exc
+
+    price = _first_number(_dig(body, source.path) if source.path else body, source.keys)
+    if price is None:
+        raise RateError("قیمتی در پاسخ نبود")
+    return int(price / source.divisor)
+
+
 async def market_toman(
     coin: str = coins.USDT, *, session: aiohttp.ClientSession | None = None
 ) -> int:
@@ -105,46 +190,44 @@ async def market_toman(
 
     نوبیتکس قیمت را به <b>ریال</b> می‌دهد. تقسیم بر ده جایی است که
     اشتباهش گران تمام می‌شود: ده برابر خطا یعنی اشتراکِ یک‌دهم قیمت.
+
+    اگر منبع اول نشد، دومی امتحان می‌شود. خطای <b>همه‌ی</b> منبع‌ها در
+    پیام می‌آید، چون وقتی هیچ‌کدام کار نمی‌کند، دانستنِ اینکه هرکدام
+    چه گفت تنها راه فهمیدن علت است.
     """
     spec = coins.get(coin)
     if spec is None:
         raise RateError(f"ارز ناشناخته: {coin}")
 
+    low, high = SANE_RANGE.get(spec.code, (MIN_SANE, MAX_SANE))
+
     owned = session is None
     session = session or aiohttp.ClientSession()
-    url = f"https://api.nobitex.ir/v2/orderbook/{spec.market}"
+    problems: list[str] = []
 
     try:
-        async with session.get(
-            url, timeout=aiohttp.ClientTimeout(total=TIMEOUT_SECONDS)
-        ) as response:
-            if response.status != 200:
-                raise RateError(f"صرافی پاسخ {response.status} داد")
-            body = await response.json(content_type=None)
-    except RateError:
-        raise
-    except TimeoutError as exc:
-        raise RateError("صرافی در زمان مقرر پاسخ نداد") from exc
-    except aiohttp.ClientError as exc:
-        raise RateError("اتصال به صرافی ممکن نشد") from exc
-    except (ValueError, TypeError) as exc:
-        raise RateError("پاسخ صرافی قابل خواندن نبود") from exc
+        for source in _sources(spec):
+            try:
+                toman = await _fetch(source, session)
+            except RateError as exc:
+                problems.append(f"{source.name}: {exc}")
+                continue
+
+            # بازه بر حسب ارز فرق دارد: یک تتر ده‌ها هزار تومان است و
+            # یک ترون چند هزار تومان. یک بازه‌ی مشترک یا خیلی گشاد
+            # می‌شد یا یکی از دو ارز را رد می‌کرد.
+            if not low <= toman <= high:
+                problems.append(f"{source.name}: عدد نامعقول ({toman:,})")
+                continue
+
+            if problems:
+                log.info("نرخ %s از منبع پشتیبان گرفته شد: %s", spec.symbol, source.name)
+            return toman
     finally:
         if owned:
             await session.close()
 
-    rial = _first_number(body, ("lastTradePrice", "last", "latest"))
-    if rial is None:
-        raise RateError("قیمتی در پاسخ صرافی پیدا نشد")
-
-    toman = int(rial / 10)
-    # بازه بر حسب ارز فرق دارد: یک تتر ده‌ها هزار تومان است و یک ترون
-    # چند هزار تومان. یک بازه‌ی مشترک یا خیلی گشاد می‌شد یا یکی از دو
-    # ارز را رد می‌کرد.
-    low, high = SANE_RANGE.get(spec.code, (MIN_SANE, MAX_SANE))
-    if not low <= toman <= high:
-        raise RateError(f"نرخ خوانده‌شده معقول نیست: {toman}")
-    return toman
+    raise RateError(" — ".join(problems) or "هیچ منبعی پاسخ نداد")
 
 
 # ── تنظیمات ──────────────────────────────────────────────────────────
@@ -233,15 +316,36 @@ def jumped(old: int, new: int) -> bool:
 # ── چرخه ─────────────────────────────────────────────────────────────
 
 
-async def refresh(coin: str = coins.USDT, *, force: bool = False) -> int:
+@dataclass(frozen=True)
+class Outcome:
+    """نتیجه‌ی یک تلاش برای گرفتن نرخ.
+
+    <b>چرا فقط یک عدد کافی نبود.</b> قبلاً خروجی صفر هم یعنی «بازار
+    تکان نخورده» بود، هم «صرافی جواب نداد»، هم «جهش مشکوک بود». ادمین
+    در پنل پیام «نرخی عوض نشد یا خواندن ناموفق بود» می‌دید و هیچ راهی
+    نداشت بفهمد کدام‌یک — یعنی وقتی قیمت‌گذاری می‌خوابید، تشخیصش فقط
+    از روی لاگ سرور ممکن بود.
+    """
+
+    coin: str
+    rate: int = 0        # نرخ تازه‌ی ثبت‌شده، یا صفر
+    market: int = 0      # نرخ بازار پیش از حاشیه
+    error: str = ""      # چرا خوانده نشد
+    note: str = ""       # خوانده شد ولی ثبت نشد — و چرا
+
+    @property
+    def changed(self) -> bool:
+        return self.rate > 0
+
+
+async def refresh(coin: str = coins.USDT, *, force: bool = False) -> Outcome:
     """یک بار نرخ این ارز را از بازار می‌گیرد و ثبت می‌کند.
 
-    خروجی نرخ تازه است، یا صفر اگر چیزی عوض نشد. <code>force</code>
-    محافظِ جهش را کنار می‌گذارد — فقط برای وقتی که ادمین خودش
-    خواسته.
+    <code>force</code> محافظِ جهش را کنار می‌گذارد — فقط برای وقتی که
+    ادمین خودش خواسته.
     """
     if not force and not await is_auto():
-        return 0
+        return Outcome(coin=coin, note="نرخ خودکار خاموش است")
 
     spec = coins.get(coin)
     name = spec.symbol if spec else coin
@@ -252,13 +356,13 @@ async def refresh(coin: str = coins.USDT, *, force: bool = False) -> int:
         # نرخ قبلی سر جایش می‌ماند؛ خاموش شدن پرداخت بدتر از نرخِ
         # کمی قدیمی است
         log.warning("خواندن نرخ %s ناموفق بود: %s", name, exc)
-        return 0
+        return Outcome(coin=coin, error=str(exc))
 
     fresh = with_margin(market, await margin(coin))
     current = await crypto.rate(coin)
 
     if fresh == current:
-        return 0
+        return Outcome(coin=coin, market=market, note="تغییری نداشت")
 
     if not force and jumped(current, fresh):
         from telkap.services import alerts, roles
@@ -275,22 +379,26 @@ async def refresh(coin: str = coins.USDT, *, force: bool = False) -> int:
             key=f"ratejump:{coin}:{fresh}",
             cooldown=0,
         )
-        return 0
+        return Outcome(
+            coin=coin,
+            market=market,
+            note=f"جهش مشکوک ({current:,} ← {fresh:,})؛ اعمال نشد",
+        )
 
     await crypto.set_rate(fresh, coin=coin, admin_id=None)
     log.info("نرخ %s به‌روز شد: %s تومان (بازار %s)", name, fresh, market)
-    return fresh
+    return Outcome(coin=coin, rate=fresh, market=market)
 
 
-async def refresh_all(*, force: bool = False) -> dict[str, int]:
+async def refresh_all(*, force: bool = False) -> dict[str, Outcome]:
     """همه‌ی ارزها. خرابیِ یکی نباید جلوی بقیه را بگیرد."""
-    result: dict[str, int] = {}
+    result: dict[str, Outcome] = {}
     for code in coins.all_codes():
         try:
             result[code] = await refresh(code, force=force)
-        except Exception:
+        except Exception as exc:
             log.exception("به‌روزرسانی نرخ %s شکست خورد", code)
-            result[code] = 0
+            result[code] = Outcome(coin=code, error=f"خطای غیرمنتظره: {exc}")
     return result
 
 

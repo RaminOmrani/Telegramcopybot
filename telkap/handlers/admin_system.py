@@ -2,6 +2,7 @@
 from __future__ import annotations
 
 import logging
+from datetime import UTC
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -12,6 +13,7 @@ from telkap.config import get_settings
 from telkap.db import log_activity
 from telkap.handlers.admin_reports import guard
 from telkap.handlers.common import Flow, parse_int
+from telkap.models import utcnow
 from telkap.plans import toman
 from telkap.services import (
     ai,
@@ -94,6 +96,34 @@ async def cb_ai_status(call: CallbackQuery) -> None:
 
 
 # ─────────────────────────────────────────────────── راه‌های پرداخت
+# نرخ خودکار هر ربع ساعت تازه می‌شود. یک ساعت یعنی چهار دور پشت سر هم
+# رد شده — دیگر «کمی دیر» نیست، یعنی چیزی خراب است.
+STALE_AFTER_SECONDS = 3600
+
+
+def _rate_age(when) -> tuple[str, bool]:
+    """چقدر از آخرین به‌روزرسانی گذشته، و آیا زیادی گذشته."""
+    if when is None:
+        return "", False
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=UTC)
+    seconds = int((utcnow() - when).total_seconds())
+    if seconds < 0:
+        return "", False
+
+    if seconds < 90:
+        text = "همین حالا"
+    elif seconds < 3600:
+        text = f"{fa_num(seconds // 60)} دقیقه پیش"
+    elif seconds < 86400:
+        text = f"{fa_num(seconds // 3600)} ساعت پیش"
+    else:
+        text = f"{fa_num(seconds // 86400)} روز پیش"
+
+    old = seconds >= STALE_AFTER_SECONDS
+    return (f"⚠️ {text}" if old else text), old
+
+
 async def _usdt_screen(event) -> None:
     """همه‌ی راه‌های پرداخت در یک صفحه.
 
@@ -125,6 +155,7 @@ async def _usdt_screen(event) -> None:
         "<i>تتر و ترون هر دو به همین یک نشانی واریز می‌شوند.</i>",
         "",
     ]
+    stale = False
     for code in coins.all_codes():
         spec = coins.get(code)
         rate = await crypto.rate(code)
@@ -134,6 +165,13 @@ async def _usdt_screen(event) -> None:
             f"{toman(rate) if rate else 'نرخ تنظیم نشده'}"
             + (f"  <i>(—{fa_num(percent)}٪)</i>" if auto and rate else "")
         )
+        # سن نرخ فقط وقتی معنا دارد که قرار باشد خودکار تازه شود.
+        # نرخ دستی طبیعتاً قدیمی است و هشدارِ بی‌مورد فقط نویز است.
+        if auto and rate:
+            text, old = _rate_age(await crypto.rate_updated_at(code))
+            if text:
+                lines.append(f"<i>آخرین به‌روزرسانی: {text}</i>")
+                stale = stale or old
     lines += [
         "",
         f"نرخ خودکار: {'✅ روشن' if auto else '❌ خاموش'}",
@@ -143,7 +181,16 @@ async def _usdt_screen(event) -> None:
     ]
     body = "\n".join(lines)
 
-    if auto:
+    if auto and stale:
+        # نرخ کهنه از نرخ نداشته بدتر است: فروش ادامه دارد و همه‌چیز
+        # سالم به نظر می‌رسد، فقط با قیمتِ هفته‌ی پیش.
+        note = (
+            "\n\n⚠️ <b>نرخ بیش از یک ساعت است تازه نشده.</b>\n"
+            "<i>یعنی خواندن از صرافی می‌خوابد و فروش با قیمت قدیمی "
+            "ادامه دارد. «⏬ گرفتن نرخ‌ها الان» را بزنید تا علتش را "
+            "بگوید.</i>"
+        )
+    elif auto:
         note = (
             "\n\n<i>نرخ هر ربع ساعت از نوبیتکس گرفته می‌شود — بازار "
             "USDTIRT برای تتر و TRXIRT برای ترون. حاشیه کمی <b>زیر</b> "
@@ -258,18 +305,39 @@ async def cb_auto_rate(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "sys:ratenow")
 async def cb_rate_now(call: CallbackQuery) -> None:
-    """گرفتن فوریِ نرخ همه‌ی ارزها — بدون محافظِ جهش، چون ادمین خواسته."""
+    """گرفتن فوریِ نرخ همه‌ی ارزها — بدون محافظِ جهش، چون ادمین خواسته.
+
+    <b>پیام باید بگوید چه شد، نه اینکه «نشد».</b> پیام قبلی سه حالتِ
+    کاملاً متفاوت را یکی می‌کرد و ادمین برای فهمیدن علت مجبور بود لاگ
+    سرور را ببیند — یعنی عملاً هیچ‌وقت نمی‌فهمید.
+    """
     if await guard(call, roles.CAP_MONEY):
         return
-    fresh = await usdtrate.refresh_all(force=True)
-    done = [
-        f"{coins.get(code).symbol}: {value:,}"
-        for code, value in fresh.items()
-        if value
-    ]
-    await call.answer(
-        " | ".join(done) if done else "نرخی عوض نشد یا خواندن ناموفق بود",
-        show_alert=True,
+
+    await call.answer("در حال گرفتن نرخ‌ها…")
+    results = await usdtrate.refresh_all(force=True)
+
+    lines = []
+    for code, outcome in results.items():
+        symbol = coins.get(code).symbol if coins.get(code) else code
+        if outcome.changed:
+            lines.append(f"✅ {symbol}: {toman(outcome.rate)}")
+        elif outcome.error:
+            lines.append(f"❌ {symbol}: {outcome.error}")
+        else:
+            lines.append(f"➖ {symbol}: {outcome.note}")
+
+    failed = [o for o in results.values() if o.error]
+    hint = ""
+    if failed:
+        hint = (
+            "\n\n<i>هر دو منبع نوبیتکس امتحان شد. اگر پیام درباره‌ی "
+            "اتصال است، یعنی سرور به صرافی نمی‌رسد — تا رفع شدنش نرخ "
+            "را دستی بگذارید تا فروش نخوابد.</i>"
+        )
+
+    await call.message.answer(
+        "⏬ <b>نتیجه‌ی گرفتن نرخ</b>\n\n" + "\n".join(lines) + hint
     )
     await _usdt_screen(call)
 

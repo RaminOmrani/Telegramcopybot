@@ -254,7 +254,9 @@ async def test_a_failed_fetch_leaves_the_old_rate_alone(tmp_path, monkeypatch):
 
     monkeypatch.setattr(usdtrate, "market_toman", broken)
 
-    assert await usdtrate.refresh() == 0
+    outcome = await usdtrate.refresh()
+    assert outcome.rate == 0
+    assert outcome.error          # علت باید گفته شود، نه فقط «نشد»
     assert await crypto.rate() == 90_000
 
 
@@ -269,7 +271,7 @@ async def test_nothing_is_fetched_while_auto_is_off(tmp_path, monkeypatch):
 
     monkeypatch.setattr(usdtrate, "market_toman", spy)
 
-    assert await usdtrate.refresh() == 0
+    assert (await usdtrate.refresh()).rate == 0
     assert called == []
 
 
@@ -286,7 +288,7 @@ async def test_auto_refresh_applies_the_rate_with_its_margin(tmp_path, monkeypat
 
     monkeypatch.setattr(usdtrate, "market_toman", market)
 
-    assert await usdtrate.refresh() == 98_000
+    assert (await usdtrate.refresh()).rate == 98_000
     assert await crypto.rate() == 98_000
 
 
@@ -311,7 +313,9 @@ async def test_a_wild_jump_is_not_applied_silently(tmp_path, monkeypatch):
     monkeypatch.setattr(usdtrate, "market_toman", market)
     monkeypatch.setattr(alerts, "send", fake_send)
 
-    assert await usdtrate.refresh() == 0
+    outcome = await usdtrate.refresh()
+    assert outcome.rate == 0
+    assert "جهش" in outcome.note      # خوانده شد ولی اعمال نشد — و می‌گوید چرا
     assert await crypto.rate() == 100_000
     assert told and "اعمال نشد" in told[0]
 
@@ -329,7 +333,7 @@ async def test_an_admin_can_force_a_big_change(tmp_path, monkeypatch):
 
     monkeypatch.setattr(usdtrate, "market_toman", market)
 
-    assert await usdtrate.refresh(force=True) == 392_000
+    assert (await usdtrate.refresh(force=True)).rate == 392_000
     assert await crypto.rate() == 392_000
 
 
@@ -356,3 +360,158 @@ async def test_the_automatic_refresh_does_not_spam_the_admins(tmp_path, monkeypa
 
     await crypto.set_rate(101_000, admin_id=5)         # آدم
     assert len(told) == 1
+
+
+# ── چرا نرخ گرفته نشد ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_a_failure_says_which_source_failed_and_why(tmp_path, monkeypatch):
+    """<b>«نشد» جواب نیست.</b>
+
+    پیام قبلی سه حالتِ کاملاً متفاوت را یکی می‌کرد — صرافی در دسترس
+    نیست، بازار تکان نخورده، جهش مشکوک بود — و ادمین برای تشخیصشان
+    مجبور بود لاگ سرور را ببیند، یعنی عملاً هیچ‌وقت نمی‌فهمید.
+    """
+    await _setup(tmp_path, monkeypatch, settings={})
+
+    async def broken(coin=usdtrate.coins.USDT, **kwargs):
+        raise usdtrate.RateError("نوبیتکس (سفارش‌ها): پاسخ 403")
+
+    monkeypatch.setattr(usdtrate, "market_toman", broken)
+
+    outcome = await usdtrate.refresh(force=True)
+
+    assert outcome.rate == 0
+    assert "403" in outcome.error
+
+
+@pytest.mark.asyncio
+async def test_no_change_is_not_reported_as_a_failure(tmp_path, monkeypatch):
+    """بازارِ آرام خطا نیست، و نباید مثل خطا به نظر برسد."""
+    from telkap.services import crypto
+
+    await _setup(tmp_path, monkeypatch, settings={})
+    await usdtrate.set_margin(0, admin_id=1)
+    await crypto.set_rate(100_000, admin_id=1)
+
+    async def market(coin=usdtrate.coins.USDT, **kwargs):
+        return 100_000
+
+    monkeypatch.setattr(usdtrate, "market_toman", market)
+
+    outcome = await usdtrate.refresh(force=True)
+
+    assert outcome.error == ""          # خطایی در کار نبود
+    assert outcome.note                 # ولی چیزی هم عوض نشد
+    assert outcome.changed is False
+
+
+# ── منبع پشتیبان ─────────────────────────────────────────────────────
+
+
+class _Reply:
+    """پاسخ ساختگی aiohttp، به اندازه‌ای که _fetch لازم دارد."""
+
+    def __init__(self, status=200, body=None):
+        self.status = status
+        self._body = body if body is not None else {}
+
+    async def json(self, **kwargs):
+        return self._body
+
+    async def __aenter__(self):
+        return self
+
+    async def __aexit__(self, *args):
+        return False
+
+
+class _Session:
+    def __init__(self, replies):
+        self.replies = list(replies)
+        self.seen = []
+
+    def _next(self, url):
+        self.seen.append(url)
+        reply = self.replies.pop(0)
+        if isinstance(reply, Exception):
+            raise reply
+        return reply
+
+    def get(self, url, **kwargs):
+        return self._next(url)
+
+    def post(self, url, **kwargs):
+        return self._next(url)
+
+
+@pytest.mark.asyncio
+async def test_the_second_source_is_tried_when_the_first_fails():
+    """<b>یک نقطه‌ی اتصال برای قیمت‌گذاری کافی نیست.</b>
+
+    ربات روی سرور خارج از ایران است و صرافی ایرانی؛ هر تکانِ آن سمت
+    بدون منبع دوم یعنی خوابیدنِ قیمت‌گذاری.
+    """
+    session = _Session(
+        [
+            _Reply(status=503),                                   # منبع اول
+            _Reply(body={"stats": {"usdt-rls": {"latest": "1200000"}}}),
+        ]
+    )
+
+    toman = await usdtrate.market_toman(usdtrate.coins.USDT, session=session)
+
+    assert toman == 120_000          # ریال بود، تقسیم بر ده شد
+    assert len(session.seen) == 2    # واقعاً سراغ دومی رفت
+
+
+@pytest.mark.asyncio
+async def test_the_second_source_is_not_tried_when_the_first_works():
+    """منبع پشتیبان یعنی پشتیبان، نه یک درخواست اضافه در هر دور."""
+    session = _Session([_Reply(body={"lastTradePrice": "1200000"})])
+
+    assert await usdtrate.market_toman(usdtrate.coins.USDT, session=session) == 120_000
+    assert len(session.seen) == 1
+
+
+@pytest.mark.asyncio
+async def test_when_every_source_fails_the_message_names_them_all():
+    """وقتی هیچ‌کدام کار نمی‌کند، دانستنِ اینکه هرکدام چه گفت تنها سرنخ است."""
+    session = _Session([_Reply(status=403), _Reply(status=503)])
+
+    with pytest.raises(usdtrate.RateError) as caught:
+        await usdtrate.market_toman(usdtrate.coins.USDT, session=session)
+
+    assert "403" in str(caught.value)
+    assert "503" in str(caught.value)
+
+
+@pytest.mark.asyncio
+async def test_a_nonsense_price_falls_through_to_the_next_source():
+    """<b>عدد نامعقول بدتر از پاسخ ندادن است.</b>
+
+    پاسخِ خراب هنوز «یک عدد» است و بی‌صدا قیمت را عوض می‌کند. رد
+    کردنش و رفتن سراغ منبع بعدی، همان کاری است که با خطای شبکه
+    می‌کنیم.
+    """
+    session = _Session(
+        [
+            _Reply(body={"lastTradePrice": "12"}),                 # بی‌معنی
+            _Reply(body={"stats": {"usdt-rls": {"latest": "1200000"}}}),
+        ]
+    )
+
+    assert await usdtrate.market_toman(usdtrate.coins.USDT, session=session) == 120_000
+
+
+def test_every_source_declares_its_own_unit():
+    """<b>تقسیم بر ده نباید یک جای مشترک باشد.</b>
+
+    بعضی سرویس‌ها ریال می‌دهند و بعضی تومان. اگر واحد یک جای ثابت
+    فرض شود، اضافه کردن منبعِ تومانی یعنی ده برابر خطا در قیمت — و آن
+    خطا بی‌صداست، چون عددش هنوز معقول به نظر می‌رسد.
+    """
+    for code in usdtrate.coins.all_codes():
+        for source in usdtrate._sources(usdtrate.coins.get(code)):
+            assert source.divisor in (1, 10)

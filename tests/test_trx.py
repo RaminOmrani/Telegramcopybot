@@ -200,7 +200,7 @@ async def test_a_rial_price_read_as_toman_is_caught_by_the_jump_guard(
     low, high = usdtrate.SANE_RANGE[coins.TRX]
     assert low <= 60_000 <= high          # از سد بازه رد می‌شود
 
-    assert await usdtrate.refresh(coins.TRX) == 0
+    assert (await usdtrate.refresh(coins.TRX)).rate == 0
     assert await crypto.rate(coins.TRX) == 6_000
     assert told and "اعمال نشد" in told[0]
 
@@ -260,8 +260,9 @@ async def test_one_broken_market_does_not_stop_the_other(tmp_path, monkeypatch):
 
     result = await usdtrate.refresh_all()
 
-    assert result[coins.USDT] > 0
-    assert result[coins.TRX] == 0
+    assert result[coins.USDT].rate > 0
+    assert result[coins.TRX].rate == 0
+    assert result[coins.TRX].error        # و می‌گوید کدام بازار خراب بود
     assert await crypto.rate(coins.USDT) > 0
 
 

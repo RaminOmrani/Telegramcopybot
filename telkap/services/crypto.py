@@ -149,6 +149,18 @@ async def set_rate(value, *, coin: str = coins.USDT, admin_id: int | None = None
     return number
 
 
+async def rate_updated_at(coin: str = coins.USDT):
+    """کِی این نرخ آخرین بار نوشته شد. None یعنی هیچ‌وقت.
+
+    <b>نرخِ کهنه بی‌صدا ضرر می‌دهد.</b> اگر خواندن از صرافی بخوابد،
+    نرخ قبلی سر جایش می‌ماند و همه‌چیز سالم به نظر می‌رسد — فروش ادامه
+    دارد، فقط با قیمتِ هفته‌ی پیش. تنها نشانه‌اش همین تاریخ است.
+    """
+    async with get_session() as db:
+        row = await db.get(AppSetting, _rate_key(coin))
+        return row.updated_at if row else None
+
+
 async def address() -> str:
     return str(await _read(ADDRESS_KEY) or "").strip()
 
