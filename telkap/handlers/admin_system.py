@@ -17,6 +17,7 @@ from telkap.services import (
     ai,
     backup,
     cardinfo,
+    coins,
     crypto,
     maintenance,
     roles,
@@ -103,12 +104,9 @@ async def _usdt_screen(event) -> None:
     card = await cardinfo.number()
     name = await cardinfo.holder()
     wallet = await crypto.address()
-    rate = await crypto.rate()
     auto = await usdtrate.is_auto()
-    percent = await usdtrate.margin()
-
-    usdt_ready = bool(wallet) and rate > 0
-    ready = bool(card) or usdt_ready or zarinpal.configured()
+    ready_coins = await crypto.ready_coins()
+    ready = bool(card) or bool(ready_coins) or zarinpal.configured()
 
     head = "💳 <b>راه‌های پرداخت</b>\n\n"
     if not ready:
@@ -118,24 +116,39 @@ async def _usdt_screen(event) -> None:
             "می‌شود. دست‌کم یکی را کامل کنید.</i>\n\n"
         )
 
-    body = (
-        f"{'✅' if card else '❌'} <b>کارت‌به‌کارت</b>\n"
-        f"شماره: <code>{cardinfo.pretty(card) if card else 'تنظیم نشده'}</code>\n"
-        f"به نام: {name or '—'}\n\n"
-        f"{'✅' if usdt_ready else '❌'} <b>تتر (TRC20)</b>\n"
-        f"نشانی: <code>{wallet or 'تنظیم نشده'}</code>\n"
-        f"نرخ هر تتر: <b>{toman(rate) if rate else 'تنظیم نشده'}</b>\n"
-        f"نرخ خودکار: {'✅ روشن' if auto else '❌ خاموش'}"
-        f"{f' (—{fa_num(percent)}٪ زیر بازار)' if auto else ''}\n\n"
-        f"{'✅' if zarinpal.configured() else '❌'} <b>درگاه زرین‌پال</b>\n"
-        f"<i>{'فعال' if zarinpal.configured() else 'ZARINPAL_MERCHANT در .env خالی است'}</i>"
-    )
+    lines = [
+        f"{'✅' if card else '❌'} <b>کارت‌به‌کارت</b>",
+        f"شماره: <code>{cardinfo.pretty(card) if card else 'تنظیم نشده'}</code>",
+        f"به نام: {name or '—'}",
+        "",
+        f"🌐 نشانی ولت ترون: <code>{wallet or 'تنظیم نشده'}</code>",
+        "<i>تتر و ترون هر دو به همین یک نشانی واریز می‌شوند.</i>",
+        "",
+    ]
+    for code in coins.all_codes():
+        spec = coins.get(code)
+        rate = await crypto.rate(code)
+        percent = await usdtrate.margin(code)
+        lines.append(
+            f"{'✅' if wallet and rate else '❌'} <b>{spec.label}</b> — "
+            f"{toman(rate) if rate else 'نرخ تنظیم نشده'}"
+            + (f"  <i>(—{fa_num(percent)}٪)</i>" if auto and rate else "")
+        )
+    lines += [
+        "",
+        f"نرخ خودکار: {'✅ روشن' if auto else '❌ خاموش'}",
+        "",
+        f"{'✅' if zarinpal.configured() else '❌'} <b>درگاه زرین‌پال</b>",
+        f"<i>{'فعال' if zarinpal.configured() else 'ZARINPAL_MERCHANT در .env خالی است'}</i>",
+    ]
+    body = "\n".join(lines)
 
     if auto:
         note = (
-            "\n\n<i>نرخ هر ربع ساعت از بازار گرفته می‌شود. حاشیه کمی "
-            "<b>زیر</b> بازار است تا تتری که می‌گیرید دست‌کم به اندازه‌ی "
-            "قیمت تومانی بیرزد.</i>"
+            "\n\n<i>نرخ هر ربع ساعت از نوبیتکس گرفته می‌شود — بازار "
+            "USDTIRT برای تتر و TRXIRT برای ترون. حاشیه کمی <b>زیر</b> "
+            "بازار است تا ارزی که می‌گیرید دست‌کم به اندازه‌ی قیمت تومانی "
+            "بیرزد. ترون حاشیه‌ی بیشتری دارد چون نوسانش بیشتر است.</i>"
         )
     else:
         note = (
@@ -155,11 +168,15 @@ async def _usdt_screen(event) -> None:
     )
     if auto:
         kb.row(
-            InlineKeyboardButton(text="📉 حاشیه‌ی اطمینان", callback_data="sys:margin"),
-            InlineKeyboardButton(text="⏬ گرفتن نرخ الان", callback_data="sys:ratenow"),
+            InlineKeyboardButton(text="📉 حاشیه‌ی تتر", callback_data="sys:margin:usdt"),
+            InlineKeyboardButton(text="📉 حاشیه‌ی ترون", callback_data="sys:margin:trx"),
         )
+        kb.row(InlineKeyboardButton(text="⏬ گرفتن نرخ‌ها الان", callback_data="sys:ratenow"))
     else:
-        kb.row(InlineKeyboardButton(text="💱 تغییر نرخ دستی", callback_data="sys:usdtrate"))
+        kb.row(
+            InlineKeyboardButton(text="💱 نرخ تتر", callback_data="sys:usdtrate:usdt"),
+            InlineKeyboardButton(text="💱 نرخ ترون", callback_data="sys:usdtrate:trx"),
+        )
     kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data="adm:sys"))
     await _show(event, head + body + note, kb)
 
@@ -241,42 +258,57 @@ async def cb_auto_rate(call: CallbackQuery) -> None:
 
 @router.callback_query(F.data == "sys:ratenow")
 async def cb_rate_now(call: CallbackQuery) -> None:
-    """گرفتن فوریِ نرخ — بدون محافظِ جهش، چون ادمین خودش خواسته."""
+    """گرفتن فوریِ نرخ همه‌ی ارزها — بدون محافظِ جهش، چون ادمین خواسته."""
     if await guard(call, roles.CAP_MONEY):
         return
-    fresh = await usdtrate.refresh(force=True)
+    fresh = await usdtrate.refresh_all(force=True)
+    done = [
+        f"{coins.get(code).symbol}: {value:,}"
+        for code, value in fresh.items()
+        if value
+    ]
     await call.answer(
-        f"نرخ تازه: {fresh:,} تومان" if fresh else "نرخ عوض نشد یا خواندن ناموفق بود",
+        " | ".join(done) if done else "نرخی عوض نشد یا خواندن ناموفق بود",
         show_alert=True,
     )
     await _usdt_screen(call)
 
 
-@router.callback_query(F.data == "sys:margin")
+@router.callback_query(F.data.startswith("sys:margin:"))
 async def cb_margin(call: CallbackQuery, state: FSMContext) -> None:
     if await guard(call, roles.CAP_MONEY):
         return
+    coin = call.data.split(":")[2]
+    spec = coins.get(coin)
+    if spec is None:
+        await call.answer("ارز ناشناخته", show_alert=True)
+        return
     await call.answer()
     await state.set_state(Flow.usdt_margin)
+    await state.update_data(rate_coin=coin)
     await call.message.answer(
-        "📉 حاشیه‌ی اطمینان را به <b>درصد</b> بفرستید (۰ تا ۲۰).\n\n"
+        f"📉 حاشیه‌ی اطمینان <b>{spec.symbol}</b> را به درصد بفرستید (۰ تا ۲۰).\n\n"
         "<i>نرخ فروش این‌قدر <b>پایین‌تر</b> از بازار گذاشته می‌شود. "
-        "چرا پایین‌تر: مبلغ تتری از تقسیم می‌آید، پس نرخ کمتر یعنی "
-        "مشتری تتر بیشتری می‌دهد — و همین جلوی ضرر شما را می‌گیرد.</i>\n\n"
-        "۲ نقطه‌ی شروع خوبی است.\n\nبرای انصراف /cancel را بزنید."
+        "چرا پایین‌تر: مبلغ ارزی از تقسیم می‌آید، پس نرخ کمتر یعنی "
+        "مشتری بیشتر می‌پردازد — و همین جلوی ضرر شما را می‌گیرد.</i>\n\n"
+        f"پیشنهاد برای {spec.symbol}: {fa_num(spec.default_margin)}\n\n"
+        "برای انصراف /cancel را بزنید."
     )
 
 
 @router.message(Flow.usdt_margin)
 async def got_margin(message: Message, state: FSMContext) -> None:
-    saved = await usdtrate.set_margin(message.text or "", admin_id=message.from_user.id)
+    coin = (await state.get_data()).get("rate_coin", coins.USDT)
+    saved = await usdtrate.set_margin(
+        message.text or "", coin=coin, admin_id=message.from_user.id
+    )
     if saved is None:
         await message.answer(
             "⚠️ عددی بین ۰ تا ۲۰ بفرستید.\nبرای انصراف /cancel را بزنید."
         )
         return
     await state.clear()
-    await usdtrate.refresh(force=True)
+    await usdtrate.refresh(coin, force=True)
     await message.answer(f"✅ حاشیه روی {fa_num(saved)}٪ تنظیم شد.")
     await _usdt_screen(message)
 
@@ -319,22 +351,33 @@ async def got_usdt_address(message: Message, state: FSMContext) -> None:
     await _usdt_screen(message)
 
 
-@router.callback_query(F.data == "sys:usdtrate")
+@router.callback_query(F.data.startswith("sys:usdtrate"))
 async def cb_usdt_rate(call: CallbackQuery, state: FSMContext) -> None:
     if await guard(call, roles.CAP_MONEY):
         return
+    parts = call.data.split(":")
+    coin = parts[2] if len(parts) > 2 else coins.USDT
+    spec = coins.get(coin)
+    if spec is None:
+        await call.answer("ارز ناشناخته", show_alert=True)
+        return
     await call.answer()
     await state.set_state(Flow.usdt_rate)
+    await state.update_data(rate_coin=coin)
     await call.message.answer(
-        "نرخ هر تتر را به <b>تومان</b> بفرستید.\n\n"
-        "<i>مثلاً اگر هر تتر ۹۵٬۰۰۰ تومان است، بنویسید 95000</i>\n\n"
+        f"نرخ هر <b>{spec.symbol}</b> را به تومان بفرستید.\n\n"
+        "<i>بدون جداکننده، مثل 95000</i>\n\n"
         "برای انصراف /cancel را بزنید."
     )
 
 
 @router.message(Flow.usdt_rate)
 async def got_usdt_rate(message: Message, state: FSMContext) -> None:
-    saved = await crypto.set_rate(message.text or "", admin_id=message.from_user.id)
+    coin = (await state.get_data()).get("rate_coin", coins.USDT)
+    spec = coins.get(coin) or coins.get(coins.USDT)
+    saved = await crypto.set_rate(
+        message.text or "", coin=coin, admin_id=message.from_user.id
+    )
     if saved is None:
         await message.answer(
             "⚠️ عدد معتبر نیست.\nنرخ را به تومان و بدون جداکننده بنویسید، "
@@ -343,9 +386,11 @@ async def got_usdt_rate(message: Message, state: FSMContext) -> None:
         return
     await state.clear()
     await log_activity(
-        user_id=message.from_user.id, event="admin", detail=f"نرخ تتر → {saved}"
+        user_id=message.from_user.id,
+        event="admin",
+        detail=f"نرخ {spec.symbol} → {saved}",
     )
-    await message.answer(f"✅ نرخ ثبت شد: {toman(saved)} برای هر تتر.")
+    await message.answer(f"✅ نرخ ثبت شد: {toman(saved)} برای هر {spec.symbol}.")
     await _usdt_screen(message)
 
 

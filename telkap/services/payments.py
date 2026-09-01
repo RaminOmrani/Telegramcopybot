@@ -22,12 +22,18 @@ log = logging.getLogger(__name__)
 # ربطی به رمزارز ندارد و هر سه به همان درخواستِ پرداخت می‌رسند.
 METHOD_CARD = "card"
 METHOD_USDT = "usdt"
+METHOD_TRX = "trx"
 METHOD_GATEWAY = "gate"
-METHODS = (METHOD_CARD, METHOD_USDT, METHOD_GATEWAY)
+METHODS = (METHOD_CARD, METHOD_USDT, METHOD_TRX, METHOD_GATEWAY)
+
+# روش‌هایی که با هش تراکنش تأیید می‌شوند. نامشان عمداً با کد ارز در
+# coins.py یکی است، پس نگاشتشان مستقیم است و جای اشتباه ندارد.
+CRYPTO_METHODS = (METHOD_USDT, METHOD_TRX)
 
 METHOD_LABELS = {
     METHOD_CARD: "💳 کارت بانکی",
     METHOD_USDT: "₮ تتر (TRC20)",
+    METHOD_TRX: "🔺 ترون (TRX)",
     METHOD_GATEWAY: "🏦 درگاه بانکی (زرین‌پال)",
 }
 
@@ -388,7 +394,7 @@ async def any_method_ready() -> bool:
 
     return (
         await cardinfo.available()
-        or await crypto.available()
+        or bool(await crypto.ready_coins())
         or zarinpal.configured()
     )
 

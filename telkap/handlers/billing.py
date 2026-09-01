@@ -40,7 +40,16 @@ from telkap.plans import (
     purchasable,
     toman,
 )
-from telkap.services import cardinfo, credits, crypto, cryptocheck, payments, roles, zarinpal
+from telkap.services import (
+    cardinfo,
+    coins,
+    credits,
+    crypto,
+    cryptocheck,
+    payments,
+    roles,
+    zarinpal,
+)
 from telkap.services.subscription import active_subscription, remaining_days
 from telkap.texts import fa_num
 
@@ -246,10 +255,11 @@ async def cb_pay(call: CallbackQuery, state: FSMContext) -> None:
     # دکمه‌ای است که به بن‌بست می‌رسد. کارت هم دیگر استثنا نیست: تا
     # امروز همیشه نشان داده می‌شد، حتی وقتی شماره‌ای ثبت نشده بود.
     card_ready = await cardinfo.available()
-    usdt_ready = await crypto.available()
+    ready_coins = await crypto.ready_coins()
     gateway_ready = zarinpal.configured()
 
-    if sum((card_ready, usdt_ready, gateway_ready)) > 1:
+    total = int(card_ready) + int(gateway_ready) + len(ready_coins)
+    if total > 1:
         await state.update_data(request_id=request.id)
         await call.message.answer(
             f"{headline}\n\nاز کدام راه می‌خواهید بپردازید؟",
@@ -257,22 +267,22 @@ async def cb_pay(call: CallbackQuery, state: FSMContext) -> None:
                 request.id,
                 card=card_ready,
                 gateway=gateway_ready,
-                usdt=usdt_ready,
+                crypto_coins=ready_coins,
             ),
         )
         return
 
     # فقط یک راه هست؛ پرسیدن «کدام؟» وقتی یک گزینه بیشتر نیست، یک
     # کلیک اضافه است بدون هیچ فایده‌ای
-    if usdt_ready and not card_ready:
+    if len(ready_coins) == 1 and not card_ready and not gateway_ready:
         await state.update_data(request_id=request.id)
-        await _usdt_screen(call.message, state, request, headline)
+        await _crypto_screen(call.message, state, request, headline, ready_coins[0])
         return
     if gateway_ready and not card_ready:
         await state.update_data(request_id=request.id)
         await call.message.answer(
             f"{headline}\n\nاز کدام راه می‌خواهید بپردازید؟",
-            reply_markup=_method_menu(request.id, card=False, gateway=True, usdt=False),
+            reply_markup=_method_menu(request.id, card=False, gateway=True),
         )
         return
 
@@ -280,7 +290,11 @@ async def cb_pay(call: CallbackQuery, state: FSMContext) -> None:
 
 
 def _method_menu(
-    request_id: int, *, card: bool = True, gateway: bool = False, usdt: bool = True
+    request_id: int,
+    *,
+    card: bool = True,
+    gateway: bool = False,
+    crypto_coins: tuple[str, ...] = (),
 ) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     # درگاه اول می‌آید چون تنها راهی است که همان لحظه فعال می‌شود؛
@@ -299,11 +313,13 @@ def _method_menu(
                 callback_data=f"paym:card:{request_id}",
             )
         )
-    if usdt:
+    for code in crypto_coins:
+        spec = coins.get(code)
+        if spec is None:
+            continue
         kb.row(
             InlineKeyboardButton(
-                text=payments.METHOD_LABELS[payments.METHOD_USDT],
-                callback_data=f"paym:usdt:{request_id}",
+                text=spec.label, callback_data=f"paym:{code}:{request_id}"
             )
         )
     kb.row(InlineKeyboardButton(text="❌ انصراف", callback_data="pay:cancel"))
@@ -502,38 +518,76 @@ async def cb_pay_method(call: CallbackQuery, state: FSMContext) -> None:
         await _gateway_screen(call, state, request)
         return
 
-    await _usdt_screen(call.message, state, request, headline)
+    await _crypto_screen(call.message, state, request, headline, method)
 
 
-async def _usdt_screen(message, state: FSMContext, request, headline: str) -> None:
-    """صفحه‌ی پرداخت تتر.
+async def _crypto_screen(
+    message, state: FSMContext, request, headline: str, coin: str
+) -> None:
+    """صفحه‌ی پرداخت ارز دیجیتال — تتر یا ترون.
 
     جدا شد چون دو جا لازم است: وقتی کاربر بین چند راه یکی را انتخاب
-    می‌کند، و وقتی تتر تنها راه تنظیم‌شده است و پرسیدن «کدام راه؟»
-    برای یک گزینه فقط یک کلیک اضافه است.
+    می‌کند، و وقتی همین یک راه تنظیم شده و پرسیدن «کدام راه؟» برای
+    یک گزینه فقط یک کلیک اضافه است.
     """
-    priced = await crypto.quote(request.amount_toman)
+    spec = coins.get(coin)
+    if spec is None:
+        spec = coins.get(coins.USDT)
+        coin = coins.USDT
+
+    priced = await crypto.quote(request.amount_toman, coin)
     if priced is None:
         # بین انتخاب پلن و اینجا، ادمین نرخ یا نشانی را برداشته است
         if await cardinfo.available():
             await message.answer(
-                "پرداخت تتری موقتاً در دسترس نیست. با کارت بانکی ادامه می‌دهیم."
+                f"پرداخت با {spec.symbol} موقتاً در دسترس نیست. "
+                "با کارت بانکی ادامه می‌دهیم."
             )
             await payments.set_method(request.id, payments.METHOD_CARD)
             await _card_screen(message, state, request, headline)
             return
         await message.answer(
-            "⚠️ پرداخت تتری موقتاً در دسترس نیست. کمی بعد دوباره تلاش کنید."
+            f"⚠️ پرداخت با {spec.symbol} موقتاً در دسترس نیست. "
+            "کمی بعد دوباره تلاش کنید."
         )
         await payments.warn_no_method()
         return
 
     await payments.set_method(
         request.id,
-        payments.METHOD_USDT,
-        usdt_amount=priced["usdt_text"],
+        coin,
+        usdt_amount=priced["amount_text"],
         usdt_rate=priced["rate"],
     )
+
+    # ترون در فاصله‌ی ساخت درخواست تا پرداخت واقعاً تکان می‌خورد، پس
+    # کاربر باید بداند که معطل کردن به ضررِ خودش است.
+    hurry = (
+        "\n⏱ <i>قیمت ترون نوسان دارد؛ همین حالا واریز کنید.</i>"
+        if spec.is_native
+        else ""
+    )
+
+    # ترون خودِ ارز شبکه است، نه توکن TRC20 روی آن. گفتنِ «TRC20» به
+    # کسی که ترون می‌فرستد غلط است و در کیف پول دنبال چیزی می‌گردد
+    # که وجود ندارد.
+    if spec.is_native:
+        network = (
+            "🌐 شبکه: <b>Tron (TRX)</b>\n"
+            f"نشانی ولت:\n<code>{priced['address']}</code>\n\n"
+            "پس از واریز، <b>هش تراکنش</b> را همین‌جا بفرستید.\n\n"
+            "⚠️ فقط <b>خودِ ترون روی شبکه‌ی ترون</b> را بفرستید. "
+            "واریز ترونِ بسته‌بندی‌شده روی شبکه‌ی دیگر (مثل BEP20) به "
+            "این نشانی <b>قابل بازگشت نیست</b>."
+        )
+    else:
+        network = (
+            "🌐 شبکه: <b>TRC20 (Tron)</b>\n"
+            f"نشانی ولت:\n<code>{priced['address']}</code>\n\n"
+            "پس از واریز، <b>هش تراکنش</b> را همین‌جا بفرستید.\n\n"
+            "⚠️ فقط از شبکه‌ی TRC20 بفرستید. واریز از شبکه‌ی دیگر "
+            "(ERC20، BEP20) به این نشانی <b>قابل بازگشت نیست</b>."
+        )
 
     kb = InlineKeyboardBuilder()
     kb.row(InlineKeyboardButton(text="❌ انصراف", callback_data="pay:cancel"))
@@ -541,13 +595,9 @@ async def _usdt_screen(message, state: FSMContext, request, headline: str) -> No
     await state.update_data(request_id=request.id)
     await message.answer(
         f"{headline}\n"
-        f"معادل: <b>{priced['usdt_text']} USDT</b>\n"
-        f"<i>نرخ امروز: {toman(priced['rate'])} برای هر تتر</i>\n\n"
-        f"🌐 شبکه: <b>TRC20 (Tron)</b>\n"
-        f"نشانی ولت:\n<code>{priced['address']}</code>\n\n"
-        "پس از واریز، <b>هش تراکنش</b> را همین‌جا بفرستید.\n\n"
-        "⚠️ فقط از شبکه‌ی TRC20 بفرستید. واریز از شبکه‌ی دیگر "
-        "(ERC20، BEP20) به این نشانی <b>قابل بازگشت نیست</b>.",
+        f"معادل: <b>{priced['amount_text']} {spec.symbol}</b>\n"
+        f"<i>نرخ امروز: {toman(priced['rate'])} برای هر {spec.symbol}</i>{hurry}\n\n"
+        f"{network}",
         reply_markup=kb.as_markup(),
     )
 
@@ -565,7 +615,7 @@ async def _gateway_screen(call: CallbackQuery, state: FSMContext, request) -> No
         await call.message.answer(
             "⚠️ اتصال به درگاه ممکن نشد. لطفاً راه دیگری انتخاب کنید.",
             reply_markup=_method_menu(
-                request.id, gateway=False, usdt=await crypto.available()
+                request.id, gateway=False, crypto_coins=await crypto.ready_coins()
             ),
         )
         return

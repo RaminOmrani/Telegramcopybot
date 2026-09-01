@@ -31,12 +31,15 @@ import aiohttp
 
 from telkap.db import get_session
 from telkap.models import AppSetting, utcnow
-from telkap.services import crypto
+from telkap.services import coins, crypto
 
 log = logging.getLogger(__name__)
 
-AUTO_KEY = "usdt_rate_auto"       # روشن/خاموش
-MARGIN_KEY = "usdt_rate_margin"   # درصد پایین‌تر از بازار
+# روشن/خاموش و حاشیه، هر کدام برای همه‌ی ارزها مشترک‌اند: کسی که
+# نرخ خودکار می‌خواهد، برای هر دو می‌خواهد. فقط حاشیه‌ی پیش‌فرض هر
+# ارز فرق دارد، چون نوسانشان یکی نیست.
+AUTO_KEY = "usdt_rate_auto"
+MARGIN_KEY = "usdt_rate_margin"
 
 INTERVAL_SECONDS = 900            # هر ۱۵ دقیقه
 TIMEOUT_SECONDS = 15
@@ -49,6 +52,13 @@ MAX_MARGIN = 20
 # یا ساختار پاسخ عوض شده.
 MIN_SANE = 10_000
 MAX_SANE = 10_000_000
+
+# بازه‌ی معقول برای هر ارز جدا. عددی بیرون از این یعنی پاسخ را اشتباه
+# خوانده‌ایم — مثلاً ریال را تومان گرفته‌ایم یا بازار عوضی را پرسیده‌ایم.
+SANE_RANGE = {
+    coins.USDT: (10_000, 10_000_000),
+    coins.TRX: (100, 500_000),
+}
 
 # بیشترین تغییر مجاز در یک دور. بازار در پانزده دقیقه این‌قدر تکان
 # نمی‌خورد؛ چنین جهشی یعنی خطا، و خطا نباید بی‌صدا قیمت را عوض کند.
@@ -83,15 +93,26 @@ def _first_number(payload, keys) -> Decimal | None:
     return None
 
 
-async def market_toman(*, session: aiohttp.ClientSession | None = None) -> int:
-    """نرخ بازار تتر به <b>تومان</b>.
+async def market_toman(
+    coin: str = coins.USDT, *, session: aiohttp.ClientSession | None = None
+) -> int:
+    """نرخ بازار این ارز به <b>تومان</b>.
+
+    هر دو ارز از یک جا می‌آیند — نوبیتکس، بازار USDTIRT برای تتر و
+    TRXIRT برای ترون. یعنی نرخ تومانی ترون <b>مستقیم</b> از بازار
+    خوانده می‌شود، نه از ضرب قیمت دلاری در نرخ دلار: یک مرحله کمتر،
+    یک جای کمترِ خطا.
 
     نوبیتکس قیمت را به <b>ریال</b> می‌دهد. تقسیم بر ده جایی است که
     اشتباهش گران تمام می‌شود: ده برابر خطا یعنی اشتراکِ یک‌دهم قیمت.
     """
+    spec = coins.get(coin)
+    if spec is None:
+        raise RateError(f"ارز ناشناخته: {coin}")
+
     owned = session is None
     session = session or aiohttp.ClientSession()
-    url = "https://api.nobitex.ir/v2/orderbook/USDTIRT"
+    url = f"https://api.nobitex.ir/v2/orderbook/{spec.market}"
 
     try:
         async with session.get(
@@ -117,7 +138,11 @@ async def market_toman(*, session: aiohttp.ClientSession | None = None) -> int:
         raise RateError("قیمتی در پاسخ صرافی پیدا نشد")
 
     toman = int(rial / 10)
-    if not MIN_SANE <= toman <= MAX_SANE:
+    # بازه بر حسب ارز فرق دارد: یک تتر ده‌ها هزار تومان است و یک ترون
+    # چند هزار تومان. یک بازه‌ی مشترک یا خیلی گشاد می‌شد یا یکی از دو
+    # ارز را رد می‌کرد.
+    low, high = SANE_RANGE.get(spec.code, (MIN_SANE, MAX_SANE))
+    if not low <= toman <= high:
         raise RateError(f"نرخ خوانده‌شده معقول نیست: {toman}")
     return toman
 
@@ -152,22 +177,37 @@ async def set_auto(value: bool, *, admin_id: int | None = None) -> bool:
     return bool(value)
 
 
-async def margin() -> int:
+async def margin(coin: str = coins.USDT) -> int:
+    """حاشیه‌ی این ارز.
+
+    اگر ادمین چیزی تنظیم نکرده باشد، پیش‌فرضِ خودِ ارز به کار می‌رود —
+    ترون بیشتر، چون در فاصله‌ی ساخت درخواست تا پرداخت واقعاً تکان
+    می‌خورد.
+    """
+    spec = coins.get(coin)
+    fallback = spec.default_margin if spec else DEFAULT_MARGIN
+    stored = await _read(f"{MARGIN_KEY}:{coin}")
+    if stored is None:
+        stored = await _read(MARGIN_KEY)      # مقدار مشترکِ قدیمی
+    if stored is None:
+        return fallback
     try:
-        value = int(await _read(MARGIN_KEY) or DEFAULT_MARGIN)
+        value = int(stored)
     except (TypeError, ValueError):
-        return DEFAULT_MARGIN
-    return value if 0 <= value <= MAX_MARGIN else DEFAULT_MARGIN
+        return fallback
+    return value if 0 <= value <= MAX_MARGIN else fallback
 
 
-async def set_margin(value, *, admin_id: int | None = None) -> int | None:
+async def set_margin(
+    value, *, coin: str = coins.USDT, admin_id: int | None = None
+) -> int | None:
     try:
         number = int(str(value).strip())
     except (TypeError, ValueError):
         return None
     if not 0 <= number <= MAX_MARGIN:
         return None
-    await _write(MARGIN_KEY, number, admin_id)
+    await _write(f"{MARGIN_KEY}:{coin}", number, admin_id)
     return number
 
 
@@ -193,8 +233,8 @@ def jumped(old: int, new: int) -> bool:
 # ── چرخه ─────────────────────────────────────────────────────────────
 
 
-async def refresh(*, force: bool = False) -> int:
-    """یک بار نرخ را از بازار می‌گیرد و ثبت می‌کند.
+async def refresh(coin: str = coins.USDT, *, force: bool = False) -> int:
+    """یک بار نرخ این ارز را از بازار می‌گیرد و ثبت می‌کند.
 
     خروجی نرخ تازه است، یا صفر اگر چیزی عوض نشد. <code>force</code>
     محافظِ جهش را کنار می‌گذارد — فقط برای وقتی که ادمین خودش
@@ -203,16 +243,19 @@ async def refresh(*, force: bool = False) -> int:
     if not force and not await is_auto():
         return 0
 
+    spec = coins.get(coin)
+    name = spec.symbol if spec else coin
+
     try:
-        market = await market_toman()
+        market = await market_toman(coin)
     except RateError as exc:
         # نرخ قبلی سر جایش می‌ماند؛ خاموش شدن پرداخت بدتر از نرخِ
         # کمی قدیمی است
-        log.warning("خواندن نرخ تتر ناموفق بود: %s", exc)
+        log.warning("خواندن نرخ %s ناموفق بود: %s", name, exc)
         return 0
 
-    fresh = with_margin(market, await margin())
-    current = await crypto.rate()
+    fresh = with_margin(market, await margin(coin))
+    current = await crypto.rate(coin)
 
     if fresh == current:
         return 0
@@ -220,30 +263,42 @@ async def refresh(*, force: bool = False) -> int:
     if not force and jumped(current, fresh):
         from telkap.services import alerts, roles
 
-        log.warning("جهش نرخ تتر نادیده گرفته شد: %s → %s", current, fresh)
+        log.warning("جهش نرخ %s نادیده گرفته شد: %s → %s", name, current, fresh)
         await alerts.send(
-            "⚠️ <b>نرخ خودکار تتر اعمال نشد</b>\n\n"
+            f"⚠️ <b>نرخ خودکار {name} اعمال نشد</b>\n\n"
             f"نرخ فعلی: <b>{current:,}</b> تومان\n"
             f"نرخ بازار: <b>{fresh:,}</b> تومان\n\n"
             "اختلاف بیش از حد انتظار است، پس تغییری داده نشد.\n"
             "<i>اگر بازار واقعاً این‌قدر تکان خورده، از پنل ادمین دستی "
             "ثبتش کنید.</i>",
             cap=roles.CAP_MONEY,
-            key=f"ratejump:{fresh}",
+            key=f"ratejump:{coin}:{fresh}",
             cooldown=0,
         )
         return 0
 
-    await crypto.set_rate(fresh, admin_id=None)
-    log.info("نرخ تتر به‌روز شد: %s تومان (بازار %s)", fresh, market)
+    await crypto.set_rate(fresh, coin=coin, admin_id=None)
+    log.info("نرخ %s به‌روز شد: %s تومان (بازار %s)", name, fresh, market)
     return fresh
+
+
+async def refresh_all(*, force: bool = False) -> dict[str, int]:
+    """همه‌ی ارزها. خرابیِ یکی نباید جلوی بقیه را بگیرد."""
+    result: dict[str, int] = {}
+    for code in coins.all_codes():
+        try:
+            result[code] = await refresh(code, force=force)
+        except Exception:
+            log.exception("به‌روزرسانی نرخ %s شکست خورد", code)
+            result[code] = 0
+    return result
 
 
 async def run_forever() -> None:
     while True:
         try:
             await asyncio.sleep(INTERVAL_SECONDS)
-            await refresh()
+            await refresh_all()
         except asyncio.CancelledError:
             raise
         except Exception:

@@ -20,6 +20,7 @@ from decimal import ROUND_UP, Decimal
 
 from telkap.db import get_session
 from telkap.models import AppSetting, utcnow
+from telkap.services import coins
 
 log = logging.getLogger(__name__)
 
@@ -116,9 +117,19 @@ async def _announce(key: str, before, after, admin_id: int | None) -> None:
     )
 
 
-async def rate() -> int:
-    """تومان به ازای هر تتر. صفر یعنی هنوز تنظیم نشده."""
-    stored = await _read(RATE_KEY)
+def _rate_key(coin: str) -> str:
+    """کلید نرخ این ارز در تنظیمات.
+
+    ارز ناشناخته به تتر برمی‌گردد، نه اینکه خطا بدهد: صدازننده‌های
+    قدیمی که هیچ ارزی نمی‌دهند باید مثل قبل کار کنند.
+    """
+    found = coins.get(coin)
+    return found.rate_key if found else RATE_KEY
+
+
+async def rate(coin: str = coins.USDT) -> int:
+    """تومان به ازای هر واحد این ارز. صفر یعنی هنوز تنظیم نشده."""
+    stored = await _read(_rate_key(coin))
     try:
         value = int(stored or 0)
     except (TypeError, ValueError):
@@ -126,7 +137,7 @@ async def rate() -> int:
     return value if value >= MIN_RATE else 0
 
 
-async def set_rate(value, *, admin_id: int | None = None) -> int | None:
+async def set_rate(value, *, coin: str = coins.USDT, admin_id: int | None = None):
     """نرخ تازه را ذخیره می‌کند. None یعنی مقدار پذیرفته نشد."""
     try:
         number = int(str(value).strip().replace(",", "").replace("،", ""))
@@ -134,7 +145,7 @@ async def set_rate(value, *, admin_id: int | None = None) -> int | None:
         return None
     if number < MIN_RATE:
         return None
-    await _write(RATE_KEY, number, admin_id)
+    await _write(_rate_key(coin), number, admin_id)
     return number
 
 
@@ -150,50 +161,90 @@ async def set_address(value: str, *, admin_id: int | None = None) -> str | None:
     return cleaned
 
 
-async def available() -> bool:
+async def available(coin: str = coins.USDT) -> bool:
     """آیا این راه پرداخت آماده‌ی استفاده است؟
 
     هر دو لازم‌اند: نشانیِ بدون نرخ یعنی نمی‌دانیم چقدر بخواهیم، و نرخِ
     بدون نشانی یعنی جایی برای واریز نیست.
+
+    نشانی بین همه‌ی ارزها مشترک است — تتر و ترون هر دو روی شبکه‌ی
+    ترون‌اند و به یک ولت واریز می‌شوند. فقط نرخ است که جدا تنظیم
+    می‌شود.
     """
-    return bool(await address()) and await rate() > 0
+    return bool(await address()) and await rate(coin) > 0
 
 
-def to_usdt(amount_toman: int, rate_toman: int) -> Decimal:
-    """تومان را به تتر تبدیل می‌کند، با دو رقم اعشار و رو به بالا.
+async def ready_coins() -> tuple[str, ...]:
+    """ارزهایی که همین حالا قابل پرداخت‌اند."""
+    if not await address():
+        return ()
+    return tuple([code for code in coins.all_codes() if await rate(code) > 0])
+
+
+def to_coin(amount_toman: int, rate_toman: int, places: str = "0.01") -> Decimal:
+    """تومان را به واحد ارز تبدیل می‌کند، رو به بالا.
 
     رو به بالا گرد می‌شود چون کم‌تر بودنِ مبلغ یعنی پرداخت ناقص و یک
     رفت‌وبرگشت اضافه با پشتیبانی؛ چند سنتِ بیشتر این دردسر را ندارد.
+
+    <code>places</code> برای هر ارز فرق دارد: ترون ارزان است و با دو
+    رقم اعشار مبلغ‌ها گرد و بی‌دقت می‌شوند.
     """
     if amount_toman <= 0 or rate_toman <= 0:
         return Decimal("0")
     raw = Decimal(amount_toman) / Decimal(rate_toman)
-    return raw.quantize(Decimal("0.01"), rounding=ROUND_UP)
+    return raw.quantize(Decimal(places), rounding=ROUND_UP)
 
 
-def format_usdt(value: Decimal) -> str:
-    """بدون صفرهای انتهاییِ بی‌فایده: 12.50 → 12.5 و 12.00 → 12"""
-    text = f"{value:.2f}".rstrip("0").rstrip(".")
+def to_usdt(amount_toman: int, rate_toman: int) -> Decimal:
+    """همان to_coin با دقت تتر. برای صدازننده‌های قدیمی نگه داشته شده."""
+    return to_coin(amount_toman, rate_toman, "0.01")
+
+
+def format_amount(value: Decimal) -> str:
+    """بدون صفرهای انتهاییِ بی‌فایده: 12.50 → 12.5 و 12.0000 → 12
+
+    ترون تا چهار رقم اعشار دارد، پس قالب ثابتِ دو رقمی کافی نیست —
+    ۱۲٫۳۴۵۶ را به ۱۲٫۳۵ گرد می‌کرد و مبلغِ گفته‌شده با مبلغِ خواسته‌شده
+    نمی‌خواند.
+    """
+    text = format(value.normalize(), "f")
     return text or "0"
 
 
-async def quote(amount_toman: int) -> dict | None:
-    """مبلغ تتری و نشانی مقصد برای یک پرداخت.
+def format_usdt(value: Decimal) -> str:
+    """نام قدیمی؛ نگه داشته شده تا صدازننده‌های موجود نشکنند."""
+    return format_amount(value)
 
-    None یعنی این راه پرداخت آماده نیست؛ صدازننده باید فقط کارت را نشان
-    بدهد.
+
+async def quote(amount_toman: int, coin: str = coins.USDT) -> dict | None:
+    """مبلغ ارزی و نشانی مقصد برای یک پرداخت.
+
+    None یعنی این راه پرداخت آماده نیست؛ صدازننده باید راه دیگری
+    نشان بدهد.
     """
+    spec = coins.get(coin)
+    if spec is None:
+        return None
+
     wallet = await address()
-    rate_toman = await rate()
+    rate_toman = await rate(coin)
     if not wallet or rate_toman <= 0:
         return None
 
-    usdt = to_usdt(amount_toman, rate_toman)
-    if usdt <= 0:
+    amount = to_coin(amount_toman, rate_toman, spec.quantize)
+    if amount <= 0:
         return None
+    text = format_amount(amount)
     return {
+        "coin": spec.code,
+        "symbol": spec.symbol,
+        "label": spec.label,
         "address": wallet,
         "rate": rate_toman,
-        "usdt": usdt,
-        "usdt_text": format_usdt(usdt),
+        "amount": amount,
+        "amount_text": text,
+        # نام‌های قدیمی، تا کدی که هنوز usdt_text می‌خواند نشکند
+        "usdt": amount,
+        "usdt_text": text,
     }

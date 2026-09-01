@@ -249,7 +249,7 @@ async def test_a_failed_fetch_leaves_the_old_rate_alone(tmp_path, monkeypatch):
     await crypto.set_rate(90_000, admin_id=1)
     await usdtrate.set_auto(True, admin_id=1)
 
-    async def broken(**kwargs):
+    async def broken(coin=usdtrate.coins.USDT, **kwargs):
         raise usdtrate.RateError("صرافی در دسترس نیست")
 
     monkeypatch.setattr(usdtrate, "market_toman", broken)
@@ -263,7 +263,7 @@ async def test_nothing_is_fetched_while_auto_is_off(tmp_path, monkeypatch):
     await _setup(tmp_path, monkeypatch, settings={})
     called = []
 
-    async def spy(**kwargs):
+    async def spy(coin=usdtrate.coins.USDT, **kwargs):
         called.append(1)
         return 100_000
 
@@ -281,7 +281,7 @@ async def test_auto_refresh_applies_the_rate_with_its_margin(tmp_path, monkeypat
     await usdtrate.set_auto(True, admin_id=1)
     await usdtrate.set_margin(2, admin_id=1)
 
-    async def market(**kwargs):
+    async def market(coin=usdtrate.coins.USDT, **kwargs):
         return 100_000
 
     monkeypatch.setattr(usdtrate, "market_toman", market)
@@ -299,7 +299,7 @@ async def test_a_wild_jump_is_not_applied_silently(tmp_path, monkeypatch):
     await crypto.set_rate(100_000, admin_id=1)
     await usdtrate.set_auto(True, admin_id=1)
 
-    async def market(**kwargs):
+    async def market(coin=usdtrate.coins.USDT, **kwargs):
         return 400_000
 
     told = []
@@ -324,7 +324,7 @@ async def test_an_admin_can_force_a_big_change(tmp_path, monkeypatch):
 
     await crypto.set_rate(100_000, admin_id=1)
 
-    async def market(**kwargs):
+    async def market(coin=usdtrate.coins.USDT, **kwargs):
         return 400_000
 
     monkeypatch.setattr(usdtrate, "market_toman", market)

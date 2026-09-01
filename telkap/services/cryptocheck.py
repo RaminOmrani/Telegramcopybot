@@ -39,7 +39,7 @@ from sqlalchemy import select
 
 from telkap.db import get_session, log_activity
 from telkap.models import PaymentRequest
-from telkap.services import crypto, payments, tron
+from telkap.services import coins, crypto, payments, tron
 
 log = logging.getLogger(__name__)
 
@@ -56,13 +56,22 @@ TOLERANCE = Decimal("0.02")
 SYSTEM_ADMIN_ID = -1
 
 
+def coin_of(request: PaymentRequest) -> str:
+    """کدام ارز با این درخواست پرداخت شده.
+
+    روش پرداخت و کد ارز عمداً یکی نگه داشته شده‌اند («usdt» و «trx»)،
+    پس نگاشت مستقیم است و جای اشتباه ندارد.
+    """
+    return request.pay_method if coins.get(request.pay_method) else coins.USDT
+
+
 async def pending_usdt() -> list[PaymentRequest]:
-    """درخواست‌های تتری که هش دارند و هنوز بررسی نشده‌اند."""
+    """درخواست‌های ارزی که هش دارند و هنوز بررسی نشده‌اند."""
     async with get_session() as db:
         rows = await db.execute(
             select(PaymentRequest).where(
                 PaymentRequest.status == PaymentRequest.STATUS_PENDING,
-                PaymentRequest.pay_method == payments.METHOD_USDT,
+                PaymentRequest.pay_method.in_(payments.CRYPTO_METHODS),
                 PaymentRequest.tx_hash != "",
             )
         )
@@ -157,20 +166,27 @@ async def run_once(*, notifier=None) -> int:
     )
     since = max(oldest - 3600_000, 0) if oldest else 0
 
-    try:
-        transfers = await tron.incoming_usdt(
-            wallet,
-            since_ms=since,
-            api_key=getattr(get_settings(), "tron_api_key", "") or "",
-        )
-    except tron.TronError as exc:
-        # شبکه در دسترس نیست؛ هیچ پرداختی گم نمی‌شود، فقط این دور رد
-        # می‌شود و مسیر دستیِ ادمین سر جایش است
-        log.warning("خواندن تراکنش‌های ترون ناموفق بود: %s", exc)
-        return 0
+    api_key = getattr(get_settings(), "tron_api_key", "") or ""
+
+    # هر ارز یک بار خوانده می‌شود، نه یک بار برای هر درخواست. مسیر
+    # خواندنِ توکن و ارز بومی فرق دارد، پس نمی‌شود در یک درخواست
+    # جمعشان کرد.
+    by_coin: dict[str, dict[str, tron.Transfer]] = {}
+    for code in {coin_of(request) for request in requests}:
+        try:
+            by_coin[code] = await tron.incoming(
+                code, wallet, since_ms=since, api_key=api_key
+            )
+        except tron.TronError as exc:
+            # شبکه در دسترس نیست؛ هیچ پرداختی گم نمی‌شود، فقط این دور
+            # رد می‌شود و مسیر دستیِ ادمین سر جایش است
+            log.warning("خواندن تراکنش‌های %s ناموفق بود: %s", code, exc)
 
     approved = 0
     for request in requests:
+        transfers = by_coin.get(coin_of(request))
+        if transfers is None:
+            continue
         transfer = await check_one(request, transfers)
         if transfer is None:
             continue
@@ -185,7 +201,7 @@ async def run_once(*, notifier=None) -> int:
             event="payment_auto",
             detail=(
                 f"درخواست #{request.id} با تأیید خودکار بلاک‌چین فعال شد "
-                f"({transfer.amount} USDT)"
+                f"({transfer.amount} {transfer.symbol})"
             ),
         )
         if notifier is not None:
@@ -210,7 +226,7 @@ async def verify_now(request_id: int) -> str:
         if (
             request is None
             or request.status != PaymentRequest.STATUS_PENDING
-            or request.pay_method != payments.METHOD_USDT
+            or request.pay_method not in payments.CRYPTO_METHODS
             or not request.tx_hash
         ):
             return ""
@@ -223,7 +239,8 @@ async def verify_now(request_id: int) -> str:
     from telkap.config import get_settings
 
     try:
-        transfers = await tron.incoming_usdt(
+        transfers = await tron.incoming(
+            coin_of(request),
             wallet,
             since_ms=_since(request),
             api_key=getattr(get_settings(), "tron_api_key", "") or "",
@@ -245,7 +262,7 @@ async def verify_now(request_id: int) -> str:
         event="payment_auto",
         detail=(
             f"درخواست #{result.id} با تأیید خودکار بلاک‌چین فعال شد "
-            f"({transfer.amount} USDT)"
+            f"({transfer.amount} {transfer.symbol})"
         ),
     )
     return _message(result, sub, transfer)
@@ -263,7 +280,8 @@ def _message(request: PaymentRequest, sub, transfer: tron.Transfer) -> str:
     lines = [
         "✅ <b>پرداخت شما تأیید شد.</b>",
         "",
-        f"مبلغ دریافتی: <b>{crypto.format_usdt(transfer.amount)} USDT</b>",
+        f"مبلغ دریافتی: <b>{crypto.format_amount(transfer.amount)} "
+        f"{transfer.symbol or 'USDT'}</b>",
         f"کد پیگیری: <code>{request.id}</code>",
     ]
     if sub is not None:
