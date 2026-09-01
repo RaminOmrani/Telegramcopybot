@@ -29,13 +29,13 @@ from telkap.services import (
     credits,
     health,
     limits,
+    moderation,
     referral,
     reseller,
     roles,
     subscription,
     wallet,
 )
-from telkap.services.userbot import manager
 from telkap.texts import fa_num
 
 log = logging.getLogger(__name__)
@@ -510,24 +510,6 @@ async def cb_revoke(call: CallbackQuery) -> None:
 
 
 # ------------------------------------------------------------ مسدودسازی
-async def _set_ban(user_id: int, banning: bool) -> bool:
-    async with get_session() as db:
-        user = await db.get(User, user_id)
-        if user is None:
-            return False
-        user.is_banned = banning
-        if banning:
-            rows = await db.execute(select(Task).where(Task.user_id == user_id))
-            for task in rows.scalars():
-                task.enabled = False
-        await db.commit()
-    if banning:
-        await manager.stop_user(user_id)
-    else:
-        await manager.reload_user(user_id)
-    return True
-
-
 @router.callback_query(F.data.startswith("admu:ban:"))
 @router.callback_query(F.data.startswith("admu:unban:"))
 async def cb_ban(call: CallbackQuery) -> None:
@@ -535,7 +517,7 @@ async def cb_ban(call: CallbackQuery) -> None:
         return
     action, uid, _arg, flt, page = _parse(call.data)
     banning = action == "ban"
-    if not await _set_ban(uid, banning):
+    if not await moderation.set_ban(uid, banning, admin_id=call.from_user.id):
         await call.answer("کاربر پیدا نشد.", show_alert=True)
         return
     await call.answer("🚫 مسدود شد. کارهایش هم متوقف شد." if banning else "✅ آزاد شد.")

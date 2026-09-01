@@ -181,19 +181,62 @@ def test_every_page_but_the_gate_needs_a_session():
         "/payments/{id}/reject",
         "/receipt/{id}",
         "/users",
+        "/users/{id}",
+        "/users/{id}/grant",
+        "/users/{id}/days",
+        "/users/{id}/ban",
+        "/users/{id}/revoke",
+        "/tasks",
+        "/tasks/{id}/toggle",
+        "/settings",
+        "/settings/card",
+        "/settings/crypto",
+        "/settings/autorate",
+        "/settings/ratenow",
+        "/settings/zarinpal",
         "/logout",
     }
 
 
 def test_changing_state_is_never_a_get():
-    """تأیید رسید با باز کردن یک لینک نباید ممکن باشد."""
+    """<b>هیچ کارِ اثرگذاری نباید با باز کردن یک لینک انجام شود.</b>
+
+    درخواست GET را هر چیزی می‌سازد — یک تصویر در یک صفحه‌ی دیگر، یک
+    پیش‌نمایش لینک، خزنده‌ی مرورگر. اگر تأیید رسید یا مسدود کردن کاربر
+    با GET ممکن باشد، هیچ‌کدام از آن‌ها لازم نیست عمدی باشد.
+
+    فهرست پایین صریح است تا مسیرِ اثرگذارِ تازه‌ای که یادش برود POST
+    باشد، همین‌جا گیر بیفتد نه بعداً.
+    """
+    from telkap.web import server
+
+    app = server.build_app(bot=None)
+    changing = (
+        "/approve", "/reject", "/grant", "/days", "/ban", "/revoke", "/toggle",
+    )
+    for route in app.router.routes():
+        path = route.resource.canonical if route.resource else ""
+        if path.endswith(changing) or path.startswith("/settings/"):
+            assert route.method == "POST", path
+
+
+def test_every_writing_route_checks_the_csrf_token():
+    """<b>توکنِ جاافتاده هیچ نشانه‌ای ندارد.</b>
+
+    فرم بدون آن کاملاً درست کار می‌کند — تا روزی که سایتی دیگر از
+    مرورگرِ ادمینِ واردشده همان درخواست را بفرستد. تنها راهِ گرفتنش
+    شمردنِ خودِ مسیرهاست.
+    """
+    import inspect
+
     from telkap.web import server
 
     app = server.build_app(bot=None)
     for route in app.router.routes():
-        path = route.resource.canonical if route.resource else ""
-        if path.endswith(("/approve", "/reject")):
-            assert route.method == "POST", path
+        if route.method != "POST":
+            continue
+        source = inspect.getsource(route.handler)
+        assert "_guard_post" in source, route.resource.canonical
 
 
 # ------------------------------------- یکی بودن متن ربات و پنل
@@ -214,3 +257,24 @@ async def test_both_the_bot_and_the_panel_send_the_same_notice(tmp_path, monkeyp
         assert "5" in refusal          # کد پیگیری در پیام هست
     finally:
         await db_module.close_db()
+
+
+def test_a_hash_in_a_flash_message_survives_the_redirect():
+    """<b>«#» در نشانی، شروعِ قطعه است — نه یک نویسه‌ی معمولی.</b>
+
+    پیام‌های این پنل «#» دارند: «رسید #12 تأیید شد». بدون کدگذاری،
+    مرورگر از «#» به بعد را دور می‌ریزد و اصلاً به سرور نمی‌فرستد؛
+    ادمین پیامِ بریده‌ی «رسید » را می‌دید و نمی‌فهمید چه شد.
+
+    «&» هم همین‌طور: پیام را به دو پارامتر می‌شکند.
+    """
+    from urllib.parse import parse_qs, urlparse
+
+    from telkap.web import server
+
+    for message in ["رسید #12 تأیید شد.", "الف & ب", "کار #3 خاموش شد."]:
+        found = server._back("/payments", ok=message)
+        parts = urlparse(found.location)
+
+        assert parts.fragment == ""          # چیزی به قطعه نرفته
+        assert parse_qs(parts.query)["ok"] == [message]
