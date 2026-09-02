@@ -23,7 +23,7 @@ from telkap.keyboards import (
 )
 from telkap.models import DailyStat, Destination, PendingPost, Task, User
 from telkap.plans import FEAT_PRIVATE
-from telkap.services import cache, feeds, pending
+from telkap.services import cache, diagnose, feeds, pending
 from telkap.services.copier import today_key
 from telkap.services.defaults import merged_settings
 from telkap.services.feeds import FeedError
@@ -160,6 +160,70 @@ async def cb_open(call: CallbackQuery) -> None:
     task_id = int(call.data.split(":")[2])
     await call.answer()
     await show_task(call.message, task_id, edit=True)
+
+
+@router.callback_query(F.data.startswith("task:why:"))
+async def cb_why(call: CallbackQuery) -> None:
+    """چرا این کار پست‌ها را نمی‌زند.
+
+    <b>چرا این صفحه لازم بود.</b> دلیلِ رد شدن هر پست از قبل ثبت
+    می‌شد، ولی هیچ‌جا دیده نمی‌شد. کاربر فقط می‌دید «نزد» — و برای
+    محصولی که وعده‌اش «چیزی را از دست نمی‌دهید» است، پستِ نرسیده‌ی
+    بی‌توضیح یعنی اعتمادِ رفته، حتی وقتی رد شدنش خواسته‌ی خودش بوده.
+    """
+    task_id = int(call.data.split(":")[2])
+    async with get_session() as db:
+        task = await db.get(Task, task_id)
+        if task is None or task.user_id != call.from_user.id:
+            await call.answer("دسترسی ندارید", show_alert=True)
+            return
+
+    await call.answer()
+    report = await diagnose.task_report(task_id)
+    if report is None:
+        await call.message.answer("این کار پیدا نشد.")
+        return
+
+    lines = [f"🔍 <b>وضعیت «{report.title}»</b>", ""]
+
+    if report.problems:
+        lines.append("⚠️ <b>چیزهایی که جلوی کار را گرفته‌اند:</b>")
+        lines += [f"• {item}" for item in report.problems]
+        lines.append("")
+    elif report.enabled:
+        lines += ["✅ <b>همه‌چیز سالم است.</b>", ""]
+
+    lines += [
+        f"امروز: <b>{fa_num(report.sent)}</b> کپی، "
+        f"<b>{fa_num(report.skipped)}</b> رد",
+        f"از ابتدا: <b>{fa_num(report.total_copied)}</b> پست",
+    ]
+    if report.quota_left is not None:
+        lines.append(f"سهمیه‌ی باقی‌مانده: <b>{fa_num(report.quota_left)}</b> پیام")
+    if report.subscription_days:
+        lines.append(f"اشتراک: <b>{fa_num(report.subscription_days)}</b> روز مانده")
+
+    if report.reasons:
+        lines += ["", f"<b>چرا پست‌ها رد شدند</b> — {fa_num(24)} ساعت گذشته:"]
+        for reason in report.reasons:
+            lines.append(f"• {reason.detail} — <b>{fa_num(reason.count)}</b> بار")
+            if reason.advice:
+                lines.append(f"  <i>{reason.advice}</i>")
+    elif not report.problems:
+        lines += [
+            "",
+            "<i>در ۲۴ ساعت گذشته هیچ پستی رد نشده. اگر پستی از مبدا "
+            "نیامده، یعنی کانال مبدا چیزی منتشر نکرده.</i>",
+        ]
+
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="📈 آمار روزانه", callback_data=f"task:stats:{task_id}"))
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"task:open:{task_id}"))
+    text = "\n".join(lines)
+    try:
+        await call.message.edit_text(text, reply_markup=kb.as_markup())
+    except Exception:
+        await call.message.answer(text, reply_markup=kb.as_markup())
 
 
 @router.callback_query(F.data.startswith("task:stats:"))

@@ -4,6 +4,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
+import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import timedelta
@@ -68,6 +69,15 @@ from telkap.services.transform import (
 from telkap.services.watermark import apply_watermark, watermark_ready
 
 log = logging.getLogger(__name__)
+
+# تایمر آلبومِ تلethon نیم ثانیه است. چهار ثانیه یعنی هم فرصت کافی
+# برای رسیدن پیام‌های کندِ آلبوم، هم آن‌قدر کوتاه که کپی «لحظه‌ای»
+# بماند. کمترش یعنی آلبوم دوتکه می‌شود، بیشترش یعنی تأخیر بی‌دلیل.
+ALBUM_SAFETY_SECONDS = 4.0
+
+# چقدر یادمان بماند که هندلر آلبوم یک گروه را گرفته. فقط باید از
+# ALBUM_SAFETY_SECONDS بیشتر باشد؛ بقیه‌اش حافظه‌ی بی‌فایده است.
+ALBUM_CLAIM_MEMORY_SECONDS = 60.0
 
 # فاصله‌ی تلاش‌های مجدد بر حسب ثانیه (۱ دقیقه، ۵ دقیقه، ۱۵ دقیقه، ۱ ساعت)
 RETRY_BACKOFF = (60, 300, 900, 3600)
@@ -305,19 +315,99 @@ class Copier:
         self._quota_day: str = ""
         # کاربرانی که هشدار تمام شدن اعتبار واترمارک گرفته‌اند
         self._credit_warned: set[int] = set()
+        # تور ایمنی آلبوم — پایین کلاس توضیح داده شده
+        self._album_buffer: dict[tuple, list] = {}
+        self._album_timers: dict[tuple, asyncio.Task] = {}
+        self._album_claimed: dict[tuple, float] = {}
 
     # ------------------------------------------------------------- هندلرها
     def make_new_message_handler(self, user_id: int):
         async def handler(event):
-            if getattr(event, "grouped_id", None):
-                return  # آلبوم‌ها را هندلر مخصوص خودشان می‌گیرد
-            await self._dispatch(user_id, event.chat_id, [event.message])
+            message = event.message
+            # از خودِ پیام خوانده می‌شود، نه از رویداد. تلethon صفت‌های
+            # ناشناخته‌ی رویداد را به پیام واگذار می‌کند، ولی تکیه بر آن
+            # رفتارِ ضمنی یعنی اگر روزی عوض شود، هر آلبوم دوباره فرستاده
+            # می‌شود — بی‌آنکه چیزی خطا بدهد.
+            group = getattr(message, "grouped_id", None)
+            if group:
+                # آلبوم را هندلر مخصوصش می‌گیرد — ولی اگر نگرفت، اینجا
+                # می‌ماند. توضیح کامل بالای _album_safety_net.
+                await self._buffer_album(user_id, event.chat_id, group, message)
+                return
+            await self._dispatch(user_id, event.chat_id, [message])
         return handler
 
     def make_album_handler(self, user_id: int):
         async def handler(event):
+            first = event.messages[0] if event.messages else None
+            group = getattr(first, "grouped_id", None)
+            if group is not None:
+                self._album_claimed[(user_id, event.chat_id, group)] = time.monotonic()
             await self._dispatch(user_id, event.chat_id, list(event.messages))
         return handler
+
+    # ----------------------------------------------------- تورِ ایمنی آلبوم
+    #
+    # <b>چرا این هست.</b> پیام‌های یک آلبوم جدا جدا می‌رسند و تلethon
+    # آن‌ها را با یک تایمر نیم‌ثانیه‌ای کنار هم می‌گذارد. خودِ نویسنده‌ی
+    # تلethon در کد نوشته «این یک هک کثیف است»: کارِ تحویل با
+    # <code>create_task</code> رها می‌شود و کلاینت را با weakref نگه
+    # می‌دارد که خودش می‌گوید «ممکن است مرده باشد».
+    #
+    # تا امروز هندلر پیام تازه، هر پیامِ گروه‌دار را دور می‌ریخت. یعنی
+    # برای آلبوم‌ها <b>یک راه</b> بیشتر نبود، و آن یک راه هم تضمینی
+    # نداشت: قطعیِ لحظه‌ای، وصل شدن دوباره، یا حتی زمان‌بندی بد و کل
+    # آلبوم برای همیشه گم می‌شد — بی‌هیچ خطایی، بی‌هیچ ردی در لاگ.
+    #
+    # برای محصولی که وعده‌اش «چیزی را از دست نمی‌دهید» است، این
+    # پذیرفتنی نیست. حالا پیام‌های گروه‌دار چند ثانیه نگه داشته می‌شوند:
+    # اگر هندلر آلبوم کارش را کرد، دور ریخته می‌شوند؛ اگر نکرد، خودمان
+    # می‌فرستیمشان.
+
+    async def _buffer_album(self, user_id: int, chat_id: int, group, message) -> None:
+        key = (user_id, chat_id, group)
+        bucket = self._album_buffer.setdefault(key, [])
+        if any(m.id == message.id for m in bucket):
+            return
+        bucket.append(message)
+        if key not in self._album_timers:
+            self._album_timers[key] = asyncio.create_task(self._album_safety_net(key))
+
+    async def _album_safety_net(self, key) -> None:
+        """اگر هندلر آلبوم نیامد، خودمان می‌فرستیم."""
+        try:
+            await asyncio.sleep(ALBUM_SAFETY_SECONDS)
+            messages = self._album_buffer.pop(key, [])
+            claimed = self._album_claimed.pop(key, None)
+            if claimed is not None or not messages:
+                return
+
+            user_id, chat_id, group = key
+            log.warning(
+                "هندلر آلبوم برای گروه %s نیامد؛ %d پیام با تور ایمنی فرستاده شد",
+                group, len(messages),
+            )
+            messages.sort(key=lambda m: m.id)
+            await self._dispatch(user_id, chat_id, messages)
+        except asyncio.CancelledError:
+            raise
+        except Exception:
+            log.exception("تور ایمنی آلبوم با خطا مواجه شد")
+        finally:
+            self._album_timers.pop(key, None)
+            self._album_buffer.pop(key, None)
+            self._prune_album_state()
+
+    def _prune_album_state(self) -> None:
+        """نشانه‌های قدیمی را پاک می‌کند تا حافظه بی‌نهایت رشد نکند."""
+        now = time.monotonic()
+        stale = [
+            key
+            for key, when in self._album_claimed.items()
+            if now - when > ALBUM_CLAIM_MEMORY_SECONDS
+        ]
+        for key in stale:
+            self._album_claimed.pop(key, None)
 
     def make_edit_handler(self, user_id: int):
         async def handler(event):

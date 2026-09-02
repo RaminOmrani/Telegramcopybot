@@ -171,6 +171,14 @@ def task_menu(
         )
 
     kb.row(_divider("ابزارها"))
+    # «چرا نزد» در هر دو حالت ساده و پیشرفته هست، عمداً.
+    #
+    # این گزینه‌ی پیشرفته نیست؛ جوابِ سؤالی است که همه می‌پرسند. کاربری
+    # که پستِ نرسیده ببیند و توضیحی نگیرد به ربات اعتماد نمی‌کند، و
+    # پنهان کردنش پشت «گزینه‌های پیشرفته» یعنی همان کاربر پیدایش نکند.
+    kb.row(
+        InlineKeyboardButton(text="🔍 چرا پستی نزد؟", callback_data=f"task:why:{task.id}")
+    )
     kb.row(
         InlineKeyboardButton(text="🧰 قالب آماده", callback_data=f"tpl:list:{task.id}"),
         InlineKeyboardButton(text="🧪 تست تنظیمات", callback_data=f"task:test:{task.id}"),

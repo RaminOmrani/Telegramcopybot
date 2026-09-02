@@ -1,6 +1,7 @@
 """تست موتور کپی با کلاینت و منیجر ساختگی."""
 from __future__ import annotations
 
+import asyncio
 from dataclasses import dataclass, field
 
 import pytest
@@ -316,3 +317,159 @@ async def test_hourly_quota_blocks_extra_posts(tmp_path, monkeypatch):
         hourly_quota.forget(task_id)
     finally:
         await db_module.close_db()
+
+
+# ── تور ایمنی آلبوم ──────────────────────────────────────────────────
+#
+# پیام‌های یک آلبوم جدا جدا می‌رسند و تلethon آن‌ها را با یک تایمر
+# نیم‌ثانیه‌ای کنار هم می‌گذارد. خودِ نویسنده‌ی تلethon در کد نوشته
+# «این یک هک کثیف است»: کار تحویل با create_task رها می‌شود و کلاینت
+# را با weakref نگه می‌دارد که خودش می‌گوید «ممکن است مرده باشد».
+#
+# تا امروز هندلر پیام تازه هر پیامِ گروه‌دار را دور می‌ریخت، پس برای
+# آلبوم‌ها یک راه بیشتر نبود — و آن یک راه تضمینی نداشت.
+
+
+class _Msg:
+    def __init__(self, msg_id, group=None):
+        self.id = msg_id
+        self.grouped_id = group
+        self.message = ""
+
+
+class _Event:
+    """رویداد ساختگی؛ همان چیزهایی که هندلر می‌خواند.
+
+    عمداً <code>grouped_id</code> ندارد: هندلر باید آن را از خودِ پیام
+    بخواند، نه از رویداد. تکیه بر واگذاریِ ضمنیِ صفت‌ها در تلethon
+    یعنی اگر روزی عوض شود، هر آلبوم دوباره فرستاده می‌شود بی‌آنکه چیزی
+    خطا بدهد.
+    """
+
+    def __init__(self, chat_id, message=None, messages=None):
+        self.chat_id = chat_id
+        self.message = message
+        self.messages = messages or []
+
+
+def _copier(monkeypatch):
+    """یک Copier با _dispatch جایگزین‌شده تا فقط ببینیم چه رسید."""
+    from telkap.services.copier import Copier
+
+    copier = Copier(manager=None)
+    got = []
+
+    async def fake_dispatch(user_id, chat_id, messages):
+        got.append((user_id, chat_id, [m.id for m in messages]))
+
+    copier._dispatch = fake_dispatch
+    return copier, got
+
+
+@pytest.mark.asyncio
+async def test_a_lone_message_goes_straight_through(monkeypatch):
+    """پیام بدون گروه هیچ تأخیری نمی‌گیرد؛ کپی باید لحظه‌ای بماند."""
+    copier, got = _copier(monkeypatch)
+    handler = copier.make_new_message_handler(7)
+
+    await handler(_Event(-100, message=_Msg(5)))
+
+    assert got == [(7, -100, [5])]
+
+
+@pytest.mark.asyncio
+async def test_an_album_handled_normally_is_not_sent_twice(monkeypatch):
+    """<b>مسیر عادی: هندلر آلبوم کارش را می‌کند.</b>
+
+    تور ایمنی نباید همان آلبوم را دوباره بفرستد — پستِ تکراری در
+    کانال مشتری از پستِ نرسیده هم بدتر است.
+    """
+    from telkap.services import copier as copier_mod
+
+    monkeypatch.setattr(copier_mod, "ALBUM_SAFETY_SECONDS", 0.05)
+    copier, got = _copier(monkeypatch)
+    new_handler = copier.make_new_message_handler(7)
+    album_handler = copier.make_album_handler(7)
+
+    await new_handler(_Event(-100, message=_Msg(5, group=99)))
+    await new_handler(_Event(-100, message=_Msg(6, group=99)))
+    await album_handler(
+        _Event(-100, messages=[_Msg(5, group=99), _Msg(6, group=99)])
+    )
+    await asyncio.sleep(0.2)
+
+    assert got == [(7, -100, [5, 6])]
+
+
+@pytest.mark.asyncio
+async def test_an_album_the_handler_never_delivered_is_still_sent(monkeypatch):
+    """<b>همان باگی که پست‌ها را گم می‌کرد.</b>
+
+    اگر هندلر آلبوم نیاید — قطعیِ لحظه‌ای، وصل شدن دوباره، یا مردنِ
+    weakref — قبلاً کل آلبوم برای همیشه گم می‌شد، بی‌هیچ خطایی و
+    بی‌هیچ ردی در لاگ.
+    """
+    from telkap.services import copier as copier_mod
+
+    monkeypatch.setattr(copier_mod, "ALBUM_SAFETY_SECONDS", 0.05)
+    copier, got = _copier(monkeypatch)
+    new_handler = copier.make_new_message_handler(7)
+
+    await new_handler(_Event(-100, message=_Msg(6, group=99)))
+    await new_handler(_Event(-100, message=_Msg(5, group=99)))
+    await asyncio.sleep(0.2)
+
+    # مرتب‌شده بر اساس آیدی، وگرنه ترتیب آلبوم در مقصد به هم می‌ریزد
+    assert got == [(7, -100, [5, 6])]
+
+
+@pytest.mark.asyncio
+async def test_the_same_message_twice_is_only_kept_once(monkeypatch):
+    """تلگرام گاهی یک به‌روزرسانی را دوباره می‌فرستد."""
+    from telkap.services import copier as copier_mod
+
+    monkeypatch.setattr(copier_mod, "ALBUM_SAFETY_SECONDS", 0.05)
+    copier, got = _copier(monkeypatch)
+    handler = copier.make_new_message_handler(7)
+
+    await handler(_Event(-100, message=_Msg(5, group=99)))
+    await handler(_Event(-100, message=_Msg(5, group=99)))
+    await asyncio.sleep(0.2)
+
+    assert got == [(7, -100, [5])]
+
+
+@pytest.mark.asyncio
+async def test_two_albums_at_once_do_not_mix(monkeypatch):
+    """دو کانال، دو آلبوم، در یک لحظه — نباید در هم بروند."""
+    from telkap.services import copier as copier_mod
+
+    monkeypatch.setattr(copier_mod, "ALBUM_SAFETY_SECONDS", 0.05)
+    copier, got = _copier(monkeypatch)
+    handler = copier.make_new_message_handler(7)
+
+    await handler(_Event(-100, message=_Msg(1, group=11)))
+    await handler(_Event(-200, message=_Msg(2, group=22)))
+    await handler(_Event(-100, message=_Msg(3, group=11)))
+    await asyncio.sleep(0.2)
+
+    assert sorted(got) == [(7, -200, [2]), (7, -100, [1, 3])] or sorted(got) == [
+        (7, -100, [1, 3]),
+        (7, -200, [2]),
+    ]
+
+
+@pytest.mark.asyncio
+async def test_nothing_is_left_behind_in_memory(monkeypatch):
+    """بافر و تایمر باید پاک شوند، وگرنه حافظه بی‌نهایت رشد می‌کند."""
+    from telkap.services import copier as copier_mod
+
+    monkeypatch.setattr(copier_mod, "ALBUM_SAFETY_SECONDS", 0.05)
+    copier, _got = _copier(monkeypatch)
+    handler = copier.make_new_message_handler(7)
+
+    await handler(_Event(-100, message=_Msg(5, group=99)))
+    await asyncio.sleep(0.2)
+
+    assert copier._album_buffer == {}
+    assert copier._album_timers == {}
