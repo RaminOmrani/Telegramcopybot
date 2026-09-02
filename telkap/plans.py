@@ -1,7 +1,7 @@
 """تعریف پلن‌های اشتراک، سطح دسترسی هر پلن و بسته‌های اعتبار جداگانه."""
 from __future__ import annotations
 
-from dataclasses import dataclass
+from dataclasses import dataclass, replace
 
 # قابلیت‌هایی که به پلن وابسته‌اند
 FEAT_PUBLIC = "public_source"      # کپی از کانال عمومی
@@ -230,17 +230,76 @@ CUSTOM = Plan(
     fair_use_daily=10_000,
 )
 
+# ── طرح‌های بلندمدت ──────────────────────────────────────────────────
+#
+# <b>سهمیه‌ها با مدت بزرگ می‌شوند، وگرنه طرح بلندمدت یک تله است.</b>
+# «۲۰٬۰۰۰ پیام» برای یک ماه سخاوتمندانه است و برای یک سال تقریباً هیچ.
+# اگر ضرب نشوند، مشتری‌ای که یک‌سال خریده ماه دوم به دیوار می‌خورد و
+# حق هم دارد که احساس فریب کند.
+#
+# <b>تخفیف پلکانی.</b> هرچه دوره بلندتر، تخفیف بیشتر: پول جلوتر
+# می‌آید و مشتری قفل می‌شود. درصدها روی قیمت ماهانه‌ی همان خانواده
+# حساب شده‌اند.
+
+
+def _longer(base: Plan, *, code: str, months: int, days: int, price: int) -> Plan:
+    """نسخه‌ی بلندمدتِ یک طرح، با سهمیه‌های ضرب‌شده در تعداد ماه."""
+    def grow(value: int) -> int:
+        # نامحدود ضرب نمی‌شود؛ نامحدودِ ضرب‌شده هنوز نامحدود است و
+        # عددش فقط بی‌معنی می‌شود.
+        return value if value == UNLIMITED else value * months
+
+    saved = 100 - round(price * 100 / (base.price_toman * months))
+    return replace(
+        base,
+        code=code,
+        title=f"اشتراک {_fa(months)} ماهه" if base is MONTH else f"طرح اختصاصی {_fa(months)} ماهه",
+        days=days,
+        price_toman=price,
+        tagline=f"{_fa(saved)}٪ ارزان‌تر از خرید ماه‌به‌ماه",
+        period_messages=grow(base.period_messages),
+        watermark_quota=grow(base.watermark_quota),
+        history_quota=grow(base.history_quota),
+    )
+
+
+MONTH_2 = _longer(MONTH, code="month2", months=2, days=60, price=799_000)
+MONTH_3 = _longer(MONTH, code="month3", months=3, days=90, price=1_149_000)
+MONTH_6 = _longer(MONTH, code="month6", months=6, days=180, price=2_149_000)
+YEAR = _longer(MONTH, code="year", months=12, days=365, price=3_899_000)
+
+CUSTOM_2 = _longer(CUSTOM, code="custom2", months=2, days=60, price=1_659_000)
+CUSTOM_3 = _longer(CUSTOM, code="custom3", months=3, days=90, price=2_379_000)
+CUSTOM_6 = _longer(CUSTOM, code="custom6", months=6, days=180, price=4_429_000)
+CUSTOM_YEAR = _longer(CUSTOM, code="custom_year", months=12, days=365, price=8_119_000)
+
 # مقادیر کارخانه‌ای؛ هرگز تغییر نمی‌کنند و «بازگردانی به پیش‌فرض» از
 # همین‌ها می‌خواند.
 DEFAULT_PLANS: dict[str, Plan] = {
-    p.code: p for p in (TRIAL, WEEK, TWO_WEEK, MONTH, CUSTOM)
+    p.code: p
+    for p in (
+        TRIAL, WEEK, TWO_WEEK, MONTH, CUSTOM,
+        MONTH_2, MONTH_3, MONTH_6, YEAR,
+        CUSTOM_2, CUSTOM_3, CUSTOM_6, CUSTOM_YEAR,
+    )
 }
 
 # طرح‌های زنده. هرچه ادمین از پنل عوض کند `planstore` اینجا می‌نشاند، پس
 # همه‌ی مصرف‌کننده‌ها باید از همین بخوانند نه از ثابت‌های بالا.
 PLANS: dict[str, Plan] = dict(DEFAULT_PLANS)
 
+# صفحه‌ی اول عمداً کوتاه می‌ماند.
+#
+# سیزده طرح در یک صفحه یعنی هیچ‌کدام دیده نمی‌شوند. چهار طرحِ کوتاه
+# اینجا می‌مانند و بلندمدت‌ها پشت یک دکمه‌ی «تا ۲۴٪ تخفیف» — که خودش
+# یک لحظه‌ی فروش است، نه فقط یک فهرست.
 PURCHASABLE_CODES: tuple[str, ...] = (WEEK.code, TWO_WEEK.code, MONTH.code, CUSTOM.code)
+
+LONG_TERM_CODES: tuple[str, ...] = (
+    MONTH_2.code, MONTH_3.code, MONTH_6.code, YEAR.code,
+    CUSTOM_2.code, CUSTOM_3.code, CUSTOM_6.code, CUSTOM_YEAR.code,
+)
+
 POPULAR_CODE = TWO_WEEK.code
 
 
@@ -256,6 +315,21 @@ def all_plans() -> dict[str, Plan]:
 def purchasable() -> tuple[Plan, ...]:
     """طرح‌های قابل خرید، به ترتیب نمایش."""
     return tuple(PLANS[code] for code in PURCHASABLE_CODES if code in PLANS)
+
+
+def long_term() -> tuple[Plan, ...]:
+    """طرح‌های بلندمدت، به ترتیب نمایش."""
+    return tuple(PLANS[code] for code in LONG_TERM_CODES if code in PLANS)
+
+
+def all_purchasable() -> tuple[Plan, ...]:
+    """هرچه می‌شود خرید — کوتاه و بلند.
+
+    جاهایی لازم است که باید <b>همه</b>ی کدهای معتبر را بشناسند، مثل
+    بررسی درخواست پرداخت؛ آنجا اگر فقط فهرست صفحه‌ی اول را ببینند،
+    خریدِ طرح بلندمدت رد می‌شود.
+    """
+    return purchasable() + long_term()
 
 
 def credit_price(kind: str, quantity: int) -> int:

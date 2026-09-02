@@ -367,6 +367,10 @@ class PaymentRequest(Base):
 
     KIND_PLAN = "plan"
     KIND_CREDIT = "credit"
+    # شارژ کیف پول با مبلغ دلخواه. جدا از دو تای بالا، چون نه طرحی
+    # فعال می‌کند نه سهمیه‌ای — فقط موجودی را بالا می‌برد تا بعداً
+    # هرچه خواست بخرد.
+    KIND_TOPUP = "topup"
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)

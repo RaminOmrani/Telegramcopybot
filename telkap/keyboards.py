@@ -17,6 +17,7 @@ from telkap.plans import (
     POPULAR_CODE,
     credit_price,
     credit_unit,
+    long_term,
     purchasable,
     toman,
 )
@@ -675,10 +676,34 @@ def plans_menu() -> InlineKeyboardMarkup:
                 callback_data=f"plan:{plan.code}",
             )
         )
+    # دکمه‌ی بلندمدت خودش یک لحظه‌ی فروش است، نه فقط یک فهرست: عدد
+    # تخفیف روی خودِ دکمه می‌نشیند تا کسی که فقط طرح ماهانه را
+    # می‌خواست، دلیلی برای نگاه کردن داشته باشد.
+    kb.row(
+        InlineKeyboardButton(
+            text=f"⏳ اشتراک بلندمدت — تا {fa_num(24)}٪ تخفیف",
+            callback_data="plan:long",
+        )
+    )
     kb.row(
         InlineKeyboardButton(text="📊 مقایسه‌ی طرح‌ها", callback_data="cmp:plans"),
         InlineKeyboardButton(text="🎫 خرید اعتبار", callback_data="credit:menu"),
     )
+    return kb.as_markup()
+
+
+def long_term_menu() -> InlineKeyboardMarkup:
+    """طرح‌های بلندمدت، جدا از خانواده‌ی معمولی و اختصاصی."""
+    kb = InlineKeyboardBuilder()
+    for plan in long_term():
+        icon = PLAN_ICONS.get(plan.code, "🗓")
+        kb.row(
+            InlineKeyboardButton(
+                text=f"{icon} {plan.title} · {plan.price_label}",
+                callback_data=f"plan:{plan.code}",
+            )
+        )
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت به طرح‌ها", callback_data="credit:plans"))
     return kb.as_markup()
 
 

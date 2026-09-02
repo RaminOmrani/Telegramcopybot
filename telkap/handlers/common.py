@@ -41,6 +41,7 @@ class Flow(StatesGroup):
     credit_amount = State()
     coupon_code = State()
     gift_code = State()
+    topup_amount = State()
     admin_gift = State()
     dest_add = State()
     dest_override = State()

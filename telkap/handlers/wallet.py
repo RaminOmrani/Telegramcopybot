@@ -12,9 +12,9 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import select
 
 from telkap.db import get_session
-from telkap.handlers.common import Flow, get_or_create_user
+from telkap.handlers.common import Flow, get_or_create_user, parse_int
 from telkap.keyboards import menu_texts
-from telkap.models import PaymentRequest
+from telkap.models import PaymentRequest, User
 from telkap.plans import toman
 from telkap.services import (
     giftcodes,
@@ -38,6 +38,9 @@ def _menu(
     kb = InlineKeyboardBuilder()
     if is_reseller:
         kb.row(InlineKeyboardButton(text="🏪 پنل نمایندگی", callback_data="rs:home"))
+    # شارژ اولین گزینه است، چون تنها کاری است که موجودی را زیاد می‌کند
+    # و بقیه‌ی این صفحه بدون موجودی بی‌معنی است.
+    kb.row(InlineKeyboardButton(text="➕ شارژ کیف پول", callback_data="wal:topup"))
     kb.row(InlineKeyboardButton(text="🎁 دعوت دوستان", callback_data="wal:invite"))
     if has_history:
         kb.row(InlineKeyboardButton(text="📜 تاریخچه تراکنش‌ها", callback_data="wal:history"))
@@ -163,6 +166,95 @@ async def cb_toggle_renew(call: CallbackQuery) -> None:
         await call.message.edit_text(text, reply_markup=kb.as_markup())
     except Exception:
         log.debug("به‌روزرسانی کیف پول ناموفق بود", exc_info=True)
+
+
+TOPUP_PRESETS = (200_000, 500_000, 1_000_000, 2_000_000)
+
+
+@router.callback_query(F.data == "wal:topup")
+async def cb_topup(call: CallbackQuery) -> None:
+    """شارژ کیف پول با مبلغ دلخواه.
+
+    <b>چرا هم مبلغ آماده و هم دلخواه.</b> بیشتر مردم یکی از چند عدد
+    گرد را می‌زنند و کارشان تمام است؛ ولی نماینده‌ای که می‌خواهد یک‌جا
+    ده میلیون بگذارد، با فهرست ثابت به دیوار می‌خورد.
+    """
+    await call.answer()
+    kb = InlineKeyboardBuilder()
+    for amount in TOPUP_PRESETS:
+        kb.row(
+            InlineKeyboardButton(
+                text=f"➕ {toman(amount)}", callback_data=f"wal:top:{amount}"
+            )
+        )
+    kb.row(InlineKeyboardButton(text="✏️ مبلغ دلخواه", callback_data="wal:topask"))
+    kb.row(InlineKeyboardButton(text="🔙 کیف پول", callback_data="wal:home"))
+    await call.message.edit_text(
+        "➕ <b>شارژ کیف پول</b>\n"
+        f"{RULE}\n"
+        "موجودی کیف پول برای خرید هر طرح یا اعتباری خرج می‌شود، و "
+        "انقضا ندارد.\n\n"
+        f"<i>کمترین مبلغ {toman(payments.MIN_TOPUP_TOMAN)} است.</i>",
+        reply_markup=kb.as_markup(),
+    )
+
+
+@router.callback_query(F.data == "wal:topask")
+async def cb_topup_ask(call: CallbackQuery, state: FSMContext) -> None:
+    await call.answer()
+    await state.set_state(Flow.topup_amount)
+    await call.message.answer(
+        "✏️ مبلغ مورد نظرتان را به <b>تومان</b> بفرستید.\n\n"
+        f"<i>بین {toman(payments.MIN_TOPUP_TOMAN)} و "
+        f"{toman(payments.MAX_TOPUP_TOMAN)}. ارقام فارسی هم قبول است.</i>\n\n"
+        "انصراف: /cancel"
+    )
+
+
+@router.message(Flow.topup_amount)
+async def got_topup_amount(message: Message, state: FSMContext) -> None:
+    amount = parse_int(message.text or "")
+    if amount is None or not (
+        payments.MIN_TOPUP_TOMAN <= amount <= payments.MAX_TOPUP_TOMAN
+    ):
+        await message.answer(
+            f"⚠️ مبلغ باید عددی بین {toman(payments.MIN_TOPUP_TOMAN)} و "
+            f"{toman(payments.MAX_TOPUP_TOMAN)} باشد.\n\nانصراف: /cancel"
+        )
+        return
+    await state.clear()
+    await _start_topup(message, message.from_user.id, amount)
+
+
+@router.callback_query(F.data.startswith("wal:top:"))
+async def cb_topup_preset(call: CallbackQuery) -> None:
+    await call.answer()
+    await _start_topup(call.message, call.from_user.id, int(call.data.split(":")[2]))
+
+
+async def _start_topup(target: Message, user_id: int, amount: int) -> None:
+    """درخواست شارژ را می‌سازد و کاربر را به همان صفحه‌ی پرداخت می‌برد.
+
+    <b>عمداً همان مسیر خرید طرح.</b> کارت، تتر، ترون و درگاه همه از
+    یک جا می‌آیند؛ ساختن مسیر دوم یعنی روزی یکی‌شان اصلاح می‌شود و
+    دیگری نه.
+    """
+    from telkap.handlers.billing import start_payment
+
+    await get_or_create_user_by_id(user_id)
+    request = await payments.create_topup(user_id, amount)
+    if request is None:
+        await target.answer("⚠️ این مبلغ پذیرفته نشد.")
+        return
+    await start_payment(target, request)
+
+
+async def get_or_create_user_by_id(user_id: int) -> None:
+    """کاربر باید وجود داشته باشد تا کیف پول برایش معنا پیدا کند."""
+    async with get_session() as db:
+        if await db.get(User, user_id) is None:
+            db.add(User(id=user_id))
+            await db.commit()
 
 
 @router.callback_query(F.data == "wal:gift")

@@ -24,6 +24,7 @@ from telkap.keyboards import (
     PLAN_ICONS,
     credit_packs_menu,
     credits_menu,
+    long_term_menu,
     menu_texts,
     plans_menu,
 )
@@ -37,6 +38,7 @@ from telkap.plans import (
     credit_price,
     credit_unit,
     get_plan,
+    long_term,
     purchasable,
     toman,
 )
@@ -179,6 +181,36 @@ async def _quote_screen(target: Message, user_id: int, plan_code: str, coupon: s
     await target.answer("\n".join(lines), reply_markup=kb.as_markup())
 
 
+@router.callback_query(F.data == "plan:long")
+async def cb_long_term(call: CallbackQuery) -> None:
+    """طرح‌های بلندمدت.
+
+    <b>چرا صفحه‌ی جدا.</b> سیزده طرح در یک فهرست یعنی هیچ‌کدام دیده
+    نمی‌شوند. اینجا فقط بلندمدت‌هاست، با صرفه‌جویی هرکدام کنارش — که
+    همان چیزی است که خرید بلندمدت را توجیه می‌کند.
+    """
+    await call.answer()
+    lines = [
+        "⏳ <b>اشتراک بلندمدت</b>",
+        RULE,
+        "<i>هرچه دوره بلندتر، ماهانه ارزان‌تر. سهمیه‌ها هم به همان نسبت "
+        "بزرگ‌تر می‌شوند — یعنی طرح یک‌ساله واقعاً دوازده برابر طرح "
+        "ماهانه ظرفیت دارد، نه فقط دوازده برابر مدت.</i>",
+        "",
+    ]
+    for plan in long_term():
+        monthly = plan.price_toman // max(1, round(plan.days / 30))
+        lines.append(
+            f"🗓 <b>{plan.title}</b> — {plan.price_label}\n"
+            f"   ماهی {toman(monthly)} · <i>{plan.tagline}</i>"
+        )
+    lines += [
+        RULE,
+        "<i>اگر اشتراک فعالی دارید، طرح تازه از انتهای آن تمدید می‌شود.</i>",
+    ]
+    await call.message.edit_text("\n".join(lines), reply_markup=long_term_menu())
+
+
 @router.callback_query(F.data.startswith("plan:"))
 async def cb_plan(call: CallbackQuery, state: FSMContext) -> None:
     plan = get_plan(call.data.split(":")[1])
@@ -223,24 +255,9 @@ async def cb_pay(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
 
     coupon = (await state.get_data()).get("coupon", "")
-    cfg = get_settings()
     request = await payments.create_request(call.from_user.id, plan_code, coupon)
     if request is None:
         await call.message.answer("⚠️ ثبت درخواست ناموفق بود. دوباره تلاش کنید.")
-        return
-
-    # هیچ راه پرداختی تنظیم نشده باشد، تنها کار ممکن ارجاع به پشتیبانی
-    # است. ولی این حالت یعنی <b>فروش از دست می‌رود</b>، پس به ادمین هم
-    # خبر داده می‌شود — وگرنه ممکن است هفته‌ها ادامه پیدا کند بی‌آنکه
-    # کسی بفهمد چرا کسی نمی‌خرد.
-    if not await payments.any_method_ready():
-        support = f"@{cfg.support_username}" if cfg.support_username else "پشتیبانی"
-        await call.message.answer(
-            f"🧾 <b>{plan.title}</b> — {toman(request.amount_toman)}\n\n"
-            f"برای فعال‌سازی با {support} در تماس باشید.\n"
-            f"شناسه‌ی شما: <code>{call.from_user.id}</code>"
-        )
-        await payments.warn_no_method()
         return
 
     saved = int(request.discount_toman or 0) + int(request.credit_toman or 0)
@@ -250,18 +267,55 @@ async def cb_pay(call: CallbackQuery, state: FSMContext) -> None:
         f"مبلغ قابل پرداخت: <b>{toman(request.amount_toman)}</b>{saving}\n"
         f"مدت: {fa_num(plan.days)} روز"
     )
+    await start_payment(call.message, request, headline=headline, state=state)
+
+
+async def start_payment(
+    target: Message,
+    request,
+    *,
+    headline: str = "",
+    state: FSMContext | None = None,
+) -> None:
+    """صفحه‌ی پرداخت یک درخواست — هر نوعی که باشد.
+
+    <b>چرا مشترک است.</b> خرید طرح، خرید اعتبار و شارژ کیف پول هر سه
+    به همین چهار راه پرداخت می‌رسند. مسیر دوم ساختن یعنی روزی یکی‌شان
+    اصلاح می‌شود و دیگری نه — و آن روز، یکی از راه‌های فروش بی‌صدا
+    می‌شکند.
+    """
+    cfg = get_settings()
+    headline = headline or (
+        f"🧾 <b>{payments.describe(request)}</b>\n"
+        f"مبلغ قابل پرداخت: <b>{toman(request.amount_toman)}</b>"
+    )
+
+    # هیچ راه پرداختی تنظیم نشده باشد، تنها کار ممکن ارجاع به پشتیبانی
+    # است. ولی این حالت یعنی <b>فروش از دست می‌رود</b>، پس به ادمین هم
+    # خبر داده می‌شود — وگرنه ممکن است هفته‌ها ادامه پیدا کند بی‌آنکه
+    # کسی بفهمد چرا کسی نمی‌خرد.
+    if not await payments.any_method_ready():
+        support = f"@{cfg.support_username}" if cfg.support_username else "پشتیبانی"
+        await target.answer(
+            f"{headline}\n\nبرای فعال‌سازی با {support} در تماس باشید.\n"
+            f"شناسه‌ی شما: <code>{request.user_id}</code>"
+        )
+        await payments.warn_no_method()
+        return
 
     # هر راه فقط وقتی پیشنهاد می‌شود که کامل تنظیم شده باشد؛ وگرنه
-    # دکمه‌ای است که به بن‌بست می‌رسد. کارت هم دیگر استثنا نیست: تا
-    # امروز همیشه نشان داده می‌شد، حتی وقتی شماره‌ای ثبت نشده بود.
+    # دکمه‌ای است که به بن‌بست می‌رسد. کارت هم استثنا نیست: تا امروز
+    # همیشه نشان داده می‌شد، حتی وقتی شماره‌ای ثبت نشده بود.
     card_ready = await cardinfo.available()
     ready_coins = await crypto.ready_coins()
     gateway_ready = await zarinpal.configured()
 
+    if state is not None:
+        await state.update_data(request_id=request.id)
+
     total = int(card_ready) + int(gateway_ready) + len(ready_coins)
     if total > 1:
-        await state.update_data(request_id=request.id)
-        await call.message.answer(
+        await target.answer(
             f"{headline}\n\nاز کدام راه می‌خواهید بپردازید؟",
             reply_markup=_method_menu(
                 request.id,
@@ -275,18 +329,15 @@ async def cb_pay(call: CallbackQuery, state: FSMContext) -> None:
     # فقط یک راه هست؛ پرسیدن «کدام؟» وقتی یک گزینه بیشتر نیست، یک
     # کلیک اضافه است بدون هیچ فایده‌ای
     if len(ready_coins) == 1 and not card_ready and not gateway_ready:
-        await state.update_data(request_id=request.id)
-        await _crypto_screen(call.message, state, request, headline, ready_coins[0])
+        await _crypto_screen(target, state, request, headline, ready_coins[0])
         return
     if gateway_ready and not card_ready:
-        await state.update_data(request_id=request.id)
-        await call.message.answer(
+        await target.answer(
             f"{headline}\n\nاز کدام راه می‌خواهید بپردازید؟",
             reply_markup=_method_menu(request.id, card=False, gateway=True),
         )
         return
-
-    await _card_screen(call.message, state, request, headline)
+    await _card_screen(target, state, request, headline)
 
 
 def _method_menu(

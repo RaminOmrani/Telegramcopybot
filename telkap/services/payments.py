@@ -134,8 +134,44 @@ async def create_credit_request(
         return request
 
 
+# شارژ کیف پول. کف عمداً پایین است تا کسی که فقط می‌خواهد امتحان کند
+# نترسد، و سقف بالا تا نماینده‌ای که یک‌جا شارژ می‌کند به دیوار نخورد.
+MIN_TOPUP_TOMAN = 50_000
+MAX_TOPUP_TOMAN = 500_000_000
+
+
+async def create_topup(user_id: int, amount_toman: int) -> PaymentRequest | None:
+    """درخواست شارژ کیف پول با مبلغ دلخواه.
+
+    <b>چرا جدا از خرید طرح.</b> شارژ هیچ طرحی فعال نمی‌کند و هیچ
+    سهمیه‌ای نمی‌دهد — فقط موجودی را بالا می‌برد. کسی که می‌خواهد
+    بیشتر بگذارد و بعداً تصمیم بگیرد، یا نماینده‌ای که یک‌جا شارژ
+    می‌کند، تا امروز راهی نداشت.
+    """
+    amount = int(amount_toman or 0)
+    if not MIN_TOPUP_TOMAN <= amount <= MAX_TOPUP_TOMAN:
+        return None
+    async with get_session() as db:
+        await _fresh_request(db, user_id)
+        request = PaymentRequest(
+            user_id=user_id,
+            plan_code="",
+            kind=PaymentRequest.KIND_TOPUP,
+            amount_toman=amount,
+            list_toman=amount,
+        )
+        db.add(request)
+        await db.commit()
+        await db.refresh(request)
+        return request
+
+
 def describe(request: PaymentRequest) -> str:
     """عنوان خوانا از آنچه خریداری می‌شود، برای پیام‌های ادمین و کاربر."""
+    if request.kind == PaymentRequest.KIND_TOPUP:
+        from telkap.plans import toman as _toman
+
+        return f"➕ شارژ کیف پول — {_toman(request.amount_toman)}"
     if request.kind == PaymentRequest.KIND_CREDIT:
         info = CREDIT_KINDS.get(request.plan_code)
         title = info[0] if info else request.plan_code
@@ -161,6 +197,17 @@ async def approval_notice(request: PaymentRequest, sub) -> str:
             f"تا {sub.expires_at:%Y-%m-%d}.\n\n"
             "حالا می‌توانید کار کپی بسازید."
         )
+    if request.kind == PaymentRequest.KIND_TOPUP:
+        from telkap.plans import toman as _toman
+        from telkap.services import wallet
+
+        balance = await wallet.balance(request.user_id)
+        return (
+            "🎉 پرداخت شما تأیید شد!\n\n"
+            f"<b>{_toman(request.amount_toman)}</b> به کیف پولتان اضافه شد.\n"
+            f"موجودی: <b>{_toman(balance)}</b>"
+        )
+
     left = await credits.balance(request.user_id, request.plan_code)
     return (
         "🎉 پرداخت شما تأیید شد!\n\n"
@@ -332,6 +379,28 @@ async def approve(request_id: int, admin_id: int):
 
     # پاداش دعوت فقط پس از تأیید خرید تعلق می‌گیرد — همین‌جا، نه هنگام ثبت‌نام
     from telkap.services import referral
+
+    if kind == PaymentRequest.KIND_TOPUP:
+        # مبلغِ واریزی به موجودی می‌رود، نه مبلغِ درخواست‌شده. اگر کد
+        # تخفیفی هم در کار بوده، همان چیزی شارژ می‌شود که واقعاً پرداخت
+        # شده — وگرنه تخفیف به پول نقد تبدیل می‌شد.
+        from telkap.models import WalletEntry
+        from telkap.services import wallet
+
+        await wallet.credit(
+            user_id,
+            int(request.amount_toman or 0),
+            reason=WalletEntry.REASON_TOPUP,
+            note=f"شارژ کیف پول — رسید #{request_id}",
+            ref_id=request_id,
+        )
+        await referral.on_payment_approved(request)
+        await log_activity(
+            user_id=user_id,
+            event="payment_approved",
+            detail=f"درخواست #{request_id}: شارژ کیف پول {request.amount_toman:,} تومان",
+        )
+        return request, None
 
     if kind == PaymentRequest.KIND_CREDIT:
         await credits.add(user_id, plan_code, quantity, note=f"رسید #{request_id}")
