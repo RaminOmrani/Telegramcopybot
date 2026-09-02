@@ -585,3 +585,109 @@ def test_reseller_discount_is_bounded_and_rounded():
     # به هزار تومان رند می‌شود تا قیمت‌ها تمیز بمانند
     assert discounted(129_000, 15) % 1_000 == 0
     assert discounted(1_000, 99) >= 0
+
+
+# ------------------------------------------- فهرست نماینده‌ها برای پنل
+@pytest.mark.asyncio
+async def test_the_panel_lists_every_reseller_with_their_own_numbers(
+    tmp_path, monkeypatch
+):
+    """<b>آمار هر نماینده باید مالِ خودش باشد.</b>
+
+    این فهرست با یک پرس‌وجوی گروهی ساخته می‌شود نه یکی به‌ازای هر
+    نماینده. جایی که چنین پرس‌وجویی اشتباه گروه‌بندی شود، عددها با هم
+    قاطی می‌شوند و کسی متوجه نمی‌شود — پس اینجا دو نماینده‌ی متفاوت
+    داریم تا قاطی شدن دیده شود.
+    """
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import reseller, wallet
+
+        await _add_user(db_module, 8, "مشتری الف")
+        await _add_user(db_module, 9, "مشتری ب")
+        await _add_user(db_module, 20, "نماینده‌ی دوم")
+
+        await reseller.set_reseller(7, True, 25)
+        await reseller.set_reseller(20, True, 10)
+        await wallet.credit(7, 5_000_000)
+        await wallet.credit(20, 5_000_000)
+
+        await reseller.activate(7, 8, "month")
+        await reseller.activate(7, 9, "month")
+        await reseller.activate(20, 8, "week")
+
+        rows = {user.id: stats for user, stats in await reseller.everyone()}
+
+        assert set(rows) == {7, 20}
+        assert rows[7].sales == 2 and rows[7].customers == 2
+        assert rows[20].sales == 1 and rows[20].customers == 1
+        assert rows[7].spent == (await reseller.stats(7)).spent
+        assert rows[20].spent == (await reseller.stats(20)).spent
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_a_reseller_with_no_sales_still_shows_up(tmp_path, monkeypatch):
+    """<b>نماینده‌ی تازه باید دیده شود.</b>
+
+    اگر فهرست از جدولِ فروش ساخته می‌شد، کسی که هنوز نفروخته اصلاً
+    وجود نداشت — و ادمین فکر می‌کرد نمایندگی‌اش ثبت نشده.
+    """
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import reseller
+
+        await reseller.set_reseller(7, True, 30)
+
+        pairs = await reseller.everyone()
+
+        assert [user.id for user, _stats in pairs] == [7]
+        assert pairs[0][1].sales == 0
+        assert pairs[0][1].spent == 0
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_taking_the_reselling_away_removes_them_from_the_list(
+    tmp_path, monkeypatch
+):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import reseller
+
+        await reseller.set_reseller(7, True, 30)
+        await reseller.set_reseller(7, False)
+
+        assert await reseller.everyone() == []
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_recent_sales_are_newest_first_across_all_resellers(
+    tmp_path, monkeypatch
+):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import reseller, wallet
+
+        await _add_user(db_module, 8)
+        await _add_user(db_module, 20, "نماینده‌ی دوم")
+        await reseller.set_reseller(7, True, 25)
+        await reseller.set_reseller(20, True, 25)
+        await wallet.credit(7, 5_000_000)
+        await wallet.credit(20, 5_000_000)
+
+        first = await reseller.activate(7, 8, "week")
+        second = await reseller.activate(20, 8, "month")
+
+        recent = await reseller.recent_sales()
+
+        assert [sale.id for sale in recent] == [second.id, first.id]
+        assert [sale.id for sale in await reseller.recent_sales(limit=1)] == [
+            second.id
+        ]
+    finally:
+        await db_module.close_db()

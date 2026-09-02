@@ -85,19 +85,13 @@ CSS = """
   --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.18);
 }
 
-/* روشن، برای کسی که صریح خواسته باشد */
-@media (prefers-color-scheme: light) {
-  :root {
-    color-scheme: light;
-    --bg: #f2f4f8; --bg-soft: #e9edf3; --card: #ffffff; --card-2: #f7f9fc;
-    --ink: #10141c; --muted: #5c6679; --line: #e2e7ef; --soft: #f0f3f8;
-    --accent: #2563eb; --accent-2: #1d4ed8; --accent-soft: rgba(37,99,235,.10);
-    --ok: #059669;   --ok-bg: rgba(5,150,105,.10);
-    --bad: #dc2626;  --bad-bg: rgba(220,38,38,.09);
-    --warn: #b45309; --warn-bg: rgba(180,83,9,.10);
-    --shadow: 0 1px 2px rgba(16,24,40,.05), 0 4px 16px rgba(16,24,40,.06);
-  }
-}
+/*
+   <b>و بدون «هرچه ویندوزت گفت».</b> اول یک نمای روشن هم داشتیم که
+   با prefers-color-scheme بالا می‌آمد. نتیجه‌اش این بود که روی
+   ویندوزِ پیش‌فرض — که روشن است — پنل باز هم سفید دیده می‌شد؛ یعنی
+   همان چیزی که قرار بود درست شود. محصول یک هویت رنگی دارد، نه هویتی
+   که به تنظیمات سیستمِ بیننده واگذار شده باشد.
+*/
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -124,11 +118,11 @@ aside {
   background: var(--bg-soft); border-left: 1px solid var(--line);
   padding: 20px 14px; position: sticky; top: 0; height: 100vh; overflow-y: auto;
 }
-aside .brand {
+.brand {
   font-weight: 700; font-size: 16px; padding: 4px 12px 20px;
   display: flex; align-items: center; gap: 9px; letter-spacing: -.2px;
 }
-aside .brand .mark {
+.brand .mark {
   width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center;
   background: linear-gradient(135deg, var(--accent), #8b5cf6);
   color: #fff; font-size: 15px;
@@ -192,20 +186,28 @@ section > h2 {
 }
 
 /* ── کارت‌های عددی ──────────────────────────────────────────────── */
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 13px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(180px, 1fr)); gap: 13px; }
 .card {
   background: var(--card); border: 1px solid var(--line);
   border-radius: var(--radius); padding: 17px 19px; box-shadow: var(--shadow);
-  position: relative; overflow: hidden;
+  position: relative; overflow: hidden; container-type: inline-size;
 }
+/* نوارِ رنگی سمتِ شروع، که در راست‌به‌چپ یعنی راست — با inset منطقی
+   نه چپ‌وراستِ ثابت. */
 .card::after {
-  content: ''; position: absolute; inset: 0 auto auto 0;
-  width: 3px; height: 100%; background: var(--line);
+  content: ''; position: absolute; inset-block: 0; inset-inline-start: 0;
+  width: 3px; background: var(--line);
 }
 .card .label { color: var(--muted); font-size: 12.5px; font-weight: 500; }
+/*
+   اندازه‌ی عدد به عرضِ خودِ کارت بسته است نه به عددی ثابت: «۳» و
+   «۱۸٬۶۴۰٬۰۰۰ تومان» در یک کارت می‌نشینند و با اندازه‌ی ثابت، دومی
+   می‌شکست و به خط بعد می‌رفت.
+*/
 .card .value {
-  font-size: 27px; font-weight: 700; margin-top: 6px; display: block;
-  font-variant-numeric: tabular-nums; letter-spacing: -.6px; line-height: 1.25;
+  font-size: clamp(18px, 9cqi, 27px);
+  font-weight: 700; margin-top: 6px; display: block;
+  font-variant-numeric: tabular-nums; letter-spacing: -.6px; line-height: 1.3;
 }
 .card .value.ok { color: var(--ok); }
 .card .value.warn { color: var(--warn); }
@@ -280,8 +282,11 @@ form.inline { display: inline; }
 .note.warn { background: var(--warn-bg); color: var(--warn); }
 
 /* ── فرم ───────────────────────────────────────────────────────── */
-input[type=search], input[type=text], input[type=number],
-input[type=password], select {
+/* `input:not([type])` هم لازم است: <input name=x> بدون type متن است
+   ولی با گزینشگرِ [type=text] گرفته نمی‌شود و بی‌استایل — یعنی سفید
+   و بیگانه — رها می‌شد. */
+input:not([type]), input[type=search], input[type=text], input[type=number],
+input[type=tel], input[type=password], select {
   background: var(--bg-soft); color: var(--ink); border: 1px solid var(--line);
   border-radius: 10px; padding: 10px 13px; font: inherit; font-size: 14px;
 }
@@ -316,9 +321,18 @@ dl.facts dd { margin: 0; }
 .attention.none { border-right-color: var(--ok); }
 
 /* ── نمودار ────────────────────────────────────────────────────── */
-.chart { display: flex; align-items: flex-end; gap: 5px; height: 140px; padding: 4px 0; }
-.chart .bar { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; }
+/*
+   میله داخل یک «track» می‌نشیند و با position مطلق کشیده می‌شود، نه
+   با height درصدی روی خودِ میله. درصدِ ارتفاع فقط وقتی معنا دارد که
+   ظرف ارتفاعِ معلوم داشته باشد؛ در چیدمان flex ظرف به اندازه‌ی
+   محتوایش جمع می‌شود و همه‌ی میله‌ها صاف می‌شدند — نمودار به یک خط
+   تبدیل می‌شد و هیچ خطایی هم نمی‌داد.
+*/
+.chart { display: flex; align-items: stretch; gap: 6px; height: 170px; padding: 4px 0; }
+.chart .bar { flex: 1; min-width: 0; display: flex; flex-direction: column; }
+.chart .track { position: relative; flex: 1; }
 .chart .fill {
+  position: absolute; inset-inline: 0; bottom: 0;
   background: linear-gradient(180deg, var(--accent-2), var(--accent));
   border-radius: 5px 5px 2px 2px; min-height: 3px; transition: .2s;
 }
@@ -356,6 +370,7 @@ NAV = (
     )),
     ("مالی و گزارش", (
         ("/finance", "💰", "درآمد", ""),
+        ("/resellers", "🤝", "نمایندگی", ""),
         ("/activity", "🧭", "رویدادها", ""),
     )),
     ("تنظیمات", (
@@ -475,8 +490,11 @@ def login(*, error: str = "", pending_key: str = "") -> str:
         )
     else:
         body = (
-            "<h1>🤖 پنل مدیریت</h1>"
-            "<p class='sub'>برای ورود، نام کاربری و رمزتان را بزنید.</p>"
+            "<div class='brand' style='justify-content:center;margin-bottom:18px'>"
+            "<span class='mark'>⚡</span><span>فورواردبات</span></div>"
+            "<h1 style='text-align:center'>پنل مدیریت</h1>"
+            "<p class='sub' style='text-align:center'>"
+            "برای ورود، نام کاربری و رمزتان را بزنید.</p>"
             f"{warn}"
             "<form method='post' action='/login'>"
             "<label class='field'><span class='cap'>نام کاربری</span>"
@@ -545,7 +563,7 @@ def chart(points: list[tuple[str, int]], *, unit: str = "") -> str:
         hint = f"{i18n.num(value, 'fa')} {unit}".strip()
         bars.append(
             f"<div class='bar' title='{esc(label)} — {esc(hint)}'>"
-            f"<div class='fill' style='height:{height}%'></div>"
+            f"<div class='track'><div class='fill' style='height:{height}%'></div></div>"
             f"<div class='tick'>{esc(label)}</div></div>"
         )
     return f"<div class='chart'>{''.join(bars)}</div>"

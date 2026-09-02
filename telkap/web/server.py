@@ -17,8 +17,9 @@ from sqlalchemy import func, or_, select
 from telkap import i18n
 from telkap.config import get_settings
 from telkap.db import get_session
+from telkap.handlers.common import parse_int
 from telkap.models import PaymentRequest, Subscription, Task, User, utcnow
-from telkap.plans import purchasable
+from telkap.plans import get_plan, purchasable
 from telkap.services import (
     analytics,
     cardinfo,
@@ -26,6 +27,7 @@ from telkap.services import (
     crypto,
     moderation,
     payments,
+    reseller,
     roles,
     subscription,
     usdtrate,
@@ -1045,6 +1047,210 @@ async def task_toggle(request: web.Request) -> web.Response:
     return _back("/tasks", ok=f"کار #{task_id} {'روشن' if now_on else 'خاموش'} شد.")
 
 
+# ------------------------------------------------------------ نمایندگی
+async def reseller_page(request: web.Request) -> web.Response:
+    """نماینده‌ها: چه کسانی، با چند درصد، و چقدر فروخته‌اند.
+
+    <b>چرا در پنل و نه فقط در ربات.</b> دادنِ نمایندگی در ربات یک
+    گفتگوی چند مرحله‌ای است و بعدش هیچ‌جا نمی‌شود دید چه کسی نماینده
+    است. نمایندگی رابطه‌ای ادامه‌دار است — درصدش عوض می‌شود، فروشش
+    باید دیده شود — و رابطه‌ی ادامه‌دار جای فهرست دارد نه گفتگو.
+    """
+    denied = await _deny(request, roles.CAP_MONEY)
+    if denied is not None:
+        return denied
+
+    session = request["session"]
+    pairs = await reseller.everyone()
+    fallback = await reseller.default_discount()
+
+    rows_html = []
+    for user, stats in pairs:
+        discount = int(user.reseller_discount or 0)
+        badge = pill(f"{i18n.num(discount, 'fa')}٪", "ok" if discount else "bad")
+        rows_html.append(
+            f"<tr><td><a href='/users/{user.id}'>{esc(_who(user))}</a>"
+            f"<div class='mini'>{esc(user.id)}</div></td>"
+            f"<td>{badge}</td>"
+            f"<td class='money'>{esc(i18n.num(stats.sales, 'fa'))}</td>"
+            f"<td class='money'>{esc(i18n.num(stats.customers, 'fa'))}</td>"
+            f"<td class='money'>{esc(money(stats.spent))}</td>"
+            f"<td class='money'>{esc(money(user.wallet_toman))}</td>"
+            "<td class='actions'>"
+            + form(
+                "/resellers/set",
+                session.csrf,
+                f"<input type='hidden' name='user' value='{esc(user.id)}'>"
+                f"<input type='number' name='discount' min='0' "
+                f"max='{reseller.MAX_DISCOUNT}' value='{esc(discount)}' "
+                "style='width:5rem'>"
+                "<button class='btn small'>ذخیره</button>",
+            )
+            + form(
+                f"/resellers/{user.id}/remove",
+                session.csrf,
+                "<button class='btn small bad'>حذف نمایندگی</button>",
+                confirm=f"نمایندگی «{_who(user)}» برداشته شود؟",
+            )
+            + "</td></tr>"
+        )
+
+    sales = await reseller.recent_sales()
+    names: dict[int, User] = {}
+    if sales:
+        async with get_session() as db:
+            people = await db.execute(
+                select(User).where(
+                    User.id.in_(
+                        {sale.reseller_id for sale in sales}
+                        | {sale.customer_id for sale in sales}
+                    )
+                )
+            )
+            names = {person.id: person for person in people.scalars()}
+
+    sale_rows = []
+    for sale in sales:
+        seller = names.get(sale.reseller_id)
+        buyer = names.get(sale.customer_id)
+        # کدِ طرح برای ما معنا دارد، برای کسی که فهرست را می‌خواند نه؛
+        # اگر طرحی بعداً حذف شود، همان کد بهتر از خالی بودن است.
+        plan = get_plan(sale.plan_code)
+        sale_rows.append(
+            f"<tr><td>{esc(_when(sale.created_at))}</td>"
+            f"<td><a href='/users/{sale.reseller_id}'>"
+            f"{esc(_who(seller) if seller else sale.reseller_id)}</a></td>"
+            f"<td><a href='/users/{sale.customer_id}'>"
+            f"{esc(_who(buyer) if buyer else sale.customer_id)}</a></td>"
+            f"<td>{esc(plan.title if plan else sale.plan_code)}</td>"
+            f"<td class='money'>{esc(money(sale.paid_toman))}</td>"
+            f"<td class='money'>{esc(money(sale.list_toman))}</td></tr>"
+        )
+
+    total_spent = sum(stats.spent for _user, stats in pairs)
+    total_sales = sum(stats.sales for _user, stats in pairs)
+    cards = (
+        "<div class='cards'>"
+        + card("نماینده‌ها", i18n.num(len(pairs), "fa"))
+        + card("فروش نمایندگی", i18n.num(total_sales, "fa"))
+        + card("گردش نمایندگی", money(total_spent), "ok")
+        + card("تخفیف پیش‌فرض", f"{i18n.num(fallback, 'fa')}٪")
+        + "</div>"
+    )
+
+    add_form = form(
+        "/resellers/set",
+        session.csrf,
+        "<input type='text' name='user' placeholder='آیدی عددی کاربر' inputmode='numeric'> "
+        f"<input type='number' name='discount' min='0' max='{reseller.MAX_DISCOUNT}' "
+        f"value='{esc(fallback)}' style='width:6rem' placeholder='درصد'> "
+        "<button class='btn'>نماینده کن</button>",
+    )
+    default_form = form(
+        "/resellers/default",
+        session.csrf,
+        f"<input type='number' name='discount' min='0' max='{reseller.MAX_DISCOUNT}' "
+        f"value='{esc(fallback)}' style='width:6rem'> "
+        "<button class='btn'>ذخیره</button>",
+    )
+
+    body = (
+        "<h1>نمایندگی</h1>"
+        "<p class='sub'>نماینده کیف پولش را شارژ می‌کند و بعد هر وقت خواست، "
+        "اشتراک را با درصد تخفیف خودش مستقیم برای مشتری‌اش فعال می‌کند — "
+        "بدون رسید و بدون انتظار تأیید.</p>"
+        + _flash(request)
+        + cards
+        + panel(
+            "نماینده‌ی تازه",
+            add_form,
+            sub="کاربر باید یک‌بار ربات را استارت کرده باشد تا آیدی‌اش شناخته شود.",
+        )
+        + panel(
+            "نماینده‌ها",
+            table(
+                ["نماینده", "تخفیف", "فروش", "مشتری", "پرداختی", "کیف پول", ""],
+                rows_html,
+                empty="هنوز نماینده‌ای ندارید.",
+                icon="🤝",
+            ),
+        )
+        + panel(
+            "آخرین فروش‌ها",
+            table(
+                ["زمان", "نماینده", "مشتری", "طرح", "پرداختی", "قیمت فهرست"],
+                sale_rows,
+                empty="هنوز فروشی ثبت نشده.",
+                icon="🧾",
+            ),
+        )
+        + panel(
+            "تخفیف پیش‌فرض",
+            default_form,
+            sub="درصدی که به نماینده‌ی تازه داده می‌شود، اگر جداگانه چیزی نگذارید.",
+        )
+    )
+    return await _shell(request, "نمایندگی", body, active="/resellers")
+
+
+async def reseller_set(request: web.Request) -> web.Response:
+    """کاربر را نماینده می‌کند یا درصد نماینده‌ی موجود را عوض می‌کند."""
+    blocked = await _guard_post(request, roles.CAP_MONEY, "/resellers")
+    if blocked is not None:
+        return blocked
+
+    posted = await request.post()
+    user_id = parse_int(str(posted.get("user", "")))
+    if user_id is None:
+        return _back("/resellers", err="آیدی عددی کاربر را درست بنویسید.")
+
+    discount = parse_int(str(posted.get("discount", "")))
+    if discount is None or not 0 <= discount <= reseller.MAX_DISCOUNT:
+        return _back(
+            "/resellers", err=f"درصد تخفیف باید بین ۰ تا {reseller.MAX_DISCOUNT} باشد."
+        )
+
+    result = await reseller.set_reseller(
+        user_id, True, discount, admin_id=request["session"].user_id
+    )
+    if result is None:
+        return _back(
+            "/resellers",
+            err="این کاربر هنوز ربات را استارت نکرده است؛ اول باید /start بزند.",
+        )
+    return _back("/resellers", ok=f"نمایندگی با {result[1]}٪ تخفیف ثبت شد.")
+
+
+async def reseller_remove(request: web.Request) -> web.Response:
+    blocked = await _guard_post(request, roles.CAP_MONEY, "/resellers")
+    if blocked is not None:
+        return blocked
+
+    user_id = int(request.match_info["id"])
+    if await reseller.set_reseller(
+        user_id, False, admin_id=request["session"].user_id
+    ) is None:
+        return _back("/resellers", err="این کاربر پیدا نشد.")
+    return _back("/resellers", ok="نمایندگی برداشته شد.")
+
+
+async def reseller_default(request: web.Request) -> web.Response:
+    blocked = await _guard_post(request, roles.CAP_MONEY, "/resellers")
+    if blocked is not None:
+        return blocked
+
+    posted = await request.post()
+    discount = parse_int(str(posted.get("discount", "")))
+    if discount is None or not 0 <= discount <= reseller.MAX_DISCOUNT:
+        return _back(
+            "/resellers", err=f"درصد تخفیف باید بین ۰ تا {reseller.MAX_DISCOUNT} باشد."
+        )
+    saved = await reseller.set_default_discount(
+        discount, admin_id=request["session"].user_id
+    )
+    return _back("/resellers", ok=f"تخفیف پیش‌فرض روی {saved}٪ تنظیم شد.")
+
+
 # --------------------------------------------------------- تنظیم پرداخت
 async def settings_page(request: web.Request) -> web.Response:
     """همان تنظیماتی که در ربات هست، روی صفحه‌ی بزرگ‌تر.
@@ -1591,6 +1797,10 @@ def build_app(bot) -> web.Application:
             web.post("/users/{id}/revoke", user_revoke),
             web.get("/tasks", task_list),
             web.post("/tasks/{id}/toggle", task_toggle),
+            web.get("/resellers", reseller_page),
+            web.post("/resellers/default", reseller_default),
+            web.post("/resellers/set", reseller_set),
+            web.post("/resellers/{id}/remove", reseller_remove),
             web.get("/finance", finance_page),
             web.get("/activity", activity_page),
             web.get("/account", account_page),

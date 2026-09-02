@@ -210,6 +210,59 @@ async def sales(reseller_id: int, limit: int = 15) -> list[ResellerSale]:
         return list(rows.scalars())
 
 
+async def everyone() -> list[tuple[User, Stats]]:
+    """همه‌ی نماینده‌ها همراه آمارشان، پرفروش‌ترین اول.
+
+    آمار همه با سه پرس‌وجوی گروهی گرفته می‌شود، نه یکی به‌ازای هر
+    نماینده؛ وگرنه صفحه با ده نماینده سی‌ رفت‌وبرگشت به دیتابیس دارد.
+    """
+    async with get_session() as db:
+        people = list(
+            (
+                await db.execute(
+                    select(User).where(User.is_reseller.is_(True)).order_by(User.id)
+                )
+            ).scalars()
+        )
+        if not people:
+            return []
+
+        ids = [user.id for user in people]
+        rows = await db.execute(
+            select(
+                ResellerSale.reseller_id,
+                func.count(ResellerSale.id),
+                func.count(func.distinct(ResellerSale.customer_id)),
+                func.coalesce(func.sum(ResellerSale.paid_toman), 0),
+                func.coalesce(func.sum(ResellerSale.list_toman), 0),
+            )
+            .where(ResellerSale.reseller_id.in_(ids))
+            .group_by(ResellerSale.reseller_id)
+        )
+        by_id = {
+            seller: Stats(
+                sales=int(count or 0),
+                customers=int(buyers or 0),
+                spent=int(paid or 0),
+                saved=int((listed or 0) - (paid or 0)),
+            )
+            for seller, count, buyers, paid, listed in rows.all()
+        }
+
+    pairs = [(user, by_id.get(user.id, Stats())) for user in people]
+    pairs.sort(key=lambda pair: (-pair[1].spent, -pair[1].sales, pair[0].id))
+    return pairs
+
+
+async def recent_sales(limit: int = 20) -> list[ResellerSale]:
+    """آخرین فروش‌های همه‌ی نماینده‌ها — برای صفحه‌ی مدیریت."""
+    async with get_session() as db:
+        rows = await db.execute(
+            select(ResellerSale).order_by(ResellerSale.id.desc()).limit(limit)
+        )
+        return list(rows.scalars())
+
+
 async def stats(reseller_id: int) -> Stats:
     async with get_session() as db:
         total = await db.scalar(

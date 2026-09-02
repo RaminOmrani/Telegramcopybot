@@ -200,6 +200,39 @@ def test_the_font_files_are_really_there():
         assert (STATIC_DIR / "fonts" / f"Vazirmatn-{weight}.woff2").exists()
 
 
+def test_the_dark_theme_does_not_depend_on_the_visitor_s_windows():
+    """<b>«تم سفیده» شکایتِ واقعی بود و علتش همین بود.</b>
+
+    نمای روشن با <code>prefers-color-scheme</code> بالا می‌آمد، و
+    ویندوزِ پیش‌فرض روشن است — پس پنل برای اغلب آدم‌ها سفید می‌ماند
+    و کسی هم نمی‌فهمید چرا. محصول یک هویت رنگی دارد، نه هویتی که به
+    تنظیمات سیستمِ بیننده واگذار شده باشد.
+    """
+    from telkap.web.render import CSS
+
+    assert "color-scheme: dark" in CSS
+    # توضیحش در خودِ CSS هست؛ آنچه نباید باشد، قاعده است نه توضیح
+    assert "@media (prefers-color-scheme" not in CSS
+
+
+def test_a_chart_bar_is_drawn_inside_a_container_with_a_real_height():
+    """<b>نمودار بی‌ارتفاع، خطا نمی‌دهد؛ فقط یک خط صاف می‌شود.</b>
+
+    ارتفاع درصدی فقط وقتی معنا دارد که ظرف ارتفاعِ معلوم داشته باشد.
+    میله داخل <code>.track</code> می‌نشیند که با position مطلق
+    کشیده می‌شود؛ اگر روزی این لایه برداشته شود همه‌ی میله‌ها به
+    min-height می‌افتند و نمودار بی‌صدا از کار می‌افتد.
+    """
+    from telkap.web.render import CSS, chart
+
+    html = chart([("شنبه", 10), ("یکشنبه", 40)], unit="تومان")
+
+    assert html.count("<div class='track'>") == 2
+    assert "height:100%" in html                 # بلندترین میله، کاملِ ظرف
+    assert ".chart .track { position: relative" in CSS
+    assert "position: absolute" in CSS.split(".chart .fill {")[1].split("}")[0]
+
+
 def test_an_empty_table_says_so_instead_of_showing_nothing():
     from telkap.web.render import table
 
@@ -273,6 +306,10 @@ def test_every_page_but_the_gate_needs_a_session():
         "/users/{id}/days",
         "/users/{id}/ban",
         "/users/{id}/revoke",
+        "/resellers",
+        "/resellers/default",
+        "/resellers/set",
+        "/resellers/{id}/remove",
         "/tasks",
         "/tasks/{id}/toggle",
         "/finance",
