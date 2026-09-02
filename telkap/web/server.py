@@ -8,6 +8,7 @@ from __future__ import annotations
 
 import logging
 from datetime import UTC, timedelta, timezone
+from pathlib import Path
 from urllib.parse import urlencode
 
 from aiohttp import web
@@ -160,10 +161,15 @@ async def _deny(request: web.Request, cap: str) -> web.Response | None:
 #   نمی‌دهد و به پارامترهای نشانی هم اعتماد نمی‌کند.
 PUBLIC_PATHS = frozenset({"/enter", "/healthz", "/login", zarinpal.CALLBACK_PATH})
 
+# فونت و فایل‌های ثابت. جدا از PUBLIC_PATHS چون یک مسیر نیست بلکه یک
+# پیشوند است، و آن فهرست عمداً مو‌به‌مو سنجیده می‌شود.
+STATIC_PREFIX = "/static/"
+STATIC_DIR = Path(__file__).parent / "static"
+
 
 @web.middleware
 async def auth_middleware(request: web.Request, handler):
-    if request.path in PUBLIC_PATHS:
+    if request.path in PUBLIC_PATHS or request.path.startswith(STATIC_PREFIX):
         return await handler(request)
 
     session = await auth.get_session_for(request.cookies.get(auth.COOKIE_NAME))
@@ -1564,6 +1570,9 @@ def build_app(bot) -> web.Application:
     app.add_routes(
         [
             web.get("/healthz", healthz),
+            # فایل‌های ثابت (فونت). عمومی است و باید باشد: مرورگر
+            # پیش از ورود هم صفحه‌ی لاگین را با همین فونت می‌کشد.
+            web.static("/static", STATIC_DIR, show_index=False),
             web.get(zarinpal.CALLBACK_PATH, zarinpal_return),
             web.get("/enter", enter),
             web.get("/login", login_page),

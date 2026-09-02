@@ -179,6 +179,27 @@ def test_every_section_in_the_menu_has_a_real_page():
             assert href in paths, href
 
 
+def test_the_font_is_served_from_our_own_server():
+    """<b>فونتی که از CDN خارجی بیاید، برای کاربر ایرانی نمی‌آید.</b>
+
+    و صفحه‌ای که فونتش نیامده با فونت پیش‌فرض ویندوز رندر می‌شود، که
+    برای فارسی بد است — دقیقاً همان چیزی که باید درست می‌شد.
+    """
+    from telkap.web.render import CSS
+
+    assert "/static/fonts/Vazirmatn-Regular.woff2" in CSS
+    assert "fonts.googleapis.com" not in CSS
+    assert "cdn." not in CSS
+
+
+def test_the_font_files_are_really_there():
+    """مسیری که در CSS هست ولی فایلش نیست، بی‌صدا به فونت پیش‌فرض می‌افتد."""
+    from telkap.web.server import STATIC_DIR
+
+    for weight in ("Regular", "Medium", "SemiBold", "Bold"):
+        assert (STATIC_DIR / "fonts" / f"Vazirmatn-{weight}.woff2").exists()
+
+
 def test_an_empty_table_says_so_instead_of_showing_nothing():
     from telkap.web.render import table
 
@@ -234,6 +255,10 @@ def test_every_page_but_the_gate_needs_a_session():
     assert server.PUBLIC_PATHS == {
         "/enter", "/healthz", "/login", "/pay/zarinpal"
     }
+
+    # فایل‌های ثابت (فونت) عمداً بازند: مرورگر پیش از ورود هم صفحه‌ی
+    # لاگین را با همین فونت می‌کشد. چیزی جز فونت آنجا نیست.
+    paths.discard("/static")
 
     # و هرچه معاف نیست باید پشت ورود بماند
     assert paths - server.PUBLIC_PATHS == {

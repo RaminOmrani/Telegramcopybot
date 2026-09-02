@@ -20,123 +20,200 @@ from html import escape
 from telkap import i18n
 
 CSS = """
-:root {
-  color-scheme: light dark;
-  --bg: #f4f5f7; --card: #ffffff; --ink: #14161a; --muted: #6b7280;
-  --line: #e4e6eb; --soft: #f0f2f5;
-  --accent: #2f6df6; --accent-ink: #ffffff;
-  --ok: #0a8f5b; --ok-bg: #e7f7f0;
-  --bad: #d92d20; --bad-bg: #fdecea;
-  --warn: #b45309; --warn-bg: #fdf3e3;
-  --radius: 14px;
-  --shadow: 0 1px 2px rgba(16,24,40,.05), 0 1px 3px rgba(16,24,40,.04);
+/* ── فونت ───────────────────────────────────────────────────────── */
+/*
+   وزیرمتن، از خودِ سرور نه از CDN. کاربر ایرانی صفحه را باز می‌کند و
+   فونتی که از CDN خارجی بیاید یا کند می‌آید یا اصلاً نمی‌آید — و
+   صفحه‌ای که فونتش نیامده با فونت پیش‌فرض ویندوز رندر می‌شود، که
+   برای فارسی بد است. دویست کیلوبایت روی سرور، این ریسک را حذف می‌کند.
+
+   font-display: swap تا متن بی‌درنگ دیده شود و بعد فونت جا بیفتد،
+   نه اینکه صفحه سفید بماند.
+*/
+@font-face {
+  font-family: 'Vazirmatn'; font-style: normal; font-weight: 400;
+  src: local('Vazirmatn'), url('/static/fonts/Vazirmatn-Regular.woff2') format('woff2');
+  font-display: swap;
 }
-@media (prefers-color-scheme: dark) {
+@font-face {
+  font-family: 'Vazirmatn'; font-style: normal; font-weight: 500;
+  src: local('Vazirmatn Medium'), url('/static/fonts/Vazirmatn-Medium.woff2') format('woff2');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Vazirmatn'; font-style: normal; font-weight: 600;
+  src: local('Vazirmatn SemiBold'), url('/static/fonts/Vazirmatn-SemiBold.woff2') format('woff2');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Vazirmatn'; font-style: normal; font-weight: 700;
+  src: local('Vazirmatn Bold'), url('/static/fonts/Vazirmatn-Bold.woff2') format('woff2');
+  font-display: swap;
+}
+
+/* ── رنگ ────────────────────────────────────────────────────────── */
+/*
+   <b>تیره، به‌عنوان پیش‌فرض.</b> این پنل ابزارِ کار است نه صفحه‌ی
+   خواندنی: کسی ساعت‌ها بازش می‌گذارد و بارها سر می‌زند. سفیدِ خالی
+   هم خسته‌کننده است و هم هویتی ندارد.
+
+   لاجوردی به‌عنوان رنگِ اصلی چون هم روی تیره می‌درخشد و هم رنگِ
+   آشنای تلگرام است — محصول کنارِ چیزی می‌نشیند که کاربر همان لحظه
+   بازش دارد.
+*/
+:root {
+  color-scheme: dark;
+  --bg: #0b0e14;
+  --bg-soft: #11151d;
+  --card: #151a24;
+  --card-2: #1b212d;
+  --ink: #e8ecf4;
+  --muted: #8b95a8;
+  --line: #232a38;
+  --soft: #1a202b;
+
+  --accent: #3b82f6;
+  --accent-2: #60a5fa;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(59,130,246,.14);
+
+  --ok: #34d399;      --ok-bg: rgba(52,211,153,.13);
+  --bad: #f87171;     --bad-bg: rgba(248,113,113,.13);
+  --warn: #fbbf24;    --warn-bg: rgba(251,191,36,.13);
+
+  --radius: 14px;
+  --shadow: 0 1px 2px rgba(0,0,0,.3), 0 8px 24px rgba(0,0,0,.18);
+}
+
+/* روشن، برای کسی که صریح خواسته باشد */
+@media (prefers-color-scheme: light) {
   :root {
-    --bg: #0e1014; --card: #171a20; --ink: #e9ebef; --muted: #98a0ac;
-    --line: #262a33; --soft: #1d212a;
-    --accent: #6d9bff; --accent-ink: #0e1014;
-    --ok: #34d399; --ok-bg: #10291f;
-    --bad: #f87171; --bad-bg: #2a1414;
-    --warn: #fbbf24; --warn-bg: #2a2010;
-    --shadow: none;
+    color-scheme: light;
+    --bg: #f2f4f8; --bg-soft: #e9edf3; --card: #ffffff; --card-2: #f7f9fc;
+    --ink: #10141c; --muted: #5c6679; --line: #e2e7ef; --soft: #f0f3f8;
+    --accent: #2563eb; --accent-2: #1d4ed8; --accent-soft: rgba(37,99,235,.10);
+    --ok: #059669;   --ok-bg: rgba(5,150,105,.10);
+    --bad: #dc2626;  --bad-bg: rgba(220,38,38,.09);
+    --warn: #b45309; --warn-bg: rgba(180,83,9,.10);
+    --shadow: 0 1px 2px rgba(16,24,40,.05), 0 4px 16px rgba(16,24,40,.06);
   }
 }
+
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
 body {
   margin: 0; background: var(--bg); color: var(--ink);
-  font: 15px/1.7 system-ui, "Segoe UI", Vazirmatn, Tahoma, sans-serif;
+  font-family: 'Vazirmatn', 'Vazir', 'IRANSans', 'Shabnam', system-ui, Tahoma, sans-serif;
+  font-size: 15px; line-height: 1.75;
   direction: rtl;
+  -webkit-font-smoothing: antialiased;
 }
-a { color: var(--accent); text-decoration: none; }
+a { color: var(--accent-2); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
 /* ── چیدمان ────────────────────────────────────────────────────── */
 /*
-   نوار کناری، نه تب بالا. با پنج بخش تب کار می‌کرد؛ با ده بخش
-   دیگر نه — و کسی که پنل را باز نگه می‌دارد باید همیشه بداند
-   کجاست و کجاها هست.
+   نوار کناری، نه تب بالا. با پنج بخش تب کار می‌کرد؛ با نُه بخش دیگر
+   نه — و کسی که پنل را باز نگه می‌دارد باید همیشه بداند کجاست و
+   کجاها هست.
 */
 .layout { display: flex; min-height: 100vh; }
 
 aside {
-  width: 232px; flex: 0 0 232px; background: var(--card);
-  border-left: 1px solid var(--line); padding: 18px 12px;
-  position: sticky; top: 0; height: 100vh; overflow-y: auto;
+  width: 244px; flex: 0 0 244px;
+  background: var(--bg-soft); border-left: 1px solid var(--line);
+  padding: 20px 14px; position: sticky; top: 0; height: 100vh; overflow-y: auto;
 }
 aside .brand {
-  font-weight: 700; font-size: 15px; padding: 6px 12px 18px;
-  display: flex; align-items: center; gap: 8px;
+  font-weight: 700; font-size: 16px; padding: 4px 12px 20px;
+  display: flex; align-items: center; gap: 9px; letter-spacing: -.2px;
+}
+aside .brand .mark {
+  width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center;
+  background: linear-gradient(135deg, var(--accent), #8b5cf6);
+  color: #fff; font-size: 15px;
 }
 aside .group {
-  font-size: 11px; color: var(--muted); padding: 14px 12px 6px;
-  letter-spacing: .4px; font-weight: 600;
+  font-size: 11px; color: var(--muted); padding: 16px 12px 7px;
+  letter-spacing: .5px; font-weight: 600; text-transform: uppercase;
 }
 aside nav a {
-  display: flex; align-items: center; gap: 9px;
-  padding: 9px 12px; border-radius: 9px; color: var(--ink);
-  font-size: 14px; margin-bottom: 2px;
+  display: flex; align-items: center; gap: 10px;
+  padding: 9px 12px; border-radius: 10px; color: var(--ink);
+  font-size: 14px; margin-bottom: 2px; transition: .13s;
 }
 aside nav a:hover { background: var(--soft); text-decoration: none; }
-aside nav a.on { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+aside nav a.on {
+  background: var(--accent-soft); color: var(--accent-2); font-weight: 600;
+  box-shadow: inset 2px 0 0 var(--accent);
+}
+aside nav a .ico { font-size: 15px; width: 18px; text-align: center; }
 aside nav a .dot {
   margin-right: auto; min-width: 20px; padding: 0 6px;
   background: var(--bad); color: #fff; border-radius: 999px;
   font-size: 11px; line-height: 19px; text-align: center; font-weight: 700;
 }
-aside nav a.on .dot { background: rgba(255,255,255,.25); }
 aside .foot {
-  margin-top: 22px; padding: 12px; border-top: 1px solid var(--line);
+  margin-top: 24px; padding: 14px 12px; border-top: 1px solid var(--line);
   font-size: 12px; color: var(--muted);
 }
 
 .content { flex: 1; min-width: 0; }
 .topbar {
-  display: flex; align-items: center; gap: 12px; padding: 14px 26px;
+  display: flex; align-items: center; gap: 12px; padding: 15px 28px;
   border-bottom: 1px solid var(--line); background: var(--card);
   position: sticky; top: 0; z-index: 5;
 }
+.topbar b { font-size: 15px; font-weight: 600; }
 .topbar .who { margin-right: auto; color: var(--muted); font-size: 13px; }
-.burger { display: none; }
 
-@media (max-width: 860px) {
+@media (max-width: 880px) {
   .layout { display: block; }
   aside {
     width: auto; position: static; height: auto; border-left: 0;
-    border-bottom: 1px solid var(--line);
+    border-bottom: 1px solid var(--line); padding: 12px;
   }
-  aside nav { display: flex; flex-wrap: wrap; gap: 4px; }
+  aside nav { display: flex; flex-wrap: wrap; gap: 5px; }
   aside nav a { margin-bottom: 0; }
   aside .group, aside .foot { display: none; }
+  .topbar { padding: 13px 16px; }
 }
 
-main { max-width: 1180px; margin: 0 auto; padding: 26px 26px 70px; }
+main { max-width: 1200px; margin: 0 auto; padding: 26px 28px 80px; }
+@media (max-width: 880px) { main { padding: 20px 16px 60px; } }
 
 /* ── عنوان‌ها ───────────────────────────────────────────────────── */
-h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -.2px; }
+h1 { font-size: 23px; margin: 0 0 5px; letter-spacing: -.3px; font-weight: 700; }
 .sub { color: var(--muted); margin: 0 0 24px; font-size: 14px; }
-section { margin-top: 34px; }
+section { margin-top: 32px; }
 section > h2 {
-  font-size: 15px; margin: 0 0 13px; color: var(--muted);
-  font-weight: 600; letter-spacing: .2px;
+  font-size: 13px; margin: 0 0 13px; color: var(--muted);
+  font-weight: 600; letter-spacing: .4px; text-transform: uppercase;
 }
 
 /* ── کارت‌های عددی ──────────────────────────────────────────────── */
-.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(165px, 1fr)); gap: 13px; }
+.cards { display: grid; grid-template-columns: repeat(auto-fit, minmax(168px, 1fr)); gap: 13px; }
 .card {
   background: var(--card); border: 1px solid var(--line);
-  border-radius: var(--radius); padding: 16px 18px; box-shadow: var(--shadow);
+  border-radius: var(--radius); padding: 17px 19px; box-shadow: var(--shadow);
+  position: relative; overflow: hidden;
 }
-.card .label { color: var(--muted); font-size: 13px; }
+.card::after {
+  content: ''; position: absolute; inset: 0 auto auto 0;
+  width: 3px; height: 100%; background: var(--line);
+}
+.card .label { color: var(--muted); font-size: 12.5px; font-weight: 500; }
 .card .value {
-  font-size: 26px; font-weight: 700; margin-top: 5px;
-  font-variant-numeric: tabular-nums; letter-spacing: -.5px;
+  font-size: 27px; font-weight: 700; margin-top: 6px; display: block;
+  font-variant-numeric: tabular-nums; letter-spacing: -.6px; line-height: 1.25;
 }
 .card .value.ok { color: var(--ok); }
 .card .value.warn { color: var(--warn); }
 .card .value.bad { color: var(--bad); }
-.card a.value:hover { text-decoration: none; opacity: .8; }
+.card:has(.value.ok)::after { background: var(--ok); }
+.card:has(.value.warn)::after { background: var(--warn); }
+.card:has(.value.bad)::after { background: var(--bad); }
+.card a.value:hover { text-decoration: none; opacity: .82; }
 
 /* ── جدول ──────────────────────────────────────────────────────── */
 .wrap {
@@ -144,43 +221,45 @@ section > h2 {
   border-radius: var(--radius); background: var(--card); box-shadow: var(--shadow);
 }
 table { border-collapse: collapse; width: 100%; min-width: 560px; }
-th, td { padding: 12px 15px; text-align: right; border-bottom: 1px solid var(--line); }
+th, td { padding: 13px 16px; text-align: right; border-bottom: 1px solid var(--line); }
 th {
-  color: var(--muted); font-weight: 600; font-size: 12.5px;
-  white-space: nowrap; background: var(--soft);
+  color: var(--muted); font-weight: 600; font-size: 12px;
+  white-space: nowrap; background: var(--card-2);
+  letter-spacing: .3px;
 }
-tbody tr:hover { background: var(--soft); }
+tbody tr { transition: .12s; }
+tbody tr:hover { background: var(--card-2); }
 tr:last-child td { border-bottom: 0; }
 td.actions { white-space: nowrap; }
-.empty { padding: 44px 20px; text-align: center; color: var(--muted); }
-.empty .big { font-size: 30px; display: block; margin-bottom: 8px; opacity: .5; }
+.empty { padding: 48px 20px; text-align: center; color: var(--muted); }
+.empty .big { font-size: 34px; display: block; margin-bottom: 10px; opacity: .45; }
 
 /* ── دکمه ──────────────────────────────────────────────────────── */
 .btn {
-  display: inline-block; border: 1px solid var(--line); background: var(--card);
-  color: var(--ink); border-radius: 9px; padding: 7px 14px; cursor: pointer;
-  font: inherit; font-size: 14px; transition: .12s;
+  display: inline-block; border: 1px solid var(--line); background: var(--card-2);
+  color: var(--ink); border-radius: 10px; padding: 8px 15px; cursor: pointer;
+  font: inherit; font-size: 13.5px; font-weight: 500; transition: .13s;
 }
 .btn:hover { border-color: var(--accent); text-decoration: none; }
 .btn.primary {
   background: var(--accent); border-color: var(--accent); color: var(--accent-ink);
   font-weight: 600;
 }
-.btn.primary:hover { opacity: .9; }
-.btn.ok { color: var(--ok); border-color: color-mix(in srgb, var(--ok) 35%, var(--line)); }
+.btn.primary:hover { background: var(--accent-2); border-color: var(--accent-2); }
+.btn.ok { color: var(--ok); border-color: rgba(52,211,153,.35); }
 .btn.ok:hover { background: var(--ok-bg); border-color: var(--ok); }
-.btn.bad { color: var(--bad); border-color: color-mix(in srgb, var(--bad) 35%, var(--line)); }
+.btn.bad { color: var(--bad); border-color: rgba(248,113,113,.35); }
 .btn.bad:hover { background: var(--bad-bg); border-color: var(--bad); }
-.btn.small { padding: 4px 10px; font-size: 13px; }
+.btn.small { padding: 5px 11px; font-size: 12.5px; }
 .btn[disabled] { opacity: .45; cursor: not-allowed; }
 form.inline { display: inline; }
 .row { display: flex; gap: 9px; flex-wrap: wrap; align-items: center; }
 
 /* ── برچسب ─────────────────────────────────────────────────────── */
 .pill {
-  display: inline-block; font-size: 12px; padding: 3px 10px; border-radius: 999px;
+  display: inline-block; font-size: 11.5px; padding: 3px 11px; border-radius: 999px;
   border: 1px solid var(--line); color: var(--muted); background: var(--soft);
-  white-space: nowrap;
+  white-space: nowrap; font-weight: 500;
 }
 .pill.ok { color: var(--ok); background: var(--ok-bg); border-color: transparent; }
 .pill.bad { color: var(--bad); background: var(--bad-bg); border-color: transparent; }
@@ -189,72 +268,82 @@ form.inline { display: inline; }
 /* ── پیام ──────────────────────────────────────────────────────── */
 .flash {
   border: 1px solid var(--line); border-right: 3px solid var(--muted);
-  border-radius: 10px; padding: 13px 16px; margin-bottom: 22px;
+  border-radius: 11px; padding: 13px 17px; margin-bottom: 22px;
   background: var(--card);
 }
 .flash.ok { border-right-color: var(--ok); background: var(--ok-bg); color: var(--ok); }
 .flash.bad { border-right-color: var(--bad); background: var(--bad-bg); color: var(--bad); }
 .note {
-  background: var(--soft); border-radius: 10px; padding: 13px 16px;
+  background: var(--soft); border-radius: 11px; padding: 13px 17px;
   color: var(--muted); font-size: 13.5px; margin: 16px 0;
 }
 .note.warn { background: var(--warn-bg); color: var(--warn); }
 
 /* ── فرم ───────────────────────────────────────────────────────── */
-input[type=search], input[type=text], input[type=number], select {
-  background: var(--card); color: var(--ink); border: 1px solid var(--line);
-  border-radius: 9px; padding: 9px 13px; font: inherit;
+input[type=search], input[type=text], input[type=number],
+input[type=password], select {
+  background: var(--bg-soft); color: var(--ink); border: 1px solid var(--line);
+  border-radius: 10px; padding: 10px 13px; font: inherit; font-size: 14px;
 }
 input[type=search] { min-width: 240px; }
-input:focus, select:focus { outline: 2px solid var(--accent); outline-offset: -1px; }
-label.field { display: block; margin-bottom: 15px; }
+input:focus, select:focus {
+  outline: none; border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+input::placeholder { color: var(--muted); }
+label.field { display: block; margin-bottom: 16px; }
 label.field .cap {
-  display: block; font-size: 13px; color: var(--muted); margin-bottom: 6px;
+  display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 7px;
+  font-weight: 500;
 }
 label.field input, label.field select { width: 100%; max-width: 420px; }
-label.field .hint { font-size: 12.5px; color: var(--muted); margin-top: 5px; }
+label.field .hint { font-size: 12.5px; color: var(--muted); margin-top: 6px; display: block; }
 
 /* ── چیدمان دو ستونه ────────────────────────────────────────────── */
-.split { display: grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap: 15px; }
+.split { display: grid; grid-template-columns: repeat(auto-fit, minmax(320px, 1fr)); gap: 15px; }
+.split3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 15px; }
 .panel {
   background: var(--card); border: 1px solid var(--line);
-  border-radius: var(--radius); padding: 20px; box-shadow: var(--shadow);
+  border-radius: var(--radius); padding: 21px; box-shadow: var(--shadow);
 }
-.panel h2 { margin: 0 0 4px; font-size: 15.5px; color: var(--ink); }
-.panel .sub { margin: 0 0 16px; font-size: 13px; }
-dl.facts { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 9px 16px; }
+.panel h2 { margin: 0 0 5px; font-size: 15.5px; color: var(--ink); font-weight: 600; }
+.panel .sub { margin: 0 0 17px; font-size: 13px; }
+dl.facts { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 10px 18px; }
 dl.facts dt { color: var(--muted); font-size: 13.5px; }
 dl.facts dd { margin: 0; }
 
-/* ── نمودار ────────────────────────────────────────────────────── */
-.chart { display: flex; align-items: flex-end; gap: 5px; height: 130px; padding: 4px 0; }
-.chart .bar { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; }
-.chart .fill {
-  background: var(--accent); border-radius: 5px 5px 2px 2px; min-height: 3px;
-  transition: .2s;
-}
-.chart .bar:hover .fill { opacity: .75; }
-.chart .tick {
-  font-size: 10px; color: var(--muted); text-align: center; margin-top: 6px;
-  white-space: nowrap;
-}
-.legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; font-size: 13px; }
-.legend b { font-variant-numeric: tabular-nums; }
-
-.split3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 15px; }
 .attention { border-right: 3px solid var(--warn); }
 .attention.none { border-right-color: var(--ok); }
 
-.receipt { max-height: 78px; border-radius: 7px; border: 1px solid var(--line); }
+/* ── نمودار ────────────────────────────────────────────────────── */
+.chart { display: flex; align-items: flex-end; gap: 5px; height: 140px; padding: 4px 0; }
+.chart .bar { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; }
+.chart .fill {
+  background: linear-gradient(180deg, var(--accent-2), var(--accent));
+  border-radius: 5px 5px 2px 2px; min-height: 3px; transition: .2s;
+}
+.chart .bar:hover .fill { filter: brightness(1.25); }
+.chart .tick {
+  font-size: 10px; color: var(--muted); text-align: center; margin-top: 7px;
+  white-space: nowrap;
+}
+.legend { display: flex; gap: 18px; flex-wrap: wrap; margin-top: 14px; font-size: 13px; color: var(--muted); }
+.legend b { font-variant-numeric: tabular-nums; color: var(--ink); }
+
+.receipt { max-height: 78px; border-radius: 8px; border: 1px solid var(--line); }
 .money { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .mini { color: var(--muted); font-size: 12px; }
 code {
-  background: var(--soft); padding: 2px 7px; border-radius: 6px;
+  background: var(--soft); padding: 2px 8px; border-radius: 7px;
   font-size: 13px; direction: ltr; display: inline-block;
+  font-family: ui-monospace, "SF Mono", Menlo, monospace;
 }
-.gate { max-width: 440px; margin: 14vh auto; text-align: center; }
-.gate .panel { padding: 32px 28px; }
+.gate { max-width: 430px; margin: 12vh auto; }
+.gate .panel { padding: 34px 30px; }
+.gate h1 { text-align: center; }
+.gate .sub { text-align: center; }
 """
+
 
 # بخش‌های پنل، گروه‌بندی‌شده. گروه‌ها فقط تزئین نیستند: با ده بخش،
 # «کجا دنبالش بگردم» خودش یک سؤال می‌شود.
@@ -311,7 +400,8 @@ def page(
             cls = "on" if href == active else ""
             links.append(
                 f"<a href='{esc(href)}' class='{cls}'>"
-                f"<span>{icon}</span><span>{esc(label)}</span>{mark}</a>"
+                f"<span class='ico'>{icon}</span>"
+                f"<span>{esc(label)}</span>{mark}</a>"
             )
         groups.append(
             f"<div class='group'>{esc(group)}</div><nav>{''.join(links)}</nav>"
@@ -330,9 +420,10 @@ def page(
         "<meta name='robots' content='noindex, nofollow'>"
         f"<title>{esc(title)} — پنل مدیریت</title>"
         f"<style>{CSS}</style></head><body><div class='layout'>"
-        "<aside><div class='brand'>🤖 پنل مدیریت</div>"
+        "<aside><div class='brand'><span class='mark'>⚡</span>"
+        "<span>فورواردبات</span></div>"
         f"{''.join(groups)}"
-        "<div class='foot'>تلکاپ</div></aside>"
+        "<div class='foot'>پنل مدیریت · فورواردبات</div></aside>"
         f"<div class='content'><div class='topbar'>"
         f"<b>{esc(title)}</b>{identity}</div>"
         f"<main>{body}</main></div></div></body></html>"
