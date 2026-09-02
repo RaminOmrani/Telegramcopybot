@@ -78,6 +78,9 @@ class Report:
     source_last_id: int = 0        # تازه‌ترین پستِ مبدا
     our_last_id: int = 0           # تازه‌ترین پستی که ما دیدیم
     probe_error: str = ""
+    source_member: bool | None = None   # اکانت عضو کانال مبداست؟
+    can_post: bool | None = None        # اجازه‌ی ارسال در مقصد داریم؟
+    dest_error: str = ""
 
     @property
     def missed(self) -> int:
@@ -201,6 +204,49 @@ async def _probe(report: Report, task: Task) -> None:
         report.probe_error = str(exc)[:200]
         log.info("خواندن مبدا کار %s ممکن نشد: %s", task.id, exc)
 
+    report.source_member = await _is_member(client, task.source_id or task.source_ref)
+    report.can_post, report.dest_error = await _can_post(client, task.dest_ref)
+
+
+async def _is_member(client, target) -> bool | None:
+    """آیا اکانت متصل <b>عضو</b> کانال مبداست.
+
+    <b>مهم‌ترین بررسیِ کل این ماژول.</b> کانال عمومی را بدون عضویت هم
+    می‌شود خواند — پس همه‌چیز سالم به نظر می‌رسد — ولی تلگرام
+    به‌روزرسانی‌های کانال را <b>فقط به اعضایش</b> می‌فرستد. اکانتی که
+    عضو نیست هیچ‌وقت پستِ تازه‌ای نمی‌گیرد، و این دقیقاً شبیه «مبدا
+    ساکت است» به نظر می‌رسد.
+    """
+    try:
+        await client.get_permissions(target, "me")
+    except Exception:                            # noqa: BLE001
+        return False
+    return True
+
+
+async def _can_post(client, dest_ref: str) -> tuple[bool | None, str]:
+    """آیا در مقصد اجازه‌ی ارسال داریم.
+
+    <b>مالک و ادمین یکی نیستند.</b> مالک همه‌ی اختیارها را دارد؛ ادمین
+    فقط همان‌هایی را که به او داده‌اند — و «ارسال پیام» می‌تواند خاموش
+    باشد بی‌آنکه از فهرست ادمین‌ها معلوم شود.
+    """
+    if not dest_ref:
+        return None, ""
+    target = int(dest_ref) if dest_ref.lstrip("-").isdigit() else dest_ref
+    try:
+        rights = await client.get_permissions(target, "me")
+    except Exception as exc:                     # noqa: BLE001
+        return False, str(exc)[:200]
+
+    # در کانال، ارسال به post_messages بند است؛ در گروه به send_messages.
+    # هرکدام که نبود، None است و نباید «ندارد» حساب شود.
+    for name in ("post_messages", "send_messages"):
+        value = getattr(rights, name, None)
+        if value is not None:
+            return bool(value), ""
+    return bool(getattr(rights, "is_admin", False)), ""
+
 
 async def _add_problems(report: Report, task: Task) -> None:
     """چیزهایی که خودِ کاربر باید بداند، به ترتیب اهمیت.
@@ -239,10 +285,21 @@ async def _add_problems(report: Report, task: Task) -> None:
                 "روی کانال مبدا گوش نمی‌دهیم — پست‌ها می‌آیند ولی به این "
                 "کار نمی‌رسند. «🔄 راه‌اندازی دوباره» را بزنید."
             )
+        if report.source_member is False:
+            report.problems.append(
+                "اکانت متصل عضو کانال مبدا نیست. تلگرام پست‌های کانال را "
+                "فقط به اعضایش می‌فرستد، پس هیچ پستی نمی‌رسد — حتی اگر "
+                "کانال عمومی باشد و از اپ ببینیدش."
+            )
+        if report.can_post is False:
+            detail = f" ({report.dest_error})" if report.dest_error else ""
+            report.problems.append(
+                f"در کانال مقصد اجازه‌ی ارسال ندارید{detail}. اکانت متصل "
+                "باید ادمینِ مقصد باشد و دسترسی «ارسال پیام» داشته باشد."
+            )
         if report.probe_error:
             report.problems.append(
-                f"خواندن کانال مبدا ممکن نشد: {report.probe_error}\n"
-                "معمولاً یعنی اکانت شما عضو آن کانال نیست."
+                f"خواندن کانال مبدا ممکن نشد: {report.probe_error}"
             )
         elif report.missed:
             report.problems.append(

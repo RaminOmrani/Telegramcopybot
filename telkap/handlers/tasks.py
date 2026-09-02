@@ -245,10 +245,15 @@ async def cb_why(call: CallbackQuery) -> None:
         lines.append(f"اشتراک: <b>{fa_num(report.subscription_days)}</b> روز مانده")
 
     # وضعیت اتصال، از خودِ تلگرام پرسیده شده نه حدس زده
+    def mark(value) -> str:
+        return "…" if value is None else ("✅" if value else "❌")
+
     lines += [
         "",
         f"اتصال اکانت: {'✅' if report.connected else '❌'}",
         f"گوش دادن روی مبدا: {'✅' if report.listening else '❌'}",
+        f"عضویت در کانال مبدا: {mark(report.source_member)}",
+        f"اجازه‌ی ارسال در مقصد: {mark(report.can_post)}",
     ]
     if report.source_last_id:
         lines.append(

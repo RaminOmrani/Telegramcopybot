@@ -181,3 +181,101 @@ async def test_a_missing_task_gives_nothing(tmp_path, monkeypatch):
     await _setup(tmp_path, monkeypatch, settings={})
 
     assert await diagnose.task_report(9999) is None
+
+
+# ── عضویت در مبدا و اجازه‌ی ارسال در مقصد ────────────────────────────
+
+
+class _Rights:
+    def __init__(self, post=None, send=None, admin=False):
+        self.post_messages = post
+        self.send_messages = send
+        self.is_admin = admin
+
+
+class _RightsClient(_Client):
+    """کلاینتی که به get_permissions هم جواب می‌دهد."""
+
+    def __init__(self, *, latest_id=None, source=None, dest=None):
+        super().__init__(latest_id=latest_id)
+        self.source = source
+        self.dest = dest
+
+    async def get_permissions(self, target, who):
+        value = self.source if target in (-1001234, "@src") else self.dest
+        if isinstance(value, Exception):
+            raise value
+        if value is None:
+            raise RuntimeError("USER_NOT_PARTICIPANT")
+        return value
+
+
+@pytest.mark.asyncio
+async def test_not_being_a_member_of_the_source_is_named(tmp_path, monkeypatch):
+    """<b>تلگرام پست کانال را فقط به اعضایش می‌فرستد.</b>
+
+    کانال عمومی را بدون عضویت هم می‌شود خواند، پس همه‌چیز سالم به نظر
+    می‌رسد — ولی هیچ به‌روزرسانی‌ای نمی‌آید. این دقیقاً همان تله‌ای
+    است که «مبدا ساکت است» به نظر می‌رسید.
+    """
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    task = await _task(db_module)
+    client = _RightsClient(latest_id=9, source=None, dest=_Rights(post=True))
+    _fake_manager(monkeypatch, client=client)
+
+    report = await diagnose.task_report(task.id)
+
+    assert report.source_member is False
+    assert any("عضو کانال مبدا نیست" in p for p in report.problems)
+
+
+@pytest.mark.asyncio
+async def test_an_admin_without_posting_rights_is_named(tmp_path, monkeypatch):
+    """<b>ادمین بودن کافی نیست.</b>
+
+    مالک همه‌ی اختیارها را دارد؛ ادمین فقط همان‌هایی را که به او
+    داده‌اند — و «ارسال پیام» می‌تواند خاموش باشد بی‌آنکه از فهرست
+    ادمین‌ها معلوم شود.
+    """
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    task = await _task(db_module)
+    client = _RightsClient(
+        latest_id=9, source=_Rights(send=True), dest=_Rights(post=False, admin=True)
+    )
+    _fake_manager(monkeypatch, client=client)
+
+    report = await diagnose.task_report(task.id)
+
+    assert report.can_post is False
+    assert any("اجازه‌ی ارسال ندارید" in p for p in report.problems)
+
+
+@pytest.mark.asyncio
+async def test_full_rights_raise_no_complaint(tmp_path, monkeypatch):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    task = await _task(db_module)
+    client = _RightsClient(
+        latest_id=9, source=_Rights(send=True), dest=_Rights(post=True)
+    )
+    _fake_manager(monkeypatch, client=client)
+
+    report = await diagnose.task_report(task.id)
+
+    assert report.source_member is True
+    assert report.can_post is True
+    assert not any("عضو" in p or "اجازه" in p for p in report.problems)
+
+
+@pytest.mark.asyncio
+async def test_a_group_destination_uses_send_messages(tmp_path, monkeypatch):
+    """در گروه اجازه‌ی ارسال send_messages است، نه post_messages."""
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    task = await _task(db_module)
+    client = _RightsClient(
+        latest_id=9, source=_Rights(send=True), dest=_Rights(post=None, send=True)
+    )
+    _fake_manager(monkeypatch, client=client)
+
+    report = await diagnose.task_report(task.id)
+
+    assert report.can_post is True
