@@ -325,6 +325,27 @@ class UserbotManager:
             return []
         return runtime.source_map.get(chat_id, [])
 
+    def is_listening(self, user_id: int, chat_id: int | None) -> bool:
+        """آیا همین حالا روی این کانال گوش می‌دهیم.
+
+        <b>چرا این لازم شد.</b> اگر کانالی در source_map نباشد، پیام‌هایش
+        به هیچ کاری نمی‌رسند و <b>هیچ ردی هم نمی‌گذارند</b> — نه کپی، نه
+        رد، نه خطا. از بیرون دقیقاً شبیه «مبدا چیزی منتشر نکرده» است، و
+        تشخیصشان از هم بدون این تابع ممکن نبود.
+        """
+        if chat_id is None:
+            return False
+        runtime = self._runtimes.get(user_id)
+        return bool(runtime and chat_id in runtime.source_map)
+
+    def is_connected(self, user_id: int) -> bool:
+        runtime = self._runtimes.get(user_id)
+        return bool(runtime and runtime.client.is_connected())
+
+    def listening_chats(self, user_id: int) -> list[int]:
+        runtime = self._runtimes.get(user_id)
+        return list(runtime.source_map) if runtime else []
+
     # ------------------------------------------------------------- کمکی‌ها
     @staticmethod
     async def resolve_chat_id(client: TelegramClient, ref: str) -> int | None:

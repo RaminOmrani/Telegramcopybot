@@ -162,6 +162,47 @@ async def cb_open(call: CallbackQuery) -> None:
     await show_task(call.message, task_id, edit=True)
 
 
+@router.callback_query(F.data.startswith("task:relisten:"))
+async def cb_relisten(call: CallbackQuery) -> None:
+    """هندلرهای کاربر را از نو می‌سازد.
+
+    <b>چرا دکمه‌اش لازم است.</b> اگر کانالی از فهرست گوش دادن بیفتد —
+    قطعیِ اتصال، خطای موقتِ تلگرام هنگام شناسایی کانال — پست‌هایش به
+    هیچ کاری نمی‌رسند و <b>هیچ ردی هم نمی‌گذارند</b>. تا امروز تنها
+    راهِ برگرداندنش خاموش و روشن کردن کار یا ری‌استارت ربات بود.
+    """
+    task_id = int(call.data.split(":")[2])
+    async with get_session() as db:
+        task = await db.get(Task, task_id)
+        if task is None or task.user_id != call.from_user.id:
+            await call.answer("دسترسی ندارید", show_alert=True)
+            return
+
+    await call.answer("در حال راه‌اندازی دوباره…")
+    try:
+        count = await manager.reload_user(call.from_user.id)
+    except Exception as exc:                     # noqa: BLE001
+        log.warning("راه‌اندازی دوباره ناموفق بود", exc_info=True)
+        await call.message.answer(f"⚠️ راه‌اندازی دوباره ممکن نشد: {exc}")
+        return
+
+    listening = manager.is_listening(call.from_user.id, task.source_id)
+    if listening:
+        await call.message.answer(
+            f"✅ دوباره راه افتاد — {fa_num(count)} کار فعال، و روی مبدای "
+            "این کار گوش می‌دهیم.\n\n"
+            "<i>پست‌های تازه از این پس می‌آیند. برای پست‌های جامانده از "
+            "«🕓 کپی پیام‌های گذشته» استفاده کنید.</i>"
+        )
+    else:
+        await call.message.answer(
+            "⚠️ هنوز روی کانال مبدا گوش نمی‌دهیم.\n\n"
+            "<i>محتمل‌ترین علت: اکانت متصل عضو آن کانال نیست. تلگرام "
+            "پست‌های کانال را فقط به اعضایش می‌فرستد — با همان اکانتی که "
+            "به ربات وصل کرده‌اید در کانال عضو شوید.</i>"
+        )
+
+
 @router.callback_query(F.data.startswith("task:why:"))
 async def cb_why(call: CallbackQuery) -> None:
     """چرا این کار پست‌ها را نمی‌زند.
@@ -203,6 +244,18 @@ async def cb_why(call: CallbackQuery) -> None:
     if report.subscription_days:
         lines.append(f"اشتراک: <b>{fa_num(report.subscription_days)}</b> روز مانده")
 
+    # وضعیت اتصال، از خودِ تلگرام پرسیده شده نه حدس زده
+    lines += [
+        "",
+        f"اتصال اکانت: {'✅' if report.connected else '❌'}",
+        f"گوش دادن روی مبدا: {'✅' if report.listening else '❌'}",
+    ]
+    if report.source_last_id:
+        lines.append(
+            f"تازه‌ترین پست مبدا: <code>{report.source_last_id}</code> · "
+            f"آخرین پستی که دیدیم: <code>{report.our_last_id or '—'}</code>"
+        )
+
     if report.reasons:
         lines += ["", f"<b>چرا پست‌ها رد شدند</b> — {fa_num(24)} ساعت گذشته:"]
         for reason in report.reasons:
@@ -212,11 +265,17 @@ async def cb_why(call: CallbackQuery) -> None:
     elif not report.problems:
         lines += [
             "",
-            "<i>در ۲۴ ساعت گذشته هیچ پستی رد نشده. اگر پستی از مبدا "
-            "نیامده، یعنی کانال مبدا چیزی منتشر نکرده.</i>",
+            "<i>در ۲۴ ساعت گذشته هیچ پستی رد نشده و هیچ پستی هم از مبدا "
+            "نرسیده. اتصال و گوش دادن هر دو سالم‌اند، پس یعنی مبدا در این "
+            "مدت چیزی منتشر نکرده.</i>",
         ]
 
     kb = InlineKeyboardBuilder()
+    kb.row(
+        InlineKeyboardButton(
+            text="🔄 راه‌اندازی دوباره", callback_data=f"task:relisten:{task_id}"
+        )
+    )
     kb.row(InlineKeyboardButton(text="📈 آمار روزانه", callback_data=f"task:stats:{task_id}"))
     kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"task:open:{task_id}"))
     text = "\n".join(lines)

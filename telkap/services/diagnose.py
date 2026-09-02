@@ -72,6 +72,25 @@ class Report:
     subscription_days: int = 0
     problems: list[str] = field(default_factory=list)
 
+    # ── آنچه از خودِ تلگرام پرسیده شد ──────────────────────────────
+    connected: bool = False        # اکانت کاربری وصل است
+    listening: bool = False        # روی این کانال گوش می‌دهیم
+    source_last_id: int = 0        # تازه‌ترین پستِ مبدا
+    our_last_id: int = 0           # تازه‌ترین پستی که ما دیدیم
+    probe_error: str = ""
+
+    @property
+    def missed(self) -> int:
+        """چند پستِ مبدا هرگز به ما نرسید.
+
+        <b>این عدد جای یک حدس را می‌گیرد.</b> پیش از این، «هیچ رکوردی
+        نداریم» را «مبدا چیزی منتشر نکرده» ترجمه می‌کردیم — که
+        دانستنی نبود و در عمل غلط از آب درآمد.
+        """
+        if not self.source_last_id or not self.our_last_id:
+            return 0
+        return max(0, self.source_last_id - self.our_last_id)
+
     @property
     def healthy(self) -> bool:
         return self.enabled and not self.problems
@@ -133,8 +152,54 @@ async def task_report(task_id: int) -> Report | None:
         waiting=int(queued or 0),
     )
 
+    await _probe(report, task)
     await _add_problems(report, task)
     return report
+
+
+async def _probe(report: Report, task: Task) -> None:
+    """از خودِ تلگرام می‌پرسد، به‌جای اینکه حدس بزند.
+
+    <b>چرا این بخش اضافه شد.</b> گزارش قبلی وقتی هیچ رکوردی نداشت
+    می‌گفت «مبدا چیزی منتشر نکرده» — ولی این را نمی‌دانست، فقط
+    نمی‌دیدش. و دقیقاً همان‌جا اشتباه می‌کرد: کانال نُه پست زده بود و
+    هیچ‌کدام به ربات نرسیده بود.
+
+    حالا سه چیز <b>پرسیده</b> می‌شود: اکانت وصل است؟ روی این کانال
+    گوش می‌دهیم؟ و تازه‌ترین پست مبدا چند است در برابر تازه‌ترین پستی
+    که دیده‌ایم؟ اختلافِ آن دو، تعداد پست‌های گم‌شده است.
+    """
+    from telkap.services.userbot import manager
+
+    report.connected = manager.is_connected(task.user_id)
+    report.listening = manager.is_listening(task.user_id, task.source_id)
+
+    async with get_session() as db:
+        report.our_last_id = int(
+            await db.scalar(
+                select(func.max(MessageMap.src_msg_id)).where(
+                    MessageMap.task_id == task.id
+                )
+            )
+            or 0
+        )
+
+    if task.source_kind == Task.SOURCE_RSS:
+        return          # فید مبدا تلگرامی ندارد که آخرین پستش را بپرسیم
+
+    client = manager.get_client(task.user_id)
+    if client is None or not report.connected:
+        return
+    try:
+        target = task.source_id or task.source_ref
+        latest = await client.get_messages(target, limit=1)
+        if latest:
+            report.source_last_id = int(latest[0].id)
+    except Exception as exc:                     # noqa: BLE001
+        # نرسیدن به مبدا خودش یک یافته است — مثلاً اکانت عضو کانال
+        # نیست و برای همین هیچ به‌روزرسانی‌ای نمی‌گیرد.
+        report.probe_error = str(exc)[:200]
+        log.info("خواندن مبدا کار %s ممکن نشد: %s", task.id, exc)
 
 
 async def _add_problems(report: Report, task: Task) -> None:
@@ -162,6 +227,28 @@ async def _add_problems(report: Report, task: Task) -> None:
         report.problems.append(
             "سهمیه‌ی پیام این دوره تمام شده — تا تمدید، پستی فرستاده نمی‌شود."
         )
+
+    # ── یافته‌های پرسش زنده ────────────────────────────────────────
+    if report.enabled:
+        if not report.connected:
+            report.problems.append(
+                "اکانت کاربری وصل نیست، پس هیچ پیامی از مبدا نمی‌رسد."
+            )
+        elif not report.listening:
+            report.problems.append(
+                "روی کانال مبدا گوش نمی‌دهیم — پست‌ها می‌آیند ولی به این "
+                "کار نمی‌رسند. «🔄 راه‌اندازی دوباره» را بزنید."
+            )
+        if report.probe_error:
+            report.problems.append(
+                f"خواندن کانال مبدا ممکن نشد: {report.probe_error}\n"
+                "معمولاً یعنی اکانت شما عضو آن کانال نیست."
+            )
+        elif report.missed:
+            report.problems.append(
+                f"حدود {report.missed} پست از مبدا هرگز به ربات نرسیده "
+                "(تازه‌ترین پست مبدا از تازه‌ترین پستی که دیده‌ایم جلوتر است)."
+            )
 
     snapshot = await cache.get_task(task.id)
     if snapshot is not None and not snapshot.targets:
