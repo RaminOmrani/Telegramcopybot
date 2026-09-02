@@ -148,7 +148,7 @@ async def _deny(request: web.Request, cap: str) -> web.Response | None:
 #   بازگشت درگاه — مرورگر کاربر به آن هدایت می‌شود و کاربر ادمین نیست،
 #   پس نمی‌تواند پشت ورود بماند. چیزی جز نتیجه‌ی همان پرداخت نشان
 #   نمی‌دهد و به پارامترهای نشانی هم اعتماد نمی‌کند.
-PUBLIC_PATHS = frozenset({"/enter", "/healthz", zarinpal.CALLBACK_PATH})
+PUBLIC_PATHS = frozenset({"/enter", "/healthz", "/login", zarinpal.CALLBACK_PATH})
 
 
 @web.middleware
@@ -156,21 +156,16 @@ async def auth_middleware(request: web.Request, handler):
     if request.path in PUBLIC_PATHS:
         return await handler(request)
 
-    session = auth.get_session(request.cookies.get(auth.COOKIE_NAME))
+    session = await auth.get_session_for(request.cookies.get(auth.COOKIE_NAME))
     if session is None:
-        return web.Response(
-            text=render.gate(
-                "برای ورود، در ربات دکمه‌ی «🖥 پنل وب» را بزنید و لینکی که "
-                "می‌دهد را باز کنید. لینک پنج دقیقه اعتبار دارد."
-            ),
-            content_type="text/html",
-            status=401,
-        )
+        # به صفحه‌ی ورود می‌رود، نه یک پیام بن‌بست. کسی که نشستش تمام
+        # شده باید بتواند همان‌جا دوباره وارد شود.
+        raise web.HTTPFound("/login")
 
     # نقش ممکن است بعد از ورود گرفته شده باشد؛ هر درخواست دوباره سنجیده
     # می‌شود تا کسی با نشستِ باز، بعدِ عزل هم داخل نماند
     if not await roles.is_staff(session.user_id):
-        auth.forget_user(session.user_id)
+        await auth.end_all(session.user_id)
         return web.Response(
             text=render.gate("دیگر دسترسی مدیریتی ندارید.", bad=True),
             content_type="text/html",
@@ -182,6 +177,89 @@ async def auth_middleware(request: web.Request, handler):
 
 
 # -------------------------------------------------------------- ورود
+def _set_cookie(response, request: web.Request, token: str):
+    """کوکی نشست، با پرچم Secure فقط وقتی واقعاً https هست."""
+    secure = get_settings().web_base_url.startswith("https://")
+    if secure and not _over_https(request):
+        # ورود «کار می‌کند» ولی کاربر بی‌درنگ به صفحه‌ی ورود برمی‌گردد و
+        # هیچ خطایی هم نمی‌بیند. بدون این خط، پیدا کردنش ساعت‌ها وقت می‌برد.
+        log.warning(
+            "WEB_BASE_URL روی https است ولی این درخواست از http آمد. "
+            "کوکی ورود فرستاده می‌شود اما مرورگر برش نمی‌گرداند و ورود در "
+            "حلقه می‌افتد. یا پنل را پشت HTTPS بگذارید، یا WEB_BASE_URL را "
+            "به همان آدرسی که واقعاً باز می‌کنید تغییر دهید."
+        )
+    response.set_cookie(
+        auth.COOKIE_NAME,
+        token,
+        httponly=True,
+        samesite="Lax",
+        max_age=auth.SESSION_TTL_SECONDS,
+        secure=secure,
+    )
+    return response
+
+
+async def login_page(request: web.Request) -> web.Response:
+    """صفحه‌ی ورود — نام کاربری و رمز، بعد کد تلگرام."""
+    if await auth.get_session_for(request.cookies.get(auth.COOKIE_NAME)):
+        raise web.HTTPFound("/")
+
+    error = request.query.get("err", "")
+    key = request.query.get("k", "")
+    return web.Response(
+        text=render.login(error=error, pending_key=key),
+        content_type="text/html",
+    )
+
+
+async def login_submit(request: web.Request) -> web.Response:
+    """مرحله‌ی یک یا دو، بسته به اینکه کلید موقت آمده باشد یا نه."""
+    posted = await request.post()
+    key = str(posted.get("key", "")).strip()
+
+    if key:
+        token, problem = await auth.finish_login(
+            key,
+            str(posted.get("code", "")),
+            user_agent=request.headers.get("User-Agent", ""),
+        )
+        if problem:
+            return web.HTTPFound(f"/login?{urlencode({'k': key, 'err': problem})}")
+        return _set_cookie(web.HTTPFound("/"), request, token)
+
+    username = str(posted.get("username", ""))
+    password = str(posted.get("password", ""))
+    key, problem, user_id = await auth.start_login(username, password)
+    if problem:
+        return web.HTTPFound(f"/login?{urlencode({'err': problem})}")
+
+    if not await roles.is_staff(user_id):
+        return web.HTTPFound("/login?" + urlencode({"err": "دسترسی مدیریتی ندارید."}))
+
+    # کد از راه تلگرام می‌رود، نه ایمیل یا پیامک: همان‌جایی که ربات
+    # قبلاً هست و رایگان است، و صاحب حساب همیشه بازش دارد.
+    bot = request.app[BOT]
+    try:
+        await bot.send_message(
+            user_id,
+            "🔐 <b>کد ورود به پنل وب</b>\n\n"
+            f"<code>{auth.code_for(key)}</code>\n\n"
+            "<i>پنج دقیقه اعتبار دارد. اگر شما وارد نمی‌شوید، این کد را به "
+            "هیچ‌کس ندهید و رمز پنل را عوض کنید.</i>",
+        )
+    except Exception:
+        log.warning("فرستادن کد ورود به %s ناموفق بود", user_id, exc_info=True)
+        return web.HTTPFound(
+            "/login?"
+            + urlencode(
+                {"err": "کد به تلگرام نرسید. مطمئن شوید ربات را استارت کرده‌اید."}
+            )
+        )
+
+    return web.HTTPFound(f"/login?{urlencode({'k': key})}")
+
+
 async def enter(request: web.Request) -> web.Response:
     user_id = auth.consume_login_token(request.query.get("t", ""))
     if user_id is None:
@@ -201,34 +279,14 @@ async def enter(request: web.Request) -> web.Response:
             status=403,
         )
 
-    sid = auth.start_session(user_id)
-    # روی http کوکیِ Secure اصلاً برنمی‌گردد؛ پس فقط وقتی که آدرس پنل
-    # https است این را می‌گذاریم
-    secure = get_settings().web_base_url.startswith("https://")
-    if secure and not _over_https(request):
-        # ورود «کار می‌کند» ولی کاربر بی‌درنگ به صفحه‌ی ورود برمی‌گردد و
-        # هیچ خطایی هم نمی‌بیند. بدون این خط، پیدا کردنش ساعت‌ها وقت می‌برد.
-        log.warning(
-            "WEB_BASE_URL روی https است ولی این درخواست از http آمد. "
-            "کوکی ورود فرستاده می‌شود اما مرورگر برش نمی‌گرداند و ورود در "
-            "حلقه می‌افتد. یا پنل را پشت HTTPS بگذارید، یا WEB_BASE_URL را "
-            "به همان آدرسی که واقعاً باز می‌کنید تغییر دهید."
-        )
-
-    response = web.HTTPFound("/")
-    response.set_cookie(
-        auth.COOKIE_NAME,
-        sid,
-        httponly=True,
-        samesite="Lax",
-        max_age=auth.SESSION_TTL_SECONDS,
-        secure=secure,
+    sid = await auth.start_session(
+        user_id, user_agent=request.headers.get("User-Agent", "")
     )
-    return response
+    return _set_cookie(web.HTTPFound("/"), request, sid)
 
 
 async def logout(request: web.Request) -> web.Response:
-    auth.end_session(request.cookies.get(auth.COOKIE_NAME))
+    await auth.end_session(request.cookies.get(auth.COOKIE_NAME))
     response = web.Response(
         text=render.gate("از پنل خارج شدید."),
         content_type="text/html",
@@ -1158,6 +1216,8 @@ def build_app(bot) -> web.Application:
             web.get("/healthz", healthz),
             web.get(zarinpal.CALLBACK_PATH, zarinpal_return),
             web.get("/enter", enter),
+            web.get("/login", login_page),
+            web.post("/login", login_submit),
             web.get("/logout", logout),
             web.get("/", dashboard),
             web.get("/payments", payment_list),

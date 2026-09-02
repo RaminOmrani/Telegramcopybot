@@ -711,6 +711,64 @@ class AdminRole(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class WebAccount(Base):
+    """حساب ورود به پنل وب.
+
+    <b>چرا جدا از AdminRole.</b> نقش می‌گوید این آدم <b>چه کاری</b>
+    می‌تواند بکند؛ این جدول می‌گوید <b>چطور</b> وارد می‌شود. جدا نگه
+    داشتنشان یعنی گرفتن نقش کسی، حسابش را پاک نمی‌کند و برعکس — و
+    هیچ‌کدام به‌خاطر دیگری از دست نمی‌رود.
+
+    <b>رمز هرگز خام ذخیره نمی‌شود.</b> فقط هش PBKDF2 با نمکِ مخصوص
+    همان حساب. اگر روزی کل دیتابیس بیرون برود، رمزها هنوز قابل
+    استفاده نیستند.
+    """
+
+    __tablename__ = "web_accounts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(200))
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)   # آیدی تلگرام
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # ورودهای ناموفق پشت سر هم. حساب پس از چند تلاش قفل می‌شود تا
+    # حدس زدن رمز از «کند» به «بی‌فایده» برسد.
+    failed_logins: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_login_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WebSession(Base):
+    """نشست بازِ پنل وب.
+
+    <b>چرا در دیتابیس و نه در حافظه.</b> نشست‌های حافظه‌ای با هر
+    ری‌استارت ربات می‌مردند — و ربات برای هر به‌روزرسانی ری‌استارت
+    می‌شود. کسی که می‌خواهد پنل را باز نگه دارد و سر بزند، نباید هر
+    بار دوباره وارد شود.
+
+    فقط <b>هشِ</b> شناسه‌ی نشست ذخیره می‌شود، نه خودش: دیتابیسِ
+    لو‌رفته نباید کلیدِ ورودِ آماده بدهد.
+    """
+
+    __tablename__ = "web_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    csrf: Mapped[str] = mapped_column(String(64))
+    # کوتاه نگه داشتنشان امنیت بیشتری نمی‌دهد وقتی کد دومرحله‌ای هست،
+    # ولی آزاردهنده است. سی روز، با امکان خروج دستی از هرجا.
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    user_agent: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class ChurnFeedback(Base):
     """چرا کاربر تمدید نکرد.
 

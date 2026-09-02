@@ -577,13 +577,43 @@ async def cb_web_panel(call: CallbackQuery) -> None:
     from telkap.web import auth as web_auth
 
     token = web_auth.issue_login_token(call.from_user.id)
+    account = await web_auth.account_of(call.from_user.id)
     await call.answer()
+
+    kb = InlineKeyboardBuilder()
+    if account is None:
+        kb.row(
+            InlineKeyboardButton(
+                text="🔑 ساخت حساب برای ورود با رمز", callback_data="sys:webacct"
+            )
+        )
+        note = (
+            "\n\n<b>می‌خواهید بدون تلگرام هم وارد شوید؟</b> یک حساب با نام "
+            "کاربری و رمز بسازید — بعد از آن، فقط برای کد دومرحله‌ای به "
+            "تلگرام سر می‌زنید."
+        )
+    else:
+        kb.row(
+            InlineKeyboardButton(text="🔑 تغییر رمز", callback_data="sys:webpass")
+        )
+        kb.row(
+            InlineKeyboardButton(
+                text="🚪 خروج از همه‌ی دستگاه‌ها", callback_data="sys:weblogout"
+            )
+        )
+        note = (
+            f"\n\nنام کاربری شما: <code>{account.username}</code>\n"
+            f"<i>یا مستقیم به {cfg.web_base_url}/login بروید.</i>"
+        )
+
     await call.message.answer(
         "🖥 <b>ورود به پنل وب</b>\n\n"
         f"{cfg.web_base_url}/enter?t={token}\n\n"
         "⏳ این لینک <b>۵ دقیقه</b> اعتبار دارد و با اولین باز شدن می‌سوزد.\n"
-        "🔒 آن را برای کسی نفرستید — هرکس بازش کند با نام شما وارد می‌شود.",
+        "🔒 آن را برای کسی نفرستید — هرکس بازش کند با نام شما وارد می‌شود."
+        + note,
         disable_web_page_preview=True,
+        reply_markup=kb.as_markup(),
     )
     await log_activity(
         user_id=call.from_user.id,
@@ -820,3 +850,120 @@ async def do_maint_note(message: Message, state: FSMContext) -> None:
     text, kb = await _maint_screen()
     await message.answer("✅ متن ذخیره شد.")
     await message.answer(text, reply_markup=kb.as_markup())
+
+
+# ── حساب ورود به پنل وب ─────────────────────────────────────────────
+#
+# <b>چرا رمز، وقتی لینک هست.</b> لینک فقط از داخل ربات ساخته می‌شود.
+# کسی که می‌خواهد سر کار یا از مرورگر دیگری اوضاع را ببیند، هر بار
+# باید تلگرام باز کند. حساب با رمز این وابستگی را برمی‌دارد — و کد
+# دومرحله‌ای همچنان تلگرام را در مسیر نگه می‌دارد، چون این پنل به پول
+# و به اکانت مشتری‌ها دسترسی دارد.
+
+
+@router.callback_query(F.data == "sys:webacct")
+async def cb_web_account(call: CallbackQuery, state: FSMContext) -> None:
+    if await guard(call, roles.CAP_SYSTEM):
+        return
+    await call.answer()
+    await state.set_state(Flow.web_username)
+    await call.message.answer(
+        "🔑 <b>ساخت حساب پنل</b>\n\n"
+        "یک <b>نام کاربری</b> انتخاب کنید — ۳ تا ۳۲ نویسه‌ی انگلیسی، "
+        "با حرف شروع شود.\n\n"
+        "<i>مثال:</i> <code>ramin</code>\n\n"
+        "انصراف: /cancel"
+    )
+
+
+@router.message(Flow.web_username)
+async def got_web_username(message: Message, state: FSMContext) -> None:
+    from telkap.web import auth as web_auth
+
+    name = web_auth.clean_username(message.text or "")
+    if not name:
+        await message.answer(
+            "⚠️ نام کاربری باید ۳ تا ۳۲ نویسه‌ی انگلیسی باشد و با حرف شروع شود.\n\n"
+            "انصراف: /cancel"
+        )
+        return
+    if await web_auth.by_username(name) is not None:
+        await message.answer("⚠️ این نام کاربری قبلاً گرفته شده. یکی دیگر بفرستید.")
+        return
+
+    await state.update_data(web_username=name)
+    await state.set_state(Flow.web_password)
+    await message.answer(
+        f"نام کاربری: <code>{name}</code>\n\n"
+        "حالا یک <b>رمز</b> بفرستید — دست‌کم ۸ نویسه، نه فقط عدد.\n\n"
+        "<i>پیام شما بلافاصله پاک می‌شود.</i>\n\n"
+        "انصراف: /cancel"
+    )
+
+
+@router.message(Flow.web_password)
+async def got_web_password(message: Message, state: FSMContext) -> None:
+    """رمز را می‌گیرد و پیامش را پاک می‌کند.
+
+    <b>چرا پاک می‌شود.</b> رمز در تاریخچه‌ی چت ماندن یعنی هرکس روزی به
+    این گوشی برسد آن را دارد — و کل فایده‌ی رمز همان است که جای دیگری
+    نباشد.
+    """
+    from telkap.web import auth as web_auth
+
+    data = await state.get_data()
+    name = data.get("web_username", "")
+    password = message.text or ""
+
+    try:
+        await message.delete()
+    except Exception:                          # noqa: BLE001
+        log.info("پاک کردن پیام رمز ممکن نشد", exc_info=True)
+
+    if name:
+        account, problem = await web_auth.create_account(
+            name, password, message.from_user.id
+        )
+    else:
+        problem = await web_auth.set_password(message.from_user.id, password)
+        account = None if problem else await web_auth.account_of(message.from_user.id)
+
+    if problem:
+        await message.answer(f"⚠️ {problem}\n\nانصراف: /cancel")
+        return
+
+    await state.clear()
+    base = (get_settings().web_base_url or "").rstrip("/")
+    await message.answer(
+        "✅ <b>حساب پنل آماده است.</b>\n\n"
+        f"نام کاربری: <code>{account.username if account else name}</code>\n"
+        f"آدرس ورود: {base}/login\n\n"
+        "<i>پیام رمز پاک شد. هنگام ورود، یک کد شش‌رقمی همین‌جا برایتان "
+        "می‌آید.</i>",
+        disable_web_page_preview=True,
+    )
+
+
+@router.callback_query(F.data == "sys:webpass")
+async def cb_web_password(call: CallbackQuery, state: FSMContext) -> None:
+    if await guard(call, roles.CAP_SYSTEM):
+        return
+    await call.answer()
+    await state.set_state(Flow.web_password)
+    await state.update_data(web_username="")
+    await call.message.answer(
+        "🔑 <b>رمز تازه</b> را بفرستید — دست‌کم ۸ نویسه، نه فقط عدد.\n\n"
+        "<i>با عوض شدن رمز، همه‌ی نشست‌های بازتان بسته می‌شوند.</i>\n\n"
+        "انصراف: /cancel"
+    )
+
+
+@router.callback_query(F.data == "sys:weblogout")
+async def cb_web_logout(call: CallbackQuery) -> None:
+    """خروج از همه‌ی دستگاه‌ها — برای وقتی که مرورگری جا مانده."""
+    if await guard(call, roles.CAP_SYSTEM):
+        return
+    from telkap.web import auth as web_auth
+
+    count = await web_auth.end_all(call.from_user.id)
+    await call.answer(f"{count} نشست بسته شد", show_alert=True)

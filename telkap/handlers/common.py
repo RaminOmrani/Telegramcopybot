@@ -58,6 +58,8 @@ class Flow(StatesGroup):
     card_number = State()
     card_holder = State()
     zarinpal_merchant = State()
+    web_username = State()
+    web_password = State()
 
     admin_grant = State()
     admin_broadcast = State()

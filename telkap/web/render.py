@@ -279,6 +279,61 @@ def gate(message: str, *, bad: bool = False) -> str:
     )
 
 
+def login(*, error: str = "", pending_key: str = "") -> str:
+    """صفحه‌ی ورود — یک مرحله در هر نما.
+
+    <b>چرا دو صفحه و نه یکی.</b> نشان دادن هم‌زمانِ رمز و کد یعنی
+    کاربر نمی‌داند کدام را باید پر کند. هر بار فقط همان چیزی پرسیده
+    می‌شود که الان لازم است.
+    """
+    warn = f"<div class='flash bad'>{esc(error)}</div>" if error else ""
+
+    if pending_key:
+        body = (
+            "<h1>🔐 کد ورود</h1>"
+            "<p class='sub'>کدی که در تلگرام برایتان آمد را وارد کنید.</p>"
+            f"{warn}"
+            "<form method='post' action='/login'>"
+            f"<input type='hidden' name='key' value='{esc(pending_key)}'>"
+            "<label class='field'><span class='cap'>کد شش‌رقمی</span>"
+            "<input type='text' name='code' inputmode='numeric' autocomplete='one-time-code'"
+            " autofocus maxlength='6' dir='ltr' style='text-align:center;"
+            "font-size:22px;letter-spacing:6px'></label>"
+            "<button class='btn primary' style='width:100%'>ورود</button>"
+            "</form>"
+            "<p class='mini' style='margin-top:16px'>"
+            "<a href='/login'>← بازگشت</a> · کد پنج دقیقه اعتبار دارد</p>"
+        )
+    else:
+        body = (
+            "<h1>🤖 پنل مدیریت</h1>"
+            "<p class='sub'>برای ورود، نام کاربری و رمزتان را بزنید.</p>"
+            f"{warn}"
+            "<form method='post' action='/login'>"
+            "<label class='field'><span class='cap'>نام کاربری</span>"
+            "<input type='text' name='username' autocomplete='username' autofocus"
+            " dir='ltr'></label>"
+            "<label class='field'><span class='cap'>رمز</span>"
+            "<input type='password' name='password' autocomplete='current-password'"
+            " dir='ltr'></label>"
+            "<button class='btn primary' style='width:100%'>ادامه</button>"
+            "</form>"
+            "<p class='mini' style='margin-top:16px'>پس از رمز، یک کد در تلگرام "
+            "برایتان می‌آید.<br>حساب ندارید؟ در ربات: ⚙️ سیستم ← 🖥 پنل وب</p>"
+        )
+
+    return (
+        "<!doctype html><html lang='fa' dir='rtl'><head>"
+        "<meta charset='utf-8'>"
+        "<meta name='viewport' content='width=device-width, initial-scale=1'>"
+        "<meta name='robots' content='noindex, nofollow'>"
+        "<title>ورود — پنل مدیریت</title>"
+        f"<style>{CSS}</style></head><body><main>"
+        f"<div class='gate'><div class='panel'>{body}</div></div>"
+        "</main></body></html>"
+    )
+
+
 def card(label: str, value: str, tone: str = "", *, href: str = "") -> str:
     inner = (
         f"<a class='value {tone}' href='{esc(href)}'>{esc(value)}</a>"

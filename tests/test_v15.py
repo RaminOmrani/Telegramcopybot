@@ -39,56 +39,99 @@ def test_an_invented_token_is_refused():
     assert auth.consume_login_token("") is None
 
 
-def test_a_session_ends_when_it_expires(monkeypatch):
+@pytest.mark.asyncio
+async def test_a_session_survives_a_restart(tmp_path, monkeypatch):
+    """<b>چرا نشست‌ها به دیتابیس رفتند.</b>
+
+    نشست حافظه‌ای با هر ری‌استارت ربات می‌مرد — و ربات برای هر
+    به‌روزرسانی ری‌استارت می‌شود. کسی که پنل را باز نگه می‌دارد نباید
+    هر بار دوباره وارد شود.
+    """
     from telkap.web import auth
 
-    auth.reset()
-    sid = auth.start_session(7)
-    assert auth.get_session(sid).user_id == 7
+    await _setup(tmp_path, monkeypatch, settings={})
+    token = await auth.start_session(7)
 
-    real = auth.time.time
-    monkeypatch.setattr(
-        auth.time, "time", lambda: real() + auth.SESSION_TTL_SECONDS + 1
-    )
-    assert auth.get_session(sid) is None
+    # ری‌استارت یعنی حافظه‌ی درون‌پروسه خالی می‌شود
     auth.reset()
 
+    session = await auth.get_session_for(token)
+    assert session is not None
+    assert session.user_id == 7
 
-def test_removing_an_admin_closes_their_open_sessions():
+
+@pytest.mark.asyncio
+async def test_an_expired_session_is_refused(tmp_path, monkeypatch):
+    from datetime import timedelta
+
+    from telkap.models import WebSession, utcnow
+    from telkap.web import auth
+
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    token = await auth.start_session(7)
+
+    async with db_module.get_session() as db:
+        row = await db.scalar(
+            __import__("sqlalchemy").select(WebSession)
+        )
+        row.expires_at = utcnow() - timedelta(seconds=1)
+        await db.commit()
+
+    assert await auth.get_session_for(token) is None
+
+
+@pytest.mark.asyncio
+async def test_removing_an_admin_closes_their_open_sessions(tmp_path, monkeypatch):
     """نشستِ باز نباید کسی را بعد از عزل هم داخل نگه دارد."""
     from telkap.web import auth
 
-    auth.reset()
-    mine = auth.start_session(7)
-    someone_else = auth.start_session(9)
+    await _setup(tmp_path, monkeypatch, settings={})
+    mine = await auth.start_session(7)
+    someone_else = await auth.start_session(9)
 
-    auth.forget_user(7)
-    assert auth.get_session(mine) is None
-    assert auth.get_session(someone_else) is not None
-    auth.reset()
+    await auth.end_all(7)
+
+    assert await auth.get_session_for(mine) is None
+    assert await auth.get_session_for(someone_else) is not None
 
 
-def test_the_csrf_token_must_match():
+@pytest.mark.asyncio
+async def test_the_cookie_value_itself_is_never_stored(tmp_path, monkeypatch):
+    """<b>دیتابیسِ لو‌رفته نباید کلیدِ ورودِ آماده بدهد.</b>"""
+    from telkap.models import WebSession
     from telkap.web import auth
 
-    auth.reset()
-    sid = auth.start_session(7)
-    session = auth.get_session(sid)
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    token = await auth.start_session(7)
+
+    async with db_module.get_session() as db:
+        row = await db.scalar(__import__("sqlalchemy").select(WebSession))
+
+    assert token not in row.token_hash
+    assert len(row.token_hash) == 64          # SHA-256 هگز
+
+
+@pytest.mark.asyncio
+async def test_the_csrf_token_must_match(tmp_path, monkeypatch):
+    from telkap.web import auth
+
+    await _setup(tmp_path, monkeypatch, settings={})
+    session = await auth.get_session_for(await auth.start_session(7))
 
     assert auth.check_csrf(session, session.csrf) is True
     assert auth.check_csrf(session, "چیز دیگری") is False
     assert auth.check_csrf(session, "") is False
-    auth.reset()
 
 
-def test_two_sessions_do_not_share_a_csrf_token():
+@pytest.mark.asyncio
+async def test_two_sessions_do_not_share_a_csrf_token(tmp_path, monkeypatch):
     from telkap.web import auth
 
-    auth.reset()
-    first = auth.get_session(auth.start_session(7))
-    second = auth.get_session(auth.start_session(9))
+    await _setup(tmp_path, monkeypatch, settings={})
+    first = await auth.get_session_for(await auth.start_session(7))
+    second = await auth.get_session_for(await auth.start_session(9))
+
     assert first.csrf != second.csrf
-    auth.reset()
 
 
 # ------------------------------------------------------- ساخت صفحه
@@ -171,7 +214,9 @@ def test_every_page_but_the_gate_needs_a_session():
     # فهرست معافیت‌ها صریح است و اینجا مو‌به‌مو سنجیده می‌شود. اگر روزی
     # مسیری به آن اضافه شود، این تست می‌ایستد و کسی مجبور می‌شود
     # تصمیمش را توضیح بدهد — به‌جای اینکه پنل بی‌صدا عمومی شود.
-    assert server.PUBLIC_PATHS == {"/enter", "/healthz", "/pay/zarinpal"}
+    assert server.PUBLIC_PATHS == {
+        "/enter", "/healthz", "/login", "/pay/zarinpal"
+    }
 
     # و هرچه معاف نیست باید پشت ورود بماند
     assert paths - server.PUBLIC_PATHS == {
@@ -235,8 +280,14 @@ def test_every_writing_route_checks_the_csrf_token():
     for route in app.router.routes():
         if route.method != "POST":
             continue
+        path = route.resource.canonical
+        # ورود استثناست و باید هم باشد: هنوز نشستی وجود ندارد که
+        # توکنی داشته باشد. محافظش چیز دیگری است — رمز، کد تلگرام، و
+        # قفل شدن پس از چند تلاش.
+        if path in server.PUBLIC_PATHS:
+            continue
         source = inspect.getsource(route.handler)
-        assert "_guard_post" in source, route.resource.canonical
+        assert "_guard_post" in source, path
 
 
 # ------------------------------------- یکی بودن متن ربات و پنل
