@@ -35,6 +35,14 @@ log = logging.getLogger(__name__)
 # دیده شود و آن‌قدر کوتاه که به وضعیتِ الان مربوط باشد.
 WINDOW_HOURS = 24
 
+# کندتر از این یعنی کاربر متوجه می‌شود. یک دقیقه را تحمل می‌کند،
+# بیشترش را نه.
+SLOW_SECONDS = 60
+
+# گران‌ترین مسیر ارسال: کانالِ «محافظت‌شده» اجازه‌ی ارسال مجدد مرجعِ
+# رسانه را نمی‌دهد، پس فایل کامل دانلود و دوباره آپلود می‌شود.
+REUPLOAD_PATH = "دانلود و آپلود مجدد"
+
 # برچسب‌های خواناتر برای دلیل‌هایی که در لاگ ثبت می‌شوند. متن خودِ
 # لاگ هم قابل فهم است، ولی این‌ها می‌گویند «چه کاری از دستتان
 # برمی‌آید»، که همان چیزی است که کاربر می‌خواهد.
@@ -78,6 +86,9 @@ class Report:
     source_last_id: int = 0        # تازه‌ترین پستِ مبدا
     our_last_id: int = 0           # تازه‌ترین پستی که ما دیدیم
     probe_error: str = ""
+    median_seconds: int = 0
+    slowest_seconds: int = 0
+    paths: dict = field(default_factory=dict)
     source_member: bool | None = None   # اکانت عضو کانال مبداست؟
     can_post: bool | None = None        # اجازه‌ی ارسال در مقصد داریم؟
     dest_error: str = ""
@@ -120,6 +131,42 @@ async def _reasons(task_id: int, since) -> list[Reason]:
         return [Reason(detail=detail or "—", count=count) for detail, count in rows]
 
 
+async def latency(task_id: int, since=None) -> tuple[int, int, dict[str, int]]:
+    """(میانه، بیشینه، شمارِ هر مسیر) بر حسب ثانیه.
+
+    <b>چرا میانه و نه میانگین.</b> یک ویدیوی بزرگ که پنج دقیقه طول
+    کشیده، میانگین را می‌کشد و تصویری می‌سازد که با تجربه‌ی روزمره
+    نمی‌خواند. میانه می‌گوید «پستِ معمولی چقدر طول می‌کشد» و بیشینه
+    می‌گوید «بدترین حالت چه بود» — دو عددی که واقعاً لازم‌اند.
+    """
+    since = since or (utcnow() - timedelta(hours=WINDOW_HOURS))
+    async with get_session() as db:
+        rows = await db.execute(
+            select(ActivityLog.detail).where(
+                ActivityLog.task_id == task_id,
+                ActivityLog.event == "copy",
+                ActivityLog.created_at >= since,
+            )
+        )
+        details = [detail for (detail,) in rows if detail]
+
+    seconds: list[int] = []
+    paths: dict[str, int] = {}
+    for detail in details:
+        head, _, path = detail.partition(" · ")
+        try:
+            seconds.append(int(head.rstrip("s")))
+        except ValueError:
+            continue
+        if path:
+            paths[path] = paths.get(path, 0) + 1
+
+    if not seconds:
+        return 0, 0, paths
+    seconds.sort()
+    return seconds[len(seconds) // 2], seconds[-1], paths
+
+
 async def task_report(task_id: int) -> Report | None:
     """گزارش کامل یک کار. None یعنی کار پیدا نشد."""
     async with get_session() as db:
@@ -142,6 +189,7 @@ async def task_report(task_id: int) -> Report | None:
     since = utcnow() - timedelta(hours=WINDOW_HOURS)
     reasons = await _reasons(task_id, since)
     sent, skipped = await _today(task_id)
+    median, slowest, paths = await latency(task_id, since)
 
     report = Report(
         task_id=task.id,
@@ -153,6 +201,9 @@ async def task_report(task_id: int) -> Report | None:
         total_copied=int(copied or 0),
         reasons=reasons,
         waiting=int(queued or 0),
+        median_seconds=median,
+        slowest_seconds=slowest,
+        paths=paths,
     )
 
     await _probe(report, task)
@@ -301,7 +352,17 @@ async def _add_problems(report: Report, task: Task) -> None:
             report.problems.append(
                 f"خواندن کانال مبدا ممکن نشد: {report.probe_error}"
             )
-        elif report.missed:
+        if report.slowest_seconds >= SLOW_SECONDS:
+            heavy = report.paths.get(REUPLOAD_PATH, 0)
+            note = (
+                f" — {heavy} پست نیاز به دانلود و آپلود دوباره داشت"
+                if heavy
+                else ""
+            )
+            report.problems.append(
+                f"کندترین کپی امروز {report.slowest_seconds} ثانیه طول کشید{note}."
+            )
+        if report.missed:
             report.problems.append(
                 f"حدود {report.missed} پست از مبدا هرگز به ربات نرسیده "
                 "(تازه‌ترین پست مبدا از تازه‌ترین پستی که دیده‌ایم جلوتر است)."

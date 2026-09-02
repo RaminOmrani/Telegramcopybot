@@ -7,7 +7,7 @@ import random
 import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
-from datetime import timedelta
+from datetime import UTC, timedelta
 from pathlib import Path
 from typing import Any
 
@@ -78,6 +78,10 @@ ALBUM_SAFETY_SECONDS = 4.0
 # چقدر یادمان بماند که هندلر آلبوم یک گروه را گرفته. فقط باید از
 # ALBUM_SAFETY_SECONDS بیشتر باشد؛ بقیه‌اش حافظه‌ی بی‌فایده است.
 ALBUM_CLAIM_MEMORY_SECONDS = 60.0
+
+# کپی کندتر از این، در لاگ هشدار می‌گیرد. کاربر یک دقیقه را تحمل
+# می‌کند؛ بیشترش یعنی چیزی درست کار نمی‌کند.
+SLOW_COPY_SECONDS = 60
 
 # فاصله‌ی تلاش‌های مجدد بر حسب ثانیه (۱ دقیقه، ۵ دقیقه، ۱۵ دقیقه، ۱ ساعت)
 RETRY_BACKOFF = (60, 300, 900, 3600)
@@ -319,6 +323,8 @@ class Copier:
         self._album_buffer: dict[tuple, list] = {}
         self._album_timers: dict[tuple, asyncio.Task] = {}
         self._album_claimed: dict[tuple, float] = {}
+        # کدام مسیر برای آخرین ارسال به کار رفت — برای اندازه‌گیری تأخیر
+        self._last_path: str = ""
 
     # ------------------------------------------------------------- هندلرها
     def make_new_message_handler(self, user_id: int):
@@ -807,6 +813,7 @@ class Copier:
 
         if any_sent:
             await self._bump(task_id, user_id, skipped=False)
+            await self._record_latency(user_id, task_id, primary)
         elif routed_away or cross_dupes:
             # هیچ مقصدی این پست را نخواست — رد شدن است، نه خطا
             await self._bump(task_id, user_id, skipped=True)
@@ -821,6 +828,39 @@ class Copier:
                 ),
             )
         return any_sent
+
+    async def _record_latency(self, user_id: int, task_id: int, message) -> None:
+        """چقدر طول کشید تا این پست منتشر شود.
+
+        <b>چرا اندازه می‌گیریم.</b> «گاهی یک دقیقه، گاهی بیست دقیقه»
+        چند علتِ ممکن دارد و از بیرون همه یک‌شکل‌اند. بدون عدد، هر
+        تشخیصی حدس است — و حدس‌های قبلی‌مان درست از آب درنیامدند.
+
+        فاصله از <b>زمان خودِ پست در مبدا</b> حساب می‌شود، نه از زمانی
+        که ما دیدیمش؛ وگرنه دیر رسیدنِ خودِ رویداد — که یکی از
+        مظنون‌هاست — اصلاً در عدد نمی‌افتد.
+        """
+        posted = getattr(message, "date", None)
+        if posted is None:
+            return
+        if posted.tzinfo is None:
+            posted = posted.replace(tzinfo=UTC)
+        seconds = int((utcnow() - posted).total_seconds())
+        if seconds < 0:
+            return
+
+        path = self._last_path or "مستقیم"
+        await log_activity(
+            user_id=user_id,
+            task_id=task_id,
+            event="copy",
+            detail=f"{seconds}s · {path}",
+        )
+        if seconds >= SLOW_COPY_SECONDS:
+            log.warning(
+                "کپی کند: کار %s، پست %s پس از %d ثانیه منتشر شد (%s)",
+                task_id, getattr(message, "id", "?"), seconds, path,
+            )
 
     async def _send(
         self,
@@ -860,6 +900,7 @@ class Copier:
             )
             return [sent.id]
 
+        self._last_path = "مستقیم"
         watermarking = allow_watermark and media_kind == "photo" and watermark_ready(cfg)
         # فایل کانفیگ باید دانلود، بازنویسی و دوباره آپلود شود؛ ارسال
         # مستقیمِ رسانه‌ی مبدا نسخه‌ی دست‌نخورده را می‌فرستد.
@@ -877,6 +918,7 @@ class Copier:
                     Path(path).unlink(missing_ok=True)
                 rewriting = False
             else:
+                self._last_path = "بازنویسی فایل"
                 try:
                     sent = await client.send_file(
                         target,
@@ -893,6 +935,7 @@ class Copier:
                 return [m.id for m in sent if m]
 
         if watermarking:
+            self._last_path = "واترمارک"
             files = await self._watermarked_files(client, messages, cfg)
             try:
                 sent = await client.send_file(
@@ -934,6 +977,12 @@ class Copier:
             except Exception:
                 # کانال‌های محدودشده اجازه‌ی ارسال مجدد مستقیم رسانه را نمی‌دهند؛
                 # در این حالت فایل دانلود و دوباره آپلود می‌شود.
+                # <b>گران‌ترین مسیر، و بی‌صداترین.</b> کانال‌هایی که
+                # «محافظت از محتوا» دارند اجازه‌ی ارسال مجدد مرجعِ رسانه
+                # را نمی‌دهند، پس هر پستِ رسانه‌ای اینجا می‌افتد: دانلود
+                # کامل و آپلود دوباره. برای یک ویدیو یعنی چند دقیقه —
+                # همان چیزی که کاربر به‌عنوان «تأخیر» می‌بیند.
+                self._last_path = "دانلود و آپلود مجدد"
                 log.info("ارسال مستقیم رسانه ناموفق بود؛ دانلود و آپلود مجدد")
                 files = await self._download_all(client, messages)
                 if len(files) == 1:

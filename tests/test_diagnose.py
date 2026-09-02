@@ -279,3 +279,93 @@ async def test_a_group_destination_uses_send_messages(tmp_path, monkeypatch):
     report = await diagnose.task_report(task.id)
 
     assert report.can_post is True
+
+
+# ── اندازه‌گیری تأخیر ────────────────────────────────────────────────
+
+
+@pytest.mark.asyncio
+async def test_latency_reports_the_typical_and_the_worst(tmp_path, monkeypatch):
+    """<b>میانه و بیشینه، نه میانگین.</b>
+
+    یک ویدیوی بزرگ که پنج دقیقه طول کشیده میانگین را می‌کشد و تصویری
+    می‌سازد که با تجربه‌ی روزمره نمی‌خواند. میانه می‌گوید پستِ معمولی
+    چقدر طول می‌کشد، بیشینه می‌گوید بدترین حالت چه بود.
+    """
+    from telkap.db import log_activity
+
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    task = await _task(db_module)
+
+    for detail in ["2s · مستقیم", "3s · مستقیم", "600s · دانلود و آپلود مجدد"]:
+        await log_activity(user_id=7, task_id=task.id, event="copy", detail=detail)
+
+    median, slowest, paths = await diagnose.latency(task.id)
+
+    assert median == 3
+    assert slowest == 600
+    assert paths["دانلود و آپلود مجدد"] == 1
+    assert paths["مستقیم"] == 2
+
+
+@pytest.mark.asyncio
+async def test_a_slow_copy_becomes_a_named_problem(tmp_path, monkeypatch):
+    """<b>گران‌ترین مسیر، و بی‌صداترین.</b>
+
+    کانالِ «محافظت از محتوا» اجازه‌ی ارسال مجدد مرجعِ رسانه را نمی‌دهد،
+    پس هر پستِ رسانه‌ای دانلود و دوباره آپلود می‌شود — چند دقیقه برای
+    یک ویدیو، و تا امروز فقط یک خط log.info داشت.
+    """
+    from telkap.db import log_activity
+
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    task = await _task(db_module)
+    await log_activity(
+        user_id=7, task_id=task.id, event="copy", detail="600s · دانلود و آپلود مجدد"
+    )
+    _fake_manager(
+        monkeypatch,
+        client=_RightsClient(
+            latest_id=1, source=_Rights(send=True), dest=_Rights(post=True)
+        ),
+    )
+
+    report = await diagnose.task_report(task.id)
+
+    assert report.slowest_seconds == 600
+    assert any("دانلود و آپلود دوباره" in p for p in report.problems)
+
+
+@pytest.mark.asyncio
+async def test_a_fast_task_raises_no_latency_complaint(tmp_path, monkeypatch):
+    from telkap.db import log_activity
+
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    task = await _task(db_module)
+    await log_activity(user_id=7, task_id=task.id, event="copy", detail="2s · مستقیم")
+    _fake_manager(
+        monkeypatch,
+        client=_RightsClient(
+            latest_id=1, source=_Rights(send=True), dest=_Rights(post=True)
+        ),
+    )
+
+    report = await diagnose.task_report(task.id)
+
+    assert report.median_seconds == 2
+    assert not any("ثانیه طول کشید" in p for p in report.problems)
+
+
+@pytest.mark.asyncio
+async def test_a_malformed_latency_entry_is_ignored(tmp_path, monkeypatch):
+    """رکورد خراب نباید کل گزارش را از کار بیندازد."""
+    from telkap.db import log_activity
+
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    task = await _task(db_module)
+    for detail in ["نه عدد · مستقیم", "", "5s · مستقیم"]:
+        await log_activity(user_id=7, task_id=task.id, event="copy", detail=detail)
+
+    median, slowest, _paths = await diagnose.latency(task.id)
+
+    assert median == 5 and slowest == 5

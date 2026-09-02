@@ -255,6 +255,15 @@ async def cb_why(call: CallbackQuery) -> None:
         f"عضویت در کانال مبدا: {mark(report.source_member)}",
         f"اجازه‌ی ارسال در مقصد: {mark(report.can_post)}",
     ]
+    if report.median_seconds or report.slowest_seconds:
+        lines.append(
+            f"تأخیر انتشار: معمولاً <b>{fa_num(report.median_seconds)}</b> ثانیه، "
+            f"بدترین <b>{fa_num(report.slowest_seconds)}</b> ثانیه"
+        )
+        for name, count in sorted(
+            report.paths.items(), key=lambda item: -item[1]
+        ):
+            lines.append(f"  <i>{name}: {fa_num(count)} پست</i>")
     if report.source_last_id:
         lines.append(
             f"تازه‌ترین پست مبدا: <code>{report.source_last_id}</code> · "
