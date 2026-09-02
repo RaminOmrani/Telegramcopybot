@@ -52,33 +52,66 @@ body {
 a { color: var(--accent); text-decoration: none; }
 a:hover { text-decoration: underline; }
 
-/* ── سربرگ ─────────────────────────────────────────────────────── */
-header {
-  background: var(--card); border-bottom: 1px solid var(--line);
-  padding: 0 22px; display: flex; align-items: center; gap: 6px;
-  flex-wrap: wrap; position: sticky; top: 0; z-index: 5;
+/* ── چیدمان ────────────────────────────────────────────────────── */
+/*
+   نوار کناری، نه تب بالا. با پنج بخش تب کار می‌کرد؛ با ده بخش
+   دیگر نه — و کسی که پنل را باز نگه می‌دارد باید همیشه بداند
+   کجاست و کجاها هست.
+*/
+.layout { display: flex; min-height: 100vh; }
+
+aside {
+  width: 232px; flex: 0 0 232px; background: var(--card);
+  border-left: 1px solid var(--line); padding: 18px 12px;
+  position: sticky; top: 0; height: 100vh; overflow-y: auto;
 }
-header .brand {
-  font-weight: 700; padding: 15px 0; margin-left: 20px;
-  display: flex; align-items: center; gap: 8px; white-space: nowrap;
+aside .brand {
+  font-weight: 700; font-size: 15px; padding: 6px 12px 18px;
+  display: flex; align-items: center; gap: 8px;
 }
-header nav { display: flex; gap: 4px; flex-wrap: wrap; }
-header nav a {
-  padding: 9px 14px; color: var(--muted); border-radius: 9px;
-  font-size: 14px; white-space: nowrap;
+aside .group {
+  font-size: 11px; color: var(--muted); padding: 14px 12px 6px;
+  letter-spacing: .4px; font-weight: 600;
 }
-header nav a:hover { background: var(--soft); text-decoration: none; }
-header nav a.on { color: var(--accent); background: var(--soft); font-weight: 600; }
-header nav a .dot {
-  display: inline-block; min-width: 18px; padding: 0 5px; margin-right: 5px;
+aside nav a {
+  display: flex; align-items: center; gap: 9px;
+  padding: 9px 12px; border-radius: 9px; color: var(--ink);
+  font-size: 14px; margin-bottom: 2px;
+}
+aside nav a:hover { background: var(--soft); text-decoration: none; }
+aside nav a.on { background: var(--accent); color: var(--accent-ink); font-weight: 600; }
+aside nav a .dot {
+  margin-right: auto; min-width: 20px; padding: 0 6px;
   background: var(--bad); color: #fff; border-radius: 999px;
-  font-size: 11px; line-height: 18px; text-align: center; font-weight: 700;
+  font-size: 11px; line-height: 19px; text-align: center; font-weight: 700;
 }
-header .who {
-  margin-right: auto; color: var(--muted); font-size: 13px;
-  display: flex; align-items: center; gap: 10px;
+aside nav a.on .dot { background: rgba(255,255,255,.25); }
+aside .foot {
+  margin-top: 22px; padding: 12px; border-top: 1px solid var(--line);
+  font-size: 12px; color: var(--muted);
 }
-main { max-width: 1180px; margin: 0 auto; padding: 26px 22px 70px; }
+
+.content { flex: 1; min-width: 0; }
+.topbar {
+  display: flex; align-items: center; gap: 12px; padding: 14px 26px;
+  border-bottom: 1px solid var(--line); background: var(--card);
+  position: sticky; top: 0; z-index: 5;
+}
+.topbar .who { margin-right: auto; color: var(--muted); font-size: 13px; }
+.burger { display: none; }
+
+@media (max-width: 860px) {
+  .layout { display: block; }
+  aside {
+    width: auto; position: static; height: auto; border-left: 0;
+    border-bottom: 1px solid var(--line);
+  }
+  aside nav { display: flex; flex-wrap: wrap; gap: 4px; }
+  aside nav a { margin-bottom: 0; }
+  aside .group, aside .foot { display: none; }
+}
+
+main { max-width: 1180px; margin: 0 auto; padding: 26px 26px 70px; }
 
 /* ── عنوان‌ها ───────────────────────────────────────────────────── */
 h1 { font-size: 22px; margin: 0 0 4px; letter-spacing: -.2px; }
@@ -193,6 +226,25 @@ dl.facts { margin: 0; display: grid; grid-template-columns: auto 1fr; gap: 9px 1
 dl.facts dt { color: var(--muted); font-size: 13.5px; }
 dl.facts dd { margin: 0; }
 
+/* ── نمودار ────────────────────────────────────────────────────── */
+.chart { display: flex; align-items: flex-end; gap: 5px; height: 130px; padding: 4px 0; }
+.chart .bar { flex: 1; display: flex; flex-direction: column; justify-content: flex-end; }
+.chart .fill {
+  background: var(--accent); border-radius: 5px 5px 2px 2px; min-height: 3px;
+  transition: .2s;
+}
+.chart .bar:hover .fill { opacity: .75; }
+.chart .tick {
+  font-size: 10px; color: var(--muted); text-align: center; margin-top: 6px;
+  white-space: nowrap;
+}
+.legend { display: flex; gap: 16px; flex-wrap: wrap; margin-top: 12px; font-size: 13px; }
+.legend b { font-variant-numeric: tabular-nums; }
+
+.split3 { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 15px; }
+.attention { border-right: 3px solid var(--warn); }
+.attention.none { border-right-color: var(--ok); }
+
 .receipt { max-height: 78px; border-radius: 7px; border: 1px solid var(--line); }
 .money { white-space: nowrap; font-variant-numeric: tabular-nums; }
 .mini { color: var(--muted); font-size: 12px; }
@@ -204,12 +256,23 @@ code {
 .gate .panel { padding: 32px 28px; }
 """
 
-TABS = (
-    ("/", "نمای کلی", ""),
-    ("/payments", "رسیدها", "waiting"),
-    ("/users", "کاربران", ""),
-    ("/tasks", "کارها", ""),
-    ("/settings", "پرداخت", ""),
+# بخش‌های پنل، گروه‌بندی‌شده. گروه‌ها فقط تزئین نیستند: با ده بخش،
+# «کجا دنبالش بگردم» خودش یک سؤال می‌شود.
+NAV = (
+    ("کار روزمره", (
+        ("/", "📊", "نمای کلی", ""),
+        ("/payments", "🧾", "رسیدها", "waiting"),
+        ("/users", "👥", "کاربران", ""),
+        ("/tasks", "📋", "کارهای کپی", ""),
+    )),
+    ("مالی و گزارش", (
+        ("/finance", "💰", "درآمد", ""),
+        ("/activity", "🧭", "رویدادها", ""),
+    )),
+    ("تنظیمات", (
+        ("/settings", "💳", "راه‌های پرداخت", ""),
+        ("/account", "🔐", "حساب من", ""),
+    )),
 )
 
 
@@ -231,22 +294,34 @@ def page(
 ) -> str:
     """یک صفحه‌ی کامل.
 
-    <code>waiting</code> تعداد رسیدهای منتظر است و روی خودِ تب می‌نشیند.
-    کارِ روزمره‌ی این پنل همان است، و اگر برای دیدنش باید تب را باز کرد،
-    گاهی باز نمی‌شود.
+    <code>waiting</code> تعداد رسیدهای منتظر است و روی خودِ منو
+    می‌نشیند. کارِ روزمره‌ی این پنل همان است، و اگر برای دیدنش باید
+    صفحه‌ای باز کرد، گاهی باز نمی‌شود — و رسیدِ دیده‌نشده یعنی
+    مشتریِ منتظر.
     """
-    chips = []
-    for href, label, badge in TABS:
-        mark = (
-            f"<span class='dot'>{esc(i18n.num(waiting, 'fa'))}</span>"
-            if badge == "waiting" and waiting
-            else ""
+    groups = []
+    for group, items in NAV:
+        links = []
+        for href, icon, label, badge in items:
+            mark = (
+                f"<span class='dot'>{esc(i18n.num(waiting, 'fa'))}</span>"
+                if badge == "waiting" and waiting
+                else ""
+            )
+            cls = "on" if href == active else ""
+            links.append(
+                f"<a href='{esc(href)}' class='{cls}'>"
+                f"<span>{icon}</span><span>{esc(label)}</span>{mark}</a>"
+            )
+        groups.append(
+            f"<div class='group'>{esc(group)}</div><nav>{''.join(links)}</nav>"
         )
-        cls = "on" if href == active else ""
-        chips.append(f'<a href="{esc(href)}" class="{cls}">{esc(label)}{mark}</a>')
 
     identity = (
-        f'<span class="who">{esc(who)}<a href="/logout">خروج</a></span>' if who else ""
+        f"<span class='who'>{esc(who)}</span>"
+        "<a class='btn small' href='/logout'>خروج</a>"
+        if who
+        else ""
     )
     return (
         "<!doctype html><html lang='fa' dir='rtl'><head>"
@@ -254,10 +329,13 @@ def page(
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         "<meta name='robots' content='noindex, nofollow'>"
         f"<title>{esc(title)} — پنل مدیریت</title>"
-        f"<style>{CSS}</style></head><body>"
-        "<header><span class='brand'>🤖 پنل مدیریت</span>"
-        f"<nav>{''.join(chips)}</nav>{identity}</header>"
-        f"<main>{body}</main></body></html>"
+        f"<style>{CSS}</style></head><body><div class='layout'>"
+        "<aside><div class='brand'>🤖 پنل مدیریت</div>"
+        f"{''.join(groups)}"
+        "<div class='foot'>تلکاپ</div></aside>"
+        f"<div class='content'><div class='topbar'>"
+        f"<b>{esc(title)}</b>{identity}</div>"
+        f"<main>{body}</main></div></div></body></html>"
     )
 
 
@@ -356,6 +434,30 @@ def table(
         f"<div class='wrap'><table><thead><tr>{head}</tr></thead>"
         f"<tbody>{''.join(rows)}</tbody></table></div>"
     )
+
+
+def chart(points: list[tuple[str, int]], *, unit: str = "") -> str:
+    """نمودار میله‌ای، با CSS خالص.
+
+    <b>چرا کتابخانه‌ی نمودار نیاورده‌ام.</b> یک نمودار میله‌ی ساده با
+    چند خط CSS ساخته می‌شود؛ آوردن یک کتابخانه‌ی جاوااسکریپت یعنی
+    صفحه‌ای که بدون اینترنتِ باز کار نمی‌کند — و این پنل روی سروری
+    است که دسترسی‌اش محدود است.
+    """
+    if not points:
+        return "<div class='empty'>هنوز داده‌ای نیست.</div>"
+
+    top = max(value for _label, value in points) or 1
+    bars = []
+    for label, value in points:
+        height = max(3, round(value * 100 / top))
+        hint = f"{i18n.num(value, 'fa')} {unit}".strip()
+        bars.append(
+            f"<div class='bar' title='{esc(label)} — {esc(hint)}'>"
+            f"<div class='fill' style='height:{height}%'></div>"
+            f"<div class='tick'>{esc(label)}</div></div>"
+        )
+    return f"<div class='chart'>{''.join(bars)}</div>"
 
 
 def pill(text: str, tone: str = "") -> str:

@@ -154,12 +154,29 @@ def test_a_page_carries_its_own_direction_and_charset():
     assert "noindex" in html          # پنل نباید در گوگل بیفتد
 
 
-def test_the_active_tab_is_marked():
+def test_the_active_section_is_marked():
+    """کسی که پنل را باز نگه می‌دارد باید همیشه بداند کجاست."""
     from telkap.web.render import page
 
     html = page("رسیدها", "", active="/payments")
-    assert 'href="/payments" class="on"' in html
-    assert 'href="/users" class=""' in html
+    assert "href='/payments' class='on'" in html
+    assert "href='/users' class=''" in html
+
+
+def test_every_section_in_the_menu_has_a_real_page():
+    """<b>منویی که به ۴۰۴ برسد، از نبودنِ آن گزینه بدتر است.</b>"""
+    from telkap.web import server
+    from telkap.web.render import NAV
+
+    app = server.build_app(bot=None)
+    paths = {
+        route.resource.canonical
+        for route in app.router.routes()
+        if route.resource is not None and route.method == "GET"
+    }
+    for _group, items in NAV:
+        for href, _icon, _label, _badge in items:
+            assert href in paths, href
 
 
 def test_an_empty_table_says_so_instead_of_showing_nothing():
@@ -233,6 +250,11 @@ def test_every_page_but_the_gate_needs_a_session():
         "/users/{id}/revoke",
         "/tasks",
         "/tasks/{id}/toggle",
+        "/finance",
+        "/activity",
+        "/account",
+        "/account/password",
+        "/account/logout-all",
         "/settings",
         "/settings/card",
         "/settings/crypto",

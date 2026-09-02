@@ -31,7 +31,17 @@ from telkap.services import (
     zarinpal,
 )
 from telkap.web import auth, render
-from telkap.web.render import card, esc, form, money, page, panel, pill, table
+from telkap.web.render import (
+    card,
+    chart,
+    esc,
+    form,
+    money,
+    page,
+    panel,
+    pill,
+    table,
+)
 
 log = logging.getLogger(__name__)
 
@@ -301,6 +311,12 @@ async def healthz(request: web.Request) -> web.Response:
 
 # --------------------------------------------------------- نمای کلی
 async def dashboard(request: web.Request) -> web.Response:
+    """صفحه‌ی اول: اول آنچه باید کاری برایش کرد، بعد آنچه خوب است بدانید.
+
+    <b>ترتیب عمدی است.</b> پنلی که با «درآمد کل» شروع شود خوشایند است
+    ولی کاری از پیش نمی‌برد. چیزی که آدم روزی چند بار برایش برمی‌گردد
+    این است که «الان چه چیزی منتظر من است».
+    """
     denied = await _deny(request, roles.CAP_REPORTS)
     if denied is not None:
         return denied
@@ -316,15 +332,58 @@ async def dashboard(request: web.Request) -> web.Response:
             )
             or 0
         )
+        stopped = (
+            await db.scalar(
+                select(func.count())
+                .select_from(Task)
+                .where(Task.enabled.is_(False), Task.last_error != "")
+            )
+            or 0
+        )
+        joined_today = (
+            await db.scalar(
+                select(func.count())
+                .select_from(User)
+                .where(User.created_at >= utcnow() - timedelta(days=1))
+            )
+            or 0
+        )
+
+    # ── آنچه کار می‌خواهد ─────────────────────────────────────────
+    todo = []
+    if waiting:
+        todo.append(
+            f"<a href='/payments'>{i18n.num(waiting, 'fa')} رسید منتظر بررسی</a>"
+        )
+    if stopped:
+        todo.append(
+            f"<a href='/tasks?only=off'>{i18n.num(stopped, 'fa')} کار با خطا متوقف شده</a>"
+        )
+    if not await payments.any_method_ready():
+        todo.append("<a href='/settings'>هیچ راه پرداختی تنظیم نشده — کسی نمی‌تواند بخرد</a>")
+
+    attention = (
+        "<div class='panel attention'><h2>⚠️ نیاز به رسیدگی</h2>"
+        + "".join(f"<div style='margin:6px 0'>• {item}</div>" for item in todo)
+        + "</div>"
+        if todo
+        else "<div class='panel attention none'><h2>✅ چیزی معطل نیست</h2>"
+        "<p class='sub' style='margin:0'>همه‌ی رسیدها رسیدگی شده و کارها "
+        "بی‌خطا در حال اجرا هستند.</p></div>"
+    )
 
     growth = data.growth
     top = "".join(
         (
             card("درآمد این ماه", money(data.this_month.total)),
-            card("نسبت به ماه قبل", f"{growth:+d}%", "ok" if growth >= 0 else "warn"),
-            card("رسید منتظر بررسی", i18n.num(waiting, "fa"), "warn" if waiting else ""),
-            card("اشتراک فعال", i18n.num(data.retention.active_subs, "fa")),
+            card(
+                "نسبت به ماه قبل",
+                f"{growth:+d}%",
+                "ok" if growth >= 0 else "bad",
+            ),
+            card("اشتراک فعال", i18n.num(data.retention.active_subs, "fa"), "ok"),
             card("کاربر", i18n.num(users, "fa")),
+            card("کاربر تازه (۲۴ساعت)", i18n.num(int(joined_today), "fa")),
             card("کار در حال اجرا", i18n.num(running, "fa")),
         )
     )
@@ -338,30 +397,68 @@ async def dashboard(request: web.Request) -> web.Response:
     drop_where, drop_count = data.funnel.biggest_drop
 
     body = (
-        "<h1>نمای کلی</h1>"
-        "<p class='sub'>همان اعدادی که در ربات هم هست، روی صفحه‌ی بزرگ‌تر.</p>"
-        f"<div class='cards'>{top}</div>"
-        "<section><h2>قیف تبدیل</h2>"
-        f"{table(['پله', 'تعداد', 'از کل'], [steps] if steps else [])}"
-        f"<p class='mini' style='margin-top:10px'>بزرگ‌ترین افت: "
-        f"<b>{esc(drop_where)}</b> — {esc(i18n.num(drop_count, 'fa'))} نفر</p>"
-        "</section>"
-        "<section><h2>درآمد</h2>"
-        "<div class='cards'>"
-        + card("این ماه", money(data.this_month.total))
-        + card("ماه قبل", money(data.last_month.total))
-        + card("از ابتدا", money(data.all_time.total))
-        + card("میانگین هر خریدار", money(data.all_time.per_payer))
-        + "</div></section>"
-        "<section><h2>ماندگاری</h2>"
-        "<div class='cards'>"
-        + card("یک‌بارخرید", i18n.num(data.retention.once, "fa"))
-        + card("خرید دوباره", i18n.num(data.retention.repeat, "fa"))
-        + card("نرخ خرید دوباره", f"{data.retention.repeat_rate}%")
-        + card("منقضی‌شده", i18n.num(data.retention.expired_users, "fa"))
-        + "</div></section>"
+        attention
+        + f"<section><h2>یک نگاه</h2><div class='cards'>{top}</div></section>"
+        + "<section><h2>درآمد روزهای اخیر</h2>"
+        + "<div class='panel'>"
+        + chart(await _revenue_days(14), unit="تومان")
+        + "<div class='legend'>"
+        + f"<span>این ماه: <b>{esc(money(data.this_month.total))}</b></span>"
+        + f"<span>ماه قبل: <b>{esc(money(data.last_month.total))}</b></span>"
+        + f"<span>از ابتدا: <b>{esc(money(data.all_time.total))}</b></span>"
+        + f"<span>میانگین هر خریدار: <b>{esc(money(data.all_time.per_payer))}</b></span>"
+        + "</div></div></section>"
+        + "<div class='split'>"
+        + panel(
+            "قیف تبدیل",
+            table(["پله", "تعداد", "از کل"], [steps] if steps else [])
+            + f"<p class='mini' style='margin-top:10px'>بزرگ‌ترین افت: "
+            f"<b>{esc(drop_where)}</b> — {esc(i18n.num(drop_count, 'fa'))} نفر</p>",
+            sub="از استارت تا خرید",
+        )
+        + panel(
+            "ماندگاری",
+            "<div class='cards'>"
+            + card("یک‌بارخرید", i18n.num(data.retention.once, "fa"))
+            + card("خرید دوباره", i18n.num(data.retention.repeat, "fa"), "ok")
+            + card("نرخ تکرار", f"{data.retention.repeat_rate}%")
+            + card("منقضی‌شده", i18n.num(data.retention.expired_users, "fa"))
+            + "</div>",
+            sub="چند نفر دوباره خریدند",
+        )
+        + "</div>"
     )
     return await _shell(request, "نمای کلی", body, active="/")
+
+
+async def _revenue_days(days: int) -> list[tuple[str, int]]:
+    """درآمد هر روز، برای نمودار.
+
+    از خودِ رسیدهای تأییدشده خوانده می‌شود نه از جدول آمار، چون آمار
+    روزانه برای کارهای کپی است نه برای پول.
+    """
+    since = utcnow() - timedelta(days=days)
+    async with get_session() as db:
+        rows = await db.execute(
+            select(PaymentRequest.reviewed_at, PaymentRequest.amount_toman).where(
+                PaymentRequest.status == PaymentRequest.STATUS_APPROVED,
+                PaymentRequest.reviewed_at >= since,
+            )
+        )
+        paid = list(rows.all())
+
+    buckets: dict[str, int] = {}
+    for day in range(days, 0, -1):
+        stamp = _local(utcnow() - timedelta(days=day - 1))
+        buckets[stamp.strftime("%m/%d")] = 0
+    for when, amount in paid:
+        if when is None:
+            continue
+        key = _local(when).strftime("%m/%d")
+        if key in buckets:
+            buckets[key] += int(amount or 0)
+    return [(i18n.num(k, "fa"), v) for k, v in buckets.items()]
+
 
 
 # ----------------------------------------------------------- رسیدها
@@ -1142,6 +1239,259 @@ async def settings_zarinpal(request: web.Request) -> web.Response:
     return _back("/settings", ok="کد پذیرنده ذخیره شد.")
 
 
+# ------------------------------------------------------------ درآمد
+async def finance_page(request: web.Request) -> web.Response:
+    """درآمد: از کجا آمده، و چه کسانی بیشترین سهم را دارند.
+
+    <b>چرا جدا از نمای کلی.</b> نمای کلی برای «الان چه خبر است» است.
+    این صفحه برای وقتی است که می‌خواهید بنشینید و بفهمید کسب‌وکار
+    چطور پیش می‌رود — دو سؤال متفاوت، دو صفحه.
+    """
+    denied = await _deny(request, roles.CAP_REPORTS)
+    if denied is not None:
+        return denied
+
+    data = await analytics.dashboard()
+    month = data.this_month
+
+    async with get_session() as db:
+        rows = await db.execute(
+            select(
+                PaymentRequest.user_id,
+                func.sum(PaymentRequest.amount_toman),
+                func.count(),
+            )
+            .where(PaymentRequest.status == PaymentRequest.STATUS_APPROVED)
+            .group_by(PaymentRequest.user_id)
+            .order_by(func.sum(PaymentRequest.amount_toman).desc())
+            .limit(15)
+        )
+        top = list(rows.all())
+        people: dict[int, User] = {}
+        if top:
+            found = await db.execute(
+                select(User).where(User.id.in_([uid for uid, _s, _c in top]))
+            )
+            people = {user.id: user for user in found.scalars()}
+
+        by_method = await db.execute(
+            select(PaymentRequest.pay_method, func.count(), func.sum(PaymentRequest.amount_toman))
+            .where(PaymentRequest.status == PaymentRequest.STATUS_APPROVED)
+            .group_by(PaymentRequest.pay_method)
+        )
+        methods = list(by_method.all())
+
+    buyers = [
+        f"<tr><td><a href='/users/{uid}'>{esc(_who(people.get(uid)))}</a></td>"
+        f"<td class='money'>{esc(money(int(total or 0)))}</td>"
+        f"<td class='money'>{esc(i18n.num(int(count), 'fa'))}</td></tr>"
+        for uid, total, count in top
+    ]
+
+    method_rows = [
+        f"<tr><td>{esc(payments.METHOD_LABELS.get(name, name or '—'))}</td>"
+        f"<td class='money'>{esc(i18n.num(int(count), 'fa'))}</td>"
+        f"<td class='money'>{esc(money(int(total or 0)))}</td></tr>"
+        for name, count, total in sorted(methods, key=lambda r: -(r[2] or 0))
+    ]
+
+    body = (
+        "<section><h2>این ماه</h2><div class='cards'>"
+        + card("مجموع", money(month.total), "ok")
+        + card("اشتراک", money(month.plans))
+        + card("اعتبار", money(month.credits))
+        + card("نمایندگی", money(month.reseller))
+        + card("خریدار", i18n.num(month.payers, "fa"))
+        + card("میانگین هر خریدار", money(month.per_payer))
+        + "</div></section>"
+        + "<section><h2>سی روز اخیر</h2><div class='panel'>"
+        + chart(await _revenue_days(30), unit="تومان")
+        + "</div></section>"
+        + "<div class='split'>"
+        + panel(
+            "بهترین مشتری‌ها",
+            table(
+                ["مشتری", "مجموع خرید", "تعداد"],
+                buyers,
+                empty="هنوز خریدی ثبت نشده.",
+                icon="💰",
+            ),
+            sub="بر اساس مجموع پرداخت تأییدشده",
+        )
+        + panel(
+            "راه‌های پرداخت",
+            table(
+                ["راه", "تعداد", "مجموع"],
+                method_rows,
+                empty="هنوز پرداختی نبوده.",
+                icon="💳",
+            ),
+            sub="مشتری‌ها بیشتر از کدام راه می‌پردازند",
+        )
+        + "</div>"
+    )
+    return await _shell(request, "درآمد", body, active="/finance")
+
+
+# --------------------------------------------------------- رویدادها
+async def activity_page(request: web.Request) -> web.Response:
+    """آخرین رویدادهای سیستم.
+
+    <b>چرا لازم است.</b> وقتی چیزی غیرمنتظره اتفاق می‌افتد، اولین
+    سؤال «کِی و به دست چه کسی» است. تا امروز جوابش فقط در لاگ سرور
+    بود — یعنی عملاً در دسترس نبود.
+    """
+    denied = await _deny(request, roles.CAP_REPORTS)
+    if denied is not None:
+        return denied
+
+    from telkap.models import ActivityLog
+
+    kind = request.query.get("kind", "")
+    async with get_session() as db:
+        statement = (
+            select(ActivityLog).order_by(ActivityLog.created_at.desc()).limit(120)
+        )
+        if kind:
+            statement = statement.where(ActivityLog.event == kind)
+        entries = list((await db.execute(statement)).scalars())
+
+        kinds = list(
+            (
+                await db.execute(
+                    select(ActivityLog.event, func.count())
+                    .group_by(ActivityLog.event)
+                    .order_by(func.count().desc())
+                    .limit(14)
+                )
+            ).all()
+        )
+
+    tone = {
+        "error": "bad",
+        "pause": "bad",
+        "payment_approved": "ok",
+        "payment_auto": "ok",
+        "skip": "",
+    }
+    rows = [
+        f"<tr><td>{esc(_when(item.created_at))}</td>"
+        f"<td>{pill(item.event, tone.get(item.event, ''))}</td>"
+        f"<td>{esc(item.detail or '—')}</td>"
+        f"<td>"
+        + (
+            f"<a href='/users/{item.user_id}'>{esc(item.user_id)}</a>"
+            if item.user_id
+            else "—"
+        )
+        + "</td></tr>"
+        for item in entries
+    ]
+
+    chips = ["<a class='btn small' href='/activity'>همه</a>"]
+    chips += [
+        f"<a class='btn small' href='/activity?kind={esc(name)}'>"
+        f"{esc(name)} ({esc(i18n.num(int(count), 'fa'))})</a>"
+        for name, count in kinds
+    ]
+
+    body = (
+        "<p class='sub'>۱۲۰ رویداد آخر. برای دیدن یک نوع خاص، رویش بزنید.</p>"
+        + f"<div class='row' style='margin-bottom:16px'>{''.join(chips)}</div>"
+        + table(
+            ["زمان", "رویداد", "توضیح", "کاربر"],
+            rows,
+            empty="رویدادی ثبت نشده.",
+            icon="🧭",
+        )
+    )
+    return await _shell(request, "رویدادها", body, active="/activity")
+
+
+# ------------------------------------------------------------ حساب من
+async def account_page(request: web.Request) -> web.Response:
+    """حساب ورود: رمز و نشست‌های باز."""
+    session = request["session"]
+    account = await auth.account_of(session.user_id)
+    open_sessions = await auth.sessions_of(session.user_id)
+
+    rows = [
+        f"<tr><td>{esc(_when(item.created_at))}</td>"
+        f"<td>{esc(item.user_agent or '—')}</td>"
+        f"<td>{esc(_when(item.expires_at))}</td></tr>"
+        for item in open_sessions
+    ]
+
+    change = form(
+        "/account/password",
+        session.csrf,
+        "<label class='field'><span class='cap'>رمز تازه</span>"
+        "<input type='password' name='password' autocomplete='new-password' dir='ltr'>"
+        f"<span class='hint'>دست‌کم {i18n.num(auth.MIN_PASSWORD, 'fa')} نویسه، "
+        "نه فقط عدد.</span></label>"
+        "<button class='btn primary'>تغییر رمز</button>",
+    )
+
+    body = (
+        _flash(request)
+        + "<div class='split'>"
+        + panel(
+            "مشخصات",
+            "<dl class='facts'>"
+            f"<dt>نام کاربری</dt><dd><code>{esc(account.username if account else '—')}</code></dd>"
+            f"<dt>شناسه تلگرام</dt><dd><code>{esc(session.user_id)}</code></dd>"
+            f"<dt>آخرین ورود</dt><dd>{esc(_when(account.last_login_at) if account else '—')}</dd>"
+            "</dl>",
+        )
+        + panel(
+            "تغییر رمز",
+            change,
+            sub="با تغییر رمز، همه‌ی نشست‌های باز بسته می‌شوند.",
+        )
+        + "</div>"
+        + "<section><h2>دستگاه‌های واردشده</h2>"
+        + table(
+            ["ورود", "مرورگر", "انقضا"],
+            rows,
+            empty="نشست بازی نیست.",
+            icon="🔐",
+        )
+        + "<div style='margin-top:14px'>"
+        + form(
+            "/account/logout-all",
+            session.csrf,
+            "<button class='btn bad'>خروج از همه‌ی دستگاه‌ها</button>",
+            confirm="از همه‌ی دستگاه‌ها خارج شوید؟ خودتان هم باید دوباره وارد شوید.",
+        )
+        + "</div></section>"
+    )
+    return await _shell(request, "حساب من", body, active="/account")
+
+
+async def account_password(request: web.Request) -> web.Response:
+    blocked = await _guard_post(request, roles.CAP_REPORTS, "/account")
+    if blocked is not None:
+        return blocked
+
+    posted = await request.post()
+    problem = await auth.set_password(
+        request["session"].user_id, str(posted.get("password", ""))
+    )
+    if problem:
+        return _back("/account", err=problem)
+    # رمز که عوض شد نشست‌ها بسته شده‌اند، پس این کوکی هم دیگر معتبر
+    # نیست؛ کاربر به صفحه‌ی ورود می‌رود، که همان انتظار درست است.
+    return web.HTTPFound("/login")
+
+
+async def account_logout_all(request: web.Request) -> web.Response:
+    blocked = await _guard_post(request, roles.CAP_REPORTS, "/account")
+    if blocked is not None:
+        return blocked
+    await auth.end_all(request["session"].user_id)
+    return web.HTTPFound("/login")
+
+
 # --------------------------------------------- بازگشت از درگاه زرین‌پال
 async def zarinpal_return(request: web.Request) -> web.Response:
     """کاربر از درگاه برگشته است.
@@ -1232,6 +1582,11 @@ def build_app(bot) -> web.Application:
             web.post("/users/{id}/revoke", user_revoke),
             web.get("/tasks", task_list),
             web.post("/tasks/{id}/toggle", task_toggle),
+            web.get("/finance", finance_page),
+            web.get("/activity", activity_page),
+            web.get("/account", account_page),
+            web.post("/account/password", account_password),
+            web.post("/account/logout-all", account_logout_all),
             web.get("/settings", settings_page),
             web.post("/settings/card", settings_card),
             web.post("/settings/crypto", settings_crypto),
