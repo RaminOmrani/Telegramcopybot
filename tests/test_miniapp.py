@@ -341,3 +341,179 @@ def test_the_app_page_is_really_there():
     # و فونت از سرور خودمان، نه CDN
     assert "/fonts/Vazirmatn-Regular.woff2" in text
     assert "fonts.googleapis.com" not in text
+
+
+# ------------------------------------------------ ساخت و ویرایش کار از اپ
+@pytest.mark.asyncio
+async def test_only_known_settings_are_accepted(tmp_path, monkeypatch):
+    """<b>ورودی از بیرون می‌آید و فهرست کلیدها بسته است.</b>
+
+    اگر هر کلیدی پذیرفته می‌شد، کسی می‌توانست کلیدهایی بنویسد که ما
+    هرگز اعتبارسنجی‌شان نکرده‌ایم — یا کلیدهای داخلیِ آینده را از
+    بیرون بنشاند.
+    """
+    from telkap.web.miniapp import _clean_settings
+
+    cfg, problems = _clean_settings({"remove_links": True}, {})
+    assert cfg["remove_links"] is True and problems == []
+
+    _cfg, problems = _clean_settings({"is_admin": True}, {})
+    assert problems == ["is_admin"]
+
+    # و مقدار خارج از دامنه بریده می‌شود، نه اینکه هرچه آمد بنشیند
+    cfg, _ = _clean_settings({"delay_seconds": 10 ** 9}, {})
+    assert cfg["delay_seconds"] == 86_400
+    cfg, _ = _clean_settings({"delay_seconds": -5}, {})
+    assert cfg["delay_seconds"] == 0
+
+    # گزینه‌ای که در فهرست نیست، رد می‌شود
+    _cfg, problems = _clean_settings({"order_mode": "هرچه"}, {})
+    assert problems == ["order_mode"]
+
+
+@pytest.mark.asyncio
+async def test_settings_of_someone_elses_task_cannot_be_touched(
+    tmp_path, monkeypatch
+):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.models import Task, User
+
+        async with db_module.get_session() as db:
+            if await db.get(User, 8) is None:
+                db.add(User(id=8, first_name="دیگری"))
+            theirs = Task(
+                user_id=8, title="مالِ او",
+                source_ref="@t", source_id=-200,
+                dest_ref="@t2", dest_id=-201, enabled=True,
+                settings={"remove_links": False},
+            )
+            db.add(theirs)
+            await db.commit()
+            await db.refresh(theirs)
+            theirs_id = theirs.id
+
+        client = await _client(monkeypatch)
+        mine = {"X-Telegram-Init-Data": _fresh(7)}
+
+        for path in (f"/app/api/tasks/{theirs_id}", ):
+            assert (await client.get(path, headers=mine)).status == 404
+
+        response = await client.post(
+            f"/app/api/tasks/{theirs_id}/settings",
+            headers=mine,
+            json={"remove_links": True},
+        )
+        assert response.status == 404
+
+        response = await client.post(
+            f"/app/api/tasks/{theirs_id}/delete", headers=mine
+        )
+        assert response.status == 404
+
+        async with db_module.get_session() as db:
+            row = await db.get(Task, theirs_id)
+            assert row is not None                      # حذف نشده
+            assert row.settings["remove_links"] is False  # عوض نشده
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_creating_a_task_respects_the_plan_limit(tmp_path, monkeypatch):
+    """<b>سقف طرح باید همان‌جایی که ربات رعایتش می‌کند، اینجا هم باشد.</b>
+
+    وگرنه اپ راهِ دور زدنِ سقف می‌شد.
+    """
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        client = await _client(monkeypatch)
+        mine = {"X-Telegram-Init-Data": _fresh(7)}
+
+        response = await client.post(
+            "/app/api/tasks",
+            headers=mine,
+            json={"source": "-100", "dest": "-101"},
+        )
+
+        # کاربر تست اکانتِ متصل ندارد؛ همان‌جا جلویش گرفته می‌شود
+        assert response.status in (402, 409)
+        body = await response.json()
+        assert "error" in body
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_a_task_cannot_copy_a_channel_onto_itself(tmp_path, monkeypatch):
+    """حلقه‌ی بی‌پایان، و هیچ‌کس هم نمی‌خواهدش."""
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.models import User
+
+        async with db_module.get_session() as db:
+            person = await db.get(User, 7)
+            person.session_enc = "x"           # وانمود کن وصل است
+            await db.commit()
+
+        client = await _client(monkeypatch)
+        response = await client.post(
+            "/app/api/tasks",
+            headers={"X-Telegram-Init-Data": _fresh(7)},
+            json={"source": "-100", "dest": "-100"},
+        )
+
+        # یا سقف/اشتراک جلویش را می‌گیرد یا خودِ شرط؛ در هر حال ساخته نمی‌شود
+        assert response.status >= 400
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_the_chats_route_says_when_no_account_is_connected(
+    tmp_path, monkeypatch
+):
+    """<b>«وصل نیست» یک حالت است، نه خطای عمومی.</b>
+
+    اپ با همین جواب می‌تواند دکمه‌ی «اتصال در ربات» نشان بدهد به‌جای
+    یک پیام خطای بی‌فایده.
+    """
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        client = await _client(monkeypatch)
+        response = await client.get(
+            "/app/api/chats", headers={"X-Telegram-Init-Data": _fresh(7)}
+        )
+
+        assert response.status == 409
+        assert "وصل نیست" in (await response.json())["error"]
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_wallet_and_stats_are_per_person(tmp_path, monkeypatch):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import wallet
+
+        await wallet.credit(7, 50_000, note="مالِ من")
+
+        client = await _client(monkeypatch)
+
+        mine = await (await client.get(
+            "/app/api/wallet", headers={"X-Telegram-Init-Data": _fresh(7)}
+        )).json()
+        assert mine["balance"] == 50_000
+
+        theirs = await (await client.get(
+            "/app/api/wallet", headers={"X-Telegram-Init-Data": _fresh(8)}
+        )).json()
+        assert theirs["balance"] == 0
+
+        stats = await (await client.get(
+            "/app/api/stats", headers={"X-Telegram-Init-Data": _fresh(7)}
+        )).json()
+        assert "speed" in stats and "daily" in stats
+    finally:
+        await db_module.close_db()

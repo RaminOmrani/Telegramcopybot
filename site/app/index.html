@@ -152,6 +152,62 @@ h2 { font-size: 14px; margin: 26px 0 10px; font-weight: 600; color: var(--muted)
 }
 @keyframes pulse { 50% { opacity: .28; } }
 @media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
+
+/* ── نماها ─────────────────────────────────────────────────────── */
+/* اپ یک صفحه است با چند نما. نمای جزئیات روی فهرست می‌نشیند و
+   دکمه‌ی بازگشتِ خودِ تلگرام برش می‌گرداند — نه یک دکمه‌ی ساختگی
+   داخل صفحه، که کاربر عادت ندارد آنجا دنبالش بگردد. */
+.view { animation: rise .16s ease-out; }
+@keyframes rise { from { opacity: 0; transform: translateY(6px); } }
+@media (prefers-reduced-motion: reduce) { .view { animation: none; } }
+
+.tap { cursor: pointer; }
+.tap:active { opacity: .7; }
+.chev { color: var(--muted); font-size: 18px; flex: 0 0 auto; }
+
+/* ── فرم ───────────────────────────────────────────────────────── */
+label.f { display: block; margin-bottom: 14px; }
+label.f .cap {
+  display: block; font-size: 12.5px; color: var(--muted); margin-bottom: 6px;
+}
+input[type=text], input[type=number], textarea, select {
+  width: 100%; background: var(--bg); color: var(--ink);
+  border: 1px solid var(--line); border-radius: 10px;
+  padding: 10px 12px; font: inherit; font-size: 14px;
+}
+textarea { min-height: 76px; resize: vertical; }
+input:focus, textarea:focus, select:focus {
+  outline: none; border-color: var(--accent);
+}
+.hint { font-size: 12px; color: var(--muted); margin-top: 5px; }
+
+/* ── ردیف تنظیم ────────────────────────────────────────────────── */
+.opt { display: flex; align-items: center; gap: 12px; padding: 11px 0; }
+.opt + .opt { border-top: 1px solid var(--line); }
+.opt .grow { flex: 1; min-width: 0; }
+.opt .name { font-size: 14px; }
+.opt .why { font-size: 12px; color: var(--muted); margin-top: 1px; }
+
+/* ── نمودار ────────────────────────────────────────────────────── */
+.spark { display: flex; align-items: stretch; gap: 4px; height: 92px; }
+.spark .col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
+.spark .track { position: relative; flex: 1; }
+.spark .fill {
+  position: absolute; inset-inline: 0; bottom: 0; min-height: 3px;
+  background: var(--accent); border-radius: 4px 4px 2px 2px;
+}
+.spark .tick {
+  font-size: 9.5px; color: var(--muted); text-align: center; margin-top: 5px;
+  white-space: nowrap; overflow: hidden;
+}
+
+/* کارِ خطرناک ته صفحه می‌ماند و نمی‌چسبد.
+   اول چسبیده بود؛ نتیجه‌اش این بود که «حذف این کار» همیشه روی
+   تنظیمات می‌نشست و هم جلوی دید را می‌گرفت هم خطرِ کلیکِ اشتباه
+   داشت. حذف کارِ نادری است و ارزش یک نوار همیشگی را ندارد. */
+.tail { margin-top: 26px; }
+.danger { color: var(--bad); }
+.grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
 </style>
 </head>
 <body>
@@ -164,12 +220,18 @@ h2 { font-size: 14px; margin: 26px 0 10px; font-weight: 600; color: var(--muted)
 <div class="tabs" id="tabs" role="tablist">
   <button role="tab" aria-selected="true"  data-tab="home">خانه</button>
   <button role="tab" aria-selected="false" data-tab="tasks">کارها</button>
+  <button role="tab" aria-selected="false" data-tab="stats">آمار</button>
   <button role="tab" aria-selected="false" data-tab="plans">خرید</button>
 </div>
 
 <div id="home"></div>
 <div id="tasks" class="hidden"></div>
+<div id="stats" class="hidden"></div>
 <div id="plans" class="hidden"></div>
+
+<!-- نمای رویی: جزئیات کار، ساخت کار، کیف پول. روی همه‌ی تب‌ها می‌نشیند
+     و دکمه‌ی بازگشتِ خودِ تلگرام می‌بنددش. -->
+<div id="over" class="hidden"></div>
 
 <script>
 (function () {
@@ -183,13 +245,14 @@ h2 { font-size: 14px; margin: 26px 0 10px; font-weight: 600; color: var(--muted)
 
   // ── ابزار ──────────────────────────────────────────────────────
   //
-  // متن از سرور می‌آید و بعضی‌اش را خودِ کاربر نوشته — عنوان کار.
-  // همه‌جا با textContent می‌نشیند نه innerHTML؛ هرجا ناچار به ساخت
-  // HTML باشیم، از esc رد می‌شود.
-  function esc(value) {
-    return String(value == null ? '' : value)
-      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
-      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  // هر متنی که از سرور می‌آید ممکن است نوشته‌ی خودِ کاربر باشد —
+  // عنوان کار، نام کانال. همه‌جا با textContent می‌نشیند نه
+  // innerHTML، و هیچ‌جا رشته‌ی HTML از داده ساخته نمی‌شود.
+  function el(tag, cls, text) {
+    var node = document.createElement(tag);
+    if (cls) node.className = cls;
+    if (text != null) node.textContent = text;
+    return node;
   }
 
   var FA = ['۰','۱','۲','۳','۴','۵','۶','۷','۸','۹'];
@@ -199,6 +262,11 @@ h2 { font-size: 14px; margin: 26px 0 10px; font-weight: 600; color: var(--muted)
   function money(n) {
     return fa(String(n).replace(/\B(?=(\d{3})+(?!\d))/g, '٬')) + ' تومان';
   }
+  function secs(n) {
+    if (n < 60) return fa(n) + ' ثانیه';
+    var m = Math.floor(n / 60);
+    return m < 60 ? fa(m) + ' دقیقه' : fa(Math.floor(m / 60)) + ' ساعت';
+  }
 
   function api(path, options) {
     options = options || {};
@@ -207,9 +275,16 @@ h2 { font-size: 14px; margin: 26px 0 10px; font-weight: 600; color: var(--muted)
       // تاریخچه‌ی مرورگر می‌نشیند.
       'X-Telegram-Init-Data': (tg && tg.initData) || ''
     });
-    return fetch('/app/api' + path, options).then(function (response) {
-      if (!response.ok) throw new Error(String(response.status));
-      return response.json();
+    if (options.body !== undefined) {
+      options.method = options.method || 'POST';
+      options.headers['Content-Type'] = 'application/json';
+      options.body = JSON.stringify(options.body);
+    }
+    return fetch('/app/api' + path, options).then(function (r) {
+      return r.json().catch(function () { return {}; }).then(function (data) {
+        if (!r.ok) throw new Error(data.error || ('خطای ' + r.status));
+        return data;
+      });
     });
   }
 
@@ -224,123 +299,122 @@ h2 { font-size: 14px; margin: 26px 0 10px; font-weight: 600; color: var(--muted)
       try { tg.HapticFeedback.notificationOccurred(kind); } catch (e) { /* بی‌اهمیت */ }
     }
   }
+  function tick() {
+    if (tg && tg.HapticFeedback) {
+      try { tg.HapticFeedback.selectionChanged(); } catch (e) { /* بی‌اهمیت */ }
+    }
+  }
+  function say(text) {
+    if (tg && tg.showAlert) tg.showAlert(text); else window.alert(text);
+  }
+  function ask(text, done) {
+    if (tg && tg.showConfirm) tg.showConfirm(text, done);
+    else done(window.confirm(text));
+  }
 
   function skeleton(box, count) {
-    box.innerHTML = new Array(count + 1).join('<div class="skeleton"></div>');
+    box.textContent = '';
+    for (var i = 0; i < count; i++) box.appendChild(el('div', 'skeleton'));
   }
 
-  function failed(box, what) {
-    box.innerHTML = '<div class="empty"><span class="big">⚠️</span>' +
-      esc(what) + '<br><span class="mini">اینترنت را بررسی کنید و دوباره باز کنید.</span></div>';
+  function nothing(box, icon, title, note, action, onclick) {
+    box.textContent = '';
+    var wrap = el('div', 'empty');
+    wrap.appendChild(el('span', 'big', icon));
+    wrap.appendChild(document.createTextNode(title));
+    if (note) {
+      wrap.appendChild(el('br'));
+      wrap.appendChild(el('span', 'mini', note));
+    }
+    box.appendChild(wrap);
+    if (action) {
+      var button = el('button', 'btn', action);
+      button.onclick = onclick;
+      box.appendChild(button);
+    }
   }
+
+  function failed(box, what, retry) {
+    nothing(box, '⚠️', what, 'اینترنت را بررسی کنید.', 'تلاش دوباره', retry);
+  }
+
+  // ── نمای رویی ──────────────────────────────────────────────────
+  //
+  // به‌جای دکمه‌ی بازگشتِ ساختگی داخل صفحه، از دکمه‌ی خودِ تلگرام
+  // استفاده می‌شود: همان‌جایی که کاربر عادت دارد دنبالش بگردد، و
+  // دکمه‌ی back گوشی هم همان را می‌زند.
+  var overStack = [];
+
+  function openOver(build) {
+    overStack.push(build);
+    $('over').classList.remove('hidden');
+    $('tabs').classList.add('hidden');
+    $('head').classList.add('hidden');
+    Object.keys(panes).forEach(function (k) { panes[k].classList.add('hidden'); });
+    if (tg && tg.BackButton) { tg.BackButton.show(); }
+    build($('over'));
+  }
+
+  function closeOver() {
+    overStack.pop();
+    if (overStack.length) { overStack[overStack.length - 1]($('over')); return; }
+    $('over').classList.add('hidden');
+    $('over').textContent = '';
+    $('tabs').classList.remove('hidden');
+    if (knownUser) $('head').classList.remove('hidden');
+    panes[current].classList.remove('hidden');
+    if (tg && tg.BackButton) { tg.BackButton.hide(); }
+  }
+
+  function refreshOver() {
+    if (overStack.length) overStack[overStack.length - 1]($('over'));
+  }
+
+  if (tg && tg.BackButton) { tg.BackButton.onClick(closeOver); }
 
   // ── تب‌ها ──────────────────────────────────────────────────────
-  var panes = { home: $('home'), tasks: $('tasks'), plans: $('plans') };
+  var panes = {
+    home: $('home'), tasks: $('tasks'), stats: $('stats'), plans: $('plans')
+  };
   var loaded = {};
+  var current = 'home';
+  var knownUser = false;
 
   $('tabs').addEventListener('click', function (event) {
     var button = event.target.closest('button[data-tab]');
     if (!button) return;
-    var name = button.dataset.tab;
+    current = button.dataset.tab;
+    tick();
 
     Array.prototype.forEach.call(this.querySelectorAll('button'), function (other) {
       other.setAttribute('aria-selected', String(other === button));
     });
     Object.keys(panes).forEach(function (key) {
-      panes[key].classList.toggle('hidden', key !== name);
+      panes[key].classList.toggle('hidden', key !== current);
     });
-    if (!loaded[name]) { loaded[name] = true; fill[name](); }
+    if (!loaded[current]) { loaded[current] = true; fill[current](); }
   });
 
-  // ── خانه ──────────────────────────────────────────────────────
+  function pick(name) {
+    var button = $('tabs').querySelector('button[data-tab="' + name + '"]');
+    if (button) button.click();
+  }
+
   var fill = {};
 
-  fill.home = function () {
-    var box = panes.home;
-    skeleton(box, 3);
-
-    api('/me').then(function (me) {
-      if (!me.known) {
-        box.innerHTML =
-          '<div class="empty"><span class="big">👋</span>' +
-          'هنوز ربات را استارت نکرده‌اید.<br>' +
-          '<span class="mini">یک بار بازش کنید تا حسابتان ساخته شود.</span></div>';
-        var start = document.createElement('button');
-        start.className = 'btn';
-        start.textContent = 'باز کردن ربات';
-        start.onclick = function () { openBot(''); };
-        box.appendChild(start);
-        return;
-      }
-
-      $('hello').textContent = 'سلام ' + (me.name || '');
-      $('head').classList.remove('hidden');
-
-      var plan = me.plan;
-      var state, tone;
-      if (!plan) { state = 'اشتراک فعالی ندارید'; tone = 'bad'; }
-      else if (plan.days_left <= 3) {
-        state = plan.title + ' — ' + fa(plan.days_left) + ' روز مانده'; tone = 'warn';
-      } else {
-        state = plan.title + ' — ' + fa(plan.days_left) + ' روز مانده'; tone = 'ok';
-      }
-      $('state').textContent = state;
-
-      box.innerHTML = '';
-
-      box.appendChild(card(
-        'اشتراک', state, tone,
-        plan ? 'تمدید' : 'خرید اشتراک',
-        function () { pick('plans'); }
-      ));
-
-      box.appendChild(card(
-        'کیف پول', money(me.wallet), '',
-        'شارژ',
-        function () { openBot('wallet'); }
-      ));
-
-      box.appendChild(card(
-        'اکانت کاربری',
-        me.connected ? 'وصل است' : 'وصل نیست',
-        me.connected ? 'ok' : 'bad',
-        me.connected ? '' : 'اتصال',
-        function () { openBot('login'); }
-      ));
-
-      if (me.banned) {
-        var warn = document.createElement('div');
-        warn.className = 'card';
-        warn.innerHTML = '<span class="pill bad">حساب شما مسدود است</span>';
-        box.prepend(warn);
-      }
-    }).catch(function () { failed(box, 'اطلاعات حساب نیامد.'); });
-  };
-
+  // ── کارتِ ساده ────────────────────────────────────────────────
   function card(label, value, tone, action, onclick) {
-    var box = document.createElement('div');
-    box.className = 'card';
-
-    var row = document.createElement('div');
-    row.className = 'row';
-
-    var grow = document.createElement('div');
-    grow.className = 'grow';
-    var top = document.createElement('div');
-    top.className = 'mini';
-    top.textContent = label;
-    var bottom = document.createElement('div');
+    var box = el('div', 'card');
+    var row = el('div', 'row');
+    var grow = el('div', 'grow');
+    grow.appendChild(el('div', 'mini', label));
+    var bottom = el('div', null, value);
     bottom.style.fontWeight = '600';
-    if (tone) { bottom.style.color = 'var(--' + tone + ')'; }
-    bottom.textContent = value;
-    grow.appendChild(top);
+    if (tone) bottom.style.color = 'var(--' + tone + ')';
     grow.appendChild(bottom);
     row.appendChild(grow);
-
     if (action) {
-      var button = document.createElement('button');
-      button.className = 'btn ghost small';
-      button.textContent = action;
+      var button = el('button', 'btn ghost small', action);
       button.onclick = onclick;
       row.appendChild(button);
     }
@@ -348,9 +422,101 @@ h2 { font-size: 14px; margin: 26px 0 10px; font-weight: 600; color: var(--muted)
     return box;
   }
 
-  function pick(name) {
-    var button = $('tabs').querySelector('button[data-tab="' + name + '"]');
-    if (button) button.click();
+  // ── خانه ──────────────────────────────────────────────────────
+  fill.home = function () {
+    var box = panes.home;
+    skeleton(box, 4);
+
+    api('/me').then(function (me) {
+      if (!me.known) {
+        nothing(
+          box, '👋', 'هنوز ربات را استارت نکرده‌اید.',
+          'یک بار بازش کنید تا حسابتان ساخته شود.',
+          'باز کردن ربات', function () { openBot(''); }
+        );
+        return;
+      }
+
+      knownUser = true;
+      $('hello').textContent = 'سلام ' + (me.name || '');
+      $('head').classList.remove('hidden');
+
+      var plan = me.plan, state, tone;
+      if (!plan) { state = 'اشتراک فعالی ندارید'; tone = 'bad'; }
+      else {
+        state = plan.title + ' — ' + fa(plan.days_left) + ' روز مانده';
+        tone = plan.days_left <= 3 ? 'warn' : 'ok';
+      }
+      $('state').textContent = state;
+
+      box.textContent = '';
+      if (me.banned) {
+        var warn = el('div', 'card');
+        warn.appendChild(el('span', 'pill bad', 'حساب شما مسدود است'));
+        box.appendChild(warn);
+      }
+
+      box.appendChild(card('اشتراک', state, tone,
+        plan ? 'تمدید' : 'خرید', function () { pick('plans'); }));
+
+      box.appendChild(card('کیف پول', money(me.wallet), '', 'مشاهده',
+        function () { openOver(walletView); }));
+
+      box.appendChild(card('اکانت کاربری',
+        me.connected ? 'وصل است' : 'وصل نیست',
+        me.connected ? 'ok' : 'bad',
+        me.connected ? '' : 'اتصال',
+        function () { openBot('login'); }));
+
+      if (!me.connected) {
+        var note = el('div', 'card');
+        note.appendChild(el('div', 'mini',
+          'بدون اتصال اکانت، ربات نمی‌تواند کانال مبدا را بخواند. ' +
+          'اتصال یک بار انجام می‌شود و در خودِ ربات است.'));
+        box.appendChild(note);
+      }
+
+      var make = el('button', 'btn', '➕ ساخت کار کپی');
+      make.style.marginTop = '6px';
+      make.onclick = function () { startNewTask(); };
+      box.appendChild(make);
+    }).catch(function () { failed(box, 'اطلاعات حساب نیامد.', fill.home); });
+  };
+
+  // ── کیف پول ───────────────────────────────────────────────────
+  function walletView(box) {
+    box.textContent = '';
+    box.appendChild(el('h1', null, 'کیف پول'));
+    var body = el('div', 'view');
+    box.appendChild(body);
+    skeleton(body, 3);
+
+    api('/wallet').then(function (data) {
+      body.textContent = '';
+      body.appendChild(card('موجودی', money(data.balance), 'ok', 'شارژ',
+        function () { openBot('wallet'); }));
+
+      if (!data.entries.length) {
+        body.appendChild(el('p', 'mini', 'هنوز تراکنشی ندارید.'));
+        return;
+      }
+      body.appendChild(el('h2', null, 'تراکنش‌ها'));
+      data.entries.forEach(function (entry) {
+        var item = el('div', 'card');
+        var row = el('div', 'row');
+        var grow = el('div', 'grow');
+        grow.appendChild(el('div', null, entry.reason));
+        grow.appendChild(el('div', 'mini', entry.note || entry.at));
+        var amount = el('div', 'num', (entry.amount > 0 ? '+' : '−') +
+          money(Math.abs(entry.amount)));
+        amount.style.color = entry.amount > 0 ? 'var(--ok)' : 'var(--bad)';
+        amount.style.fontSize = '13px';
+        row.appendChild(grow);
+        row.appendChild(amount);
+        item.appendChild(row);
+        body.appendChild(item);
+      });
+    }).catch(function (e) { failed(body, e.message, function () { walletView(box); }); });
   }
 
   // ── کارها ─────────────────────────────────────────────────────
@@ -359,69 +525,475 @@ h2 { font-size: 14px; margin: 26px 0 10px; font-weight: 600; color: var(--muted)
     skeleton(box, 3);
 
     api('/tasks').then(function (data) {
-      box.innerHTML = '';
+      box.textContent = '';
+      var make = el('button', 'btn', '➕ کار جدید');
+      make.onclick = function () { startNewTask(); };
+      box.appendChild(make);
+
       if (!data.tasks.length) {
-        box.innerHTML =
-          '<div class="empty"><span class="big">📋</span>' +
-          'هنوز کاری نساخته‌اید.<br>' +
-          '<span class="mini">ساختن کار تازه در خودِ ربات انجام می‌شود.</span></div>';
-        var make = document.createElement('button');
-        make.className = 'btn';
-        make.textContent = 'ساختن کار در ربات';
-        make.onclick = function () { openBot('newtask'); };
-        box.appendChild(make);
+        var wrap = el('div');
+        nothing(wrap, '📋', 'هنوز کاری نساخته‌اید.',
+          'یک کانال مبدا و یک مقصد انتخاب کنید، بقیه‌اش خودکار است.');
+        box.appendChild(wrap);
         return;
       }
 
+      box.appendChild(el('h2', null, fa(data.tasks.length) + ' کار'));
       data.tasks.forEach(function (task) {
-        var item = document.createElement('div');
-        item.className = 'card';
-
-        var row = document.createElement('div');
-        row.className = 'row';
-
-        var grow = document.createElement('div');
-        grow.className = 'grow';
-        var name = document.createElement('div');
-        name.style.fontWeight = '600';
-        name.textContent = task.title;
-        var note = document.createElement('div');
-        note.className = 'mini';
-        note.textContent = fa(task.copied) + ' پست کپی شده';
-        grow.appendChild(name);
-        grow.appendChild(note);
-
-        var sw = document.createElement('button');
-        sw.className = 'sw';
-        sw.setAttribute('aria-pressed', String(!!task.enabled));
-        sw.setAttribute('aria-label', 'روشن یا خاموش کردن ' + task.title);
-        sw.onclick = function () {
-          // بی‌درنگ عوض می‌شود تا کلیک بی‌جواب نماند، و اگر سرور نپذیرفت
-          // برمی‌گردد — وگرنه کاربر فکر می‌کند کار خاموش شده در حالی که
-          // کپی ادامه دارد.
-          var was = sw.getAttribute('aria-pressed') === 'true';
-          sw.setAttribute('aria-pressed', String(!was));
-          sw.disabled = true;
-          api('/tasks/' + task.id + '/toggle', { method: 'POST' })
-            .then(function (result) {
-              sw.setAttribute('aria-pressed', String(!!result.enabled));
-              buzz('success');
-            })
-            .catch(function () {
-              sw.setAttribute('aria-pressed', String(was));
-              buzz('error');
-              if (tg && tg.showAlert) tg.showAlert('تغییر ثبت نشد. دوباره امتحان کنید.');
-            })
-            .then(function () { sw.disabled = false; });
-        };
-
-        row.appendChild(grow);
-        row.appendChild(sw);
-        item.appendChild(row);
-        box.appendChild(item);
+        box.appendChild(taskRow(task));
       });
-    }).catch(function () { failed(box, 'فهرست کارها نیامد.'); });
+    }).catch(function (e) { failed(box, e.message, fill.tasks); });
   };
+
+  function taskRow(task) {
+    var item = el('div', 'card tap');
+    var row = el('div', 'row');
+
+    var grow = el('div', 'grow');
+    grow.appendChild(el('div', null, task.title)).style.fontWeight = '600';
+    grow.appendChild(el('div', 'mini', fa(task.copied) + ' پست کپی شده'));
+
+    var sw = el('button', 'sw');
+    sw.setAttribute('aria-pressed', String(!!task.enabled));
+    sw.setAttribute('aria-label', 'روشن یا خاموش کردن ' + task.title);
+    sw.onclick = function (event) {
+      event.stopPropagation();          // کلیک کلید، ردیف را باز نکند
+      toggleTask(task, sw);
+    };
+
+    row.appendChild(grow);
+    row.appendChild(sw);
+    row.appendChild(el('span', 'chev', '‹'));
+    item.appendChild(row);
+    item.onclick = function () { openOver(function (b) { taskView(b, task.id); }); };
+    return item;
+  }
+
+  function toggleTask(task, sw) {
+    // بی‌درنگ عوض می‌شود تا کلیک بی‌جواب نماند، و اگر سرور نپذیرفت
+    // برمی‌گردد — وگرنه کاربر فکر می‌کند کار خاموش شده در حالی که
+    // کپی ادامه دارد.
+    var was = sw.getAttribute('aria-pressed') === 'true';
+    sw.setAttribute('aria-pressed', String(!was));
+    sw.disabled = true;
+    api('/tasks/' + task.id + '/toggle', { method: 'POST' })
+      .then(function (result) {
+        sw.setAttribute('aria-pressed', String(!!result.enabled));
+        task.enabled = result.enabled;
+        buzz('success');
+      })
+      .catch(function (e) {
+        sw.setAttribute('aria-pressed', String(was));
+        buzz('error');
+        say(e.message || 'تغییر ثبت نشد.');
+      })
+      .then(function () { sw.disabled = false; });
+  }
+
+  // ── جزئیات یک کار ─────────────────────────────────────────────
+  //
+  // فهرست تنظیم‌ها عمداً همان‌هایی است که اغلب عوض می‌شوند. بقیه در
+  // ربات هستند؛ آوردنِ همه‌ی هفتاد گزینه به اینجا، اپ را به یک فرمِ
+  // بی‌انتها تبدیل می‌کرد که هیچ‌کس تا تهش نمی‌رود.
+  var GROUPS = [
+    ['پاک‌سازی متن', [
+      ['remove_links', 'حذف لینک‌ها', 'هر نشانی اینترنتی از متن برداشته می‌شود'],
+      ['remove_mentions', 'حذف یوزرنیم‌ها', '@… ها برداشته می‌شوند'],
+      ['remove_hashtags', 'حذف هشتگ‌ها', ''],
+      ['remove_emails', 'حذف ایمیل‌ها', ''],
+      ['remove_source_signature', 'حذف امضای مبدا', 'آیدی کانال مبدا از ته پست'],
+      ['strip_empty_lines', 'حذف خط‌های خالی اضافه', '']
+    ]],
+    ['فیلترها', [
+      ['block_ads', 'فیلتر هوشمند تبلیغات', 'پستِ تبلیغاتی اصلاً کپی نمی‌شود'],
+      ['block_with_links', 'رد کردن پستِ دارای لینک', ''],
+      ['block_with_buttons', 'رد کردن پستِ دکمه‌دار', ''],
+      ['block_forwarded', 'رد کردن پستِ فورواردشده', ''],
+      ['skip_duplicates', 'جلوگیری از پست تکراری', '']
+    ]],
+    ['همگام‌سازی', [
+      ['sync_edits', 'ویرایش‌های مبدا اعمال شود', ''],
+      ['sync_deletes', 'حذف‌های مبدا اعمال شود', ''],
+      ['copy_buttons', 'کپی دکمه‌های شیشه‌ای', '']
+    ]]
+  ];
+
+  var ORDERS = [
+    ['grace', 'هوشمند', 'به ترتیب، ولی پشت پستِ سنگین نمی‌ماند'],
+    ['strict', 'دقیق', 'همیشه به ترتیب مبدا، به هر قیمتی'],
+    ['fast', 'سریع', 'هرکدام زودتر آماده شد؛ ترتیب تضمینی نیست']
+  ];
+
+  function taskView(box, taskId) {
+    box.textContent = '';
+    var body = el('div', 'view');
+    box.appendChild(body);
+    skeleton(body, 5);
+
+    api('/tasks/' + taskId).then(function (task) {
+      body.textContent = '';
+      var cfg = task.settings;
+
+      var title = el('h1', null, task.title);
+      body.appendChild(title);
+      // زیرنویس نباید تکرارِ عنوان باشد؛ عنوان معمولاً خودش
+      // «مبدا ← مقصد» است.
+      var where = el('p', 'sub');
+      where.textContent = 'از «' + task.source + '» به «' + task.dest + '»';
+      body.appendChild(where);
+
+      body.appendChild(card('وضعیت',
+        task.enabled ? 'روشن' : 'خاموش',
+        task.enabled ? 'ok' : 'bad',
+        task.enabled ? 'خاموش کن' : 'روشن کن',
+        function () {
+          api('/tasks/' + taskId + '/toggle', { method: 'POST' })
+            .then(function () { buzz('success'); refreshOver(); loaded.tasks = false; })
+            .catch(function (e) { buzz('error'); say(e.message); });
+        }));
+
+      var counts = el('div', 'card');
+      var crow = el('div', 'row');
+      var a = el('div', 'grow');
+      a.appendChild(el('div', 'mini', 'کپی‌شده'));
+      a.appendChild(el('div', 'num', fa(task.copied)));
+      var b = el('div', 'grow');
+      b.appendChild(el('div', 'mini', 'ردشده'));
+      b.appendChild(el('div', 'num', fa(task.skipped)));
+      crow.appendChild(a); crow.appendChild(b);
+      counts.appendChild(crow);
+      body.appendChild(counts);
+
+      // ترتیب انتشار
+      body.appendChild(el('h2', null, 'ترتیب انتشار'));
+      var orderBox = el('div', 'card');
+      ORDERS.forEach(function (item) {
+        var opt = el('div', 'opt tap');
+        var grow = el('div', 'grow');
+        grow.appendChild(el('div', 'name', item[1]));
+        grow.appendChild(el('div', 'why', item[2]));
+        var mark = el('div', null, cfg.order_mode === item[0] ? '🔘' : '⚪️');
+        opt.appendChild(grow); opt.appendChild(mark);
+        opt.onclick = function () {
+          save(taskId, { order_mode: item[0] }, function () { refreshOver(); });
+        };
+        orderBox.appendChild(opt);
+      });
+      body.appendChild(orderBox);
+
+      // گزینه‌های کلیدی
+      GROUPS.forEach(function (group) {
+        body.appendChild(el('h2', null, group[0]));
+        var groupBox = el('div', 'card');
+        group[1].forEach(function (item) {
+          var key = item[0];
+          var opt = el('div', 'opt');
+          var grow = el('div', 'grow');
+          grow.appendChild(el('div', 'name', item[1]));
+          if (item[2]) grow.appendChild(el('div', 'why', item[2]));
+          var sw = el('button', 'sw');
+          sw.setAttribute('aria-pressed', String(!!cfg[key]));
+          sw.setAttribute('aria-label', item[1]);
+          sw.onclick = function () {
+            var was = sw.getAttribute('aria-pressed') === 'true';
+            sw.setAttribute('aria-pressed', String(!was));
+            sw.disabled = true;
+            var patch = {}; patch[key] = !was;
+            api('/tasks/' + taskId + '/settings', { body: patch })
+              .then(function () { cfg[key] = !was; buzz('success'); })
+              .catch(function (e) {
+                sw.setAttribute('aria-pressed', String(was));
+                buzz('error'); say(e.message);
+              })
+              .then(function () { sw.disabled = false; });
+          };
+          opt.appendChild(grow); opt.appendChild(sw);
+          groupBox.appendChild(opt);
+        });
+        body.appendChild(groupBox);
+      });
+
+      // متن‌های ثابت
+      body.appendChild(el('h2', null, 'متن‌های ثابت'));
+      var textBox = el('div', 'card');
+      [['header', 'هدر (بالای پست)'], ['footer', 'فوتر (پایین پست)'],
+       ['signature', 'امضا']].forEach(function (item) {
+        var label = el('label', 'f');
+        label.appendChild(el('span', 'cap', item[1]));
+        var input = document.createElement('textarea');
+        input.value = cfg[item[0]] || '';
+        input.rows = 2;
+        label.appendChild(input);
+        textBox.appendChild(label);
+        input.onchange = function () {
+          var patch = {}; patch[item[0]] = input.value;
+          save(taskId, patch);
+        };
+      });
+      body.appendChild(textBox);
+
+      // تأخیر و سقف
+      body.appendChild(el('h2', null, 'سرعت و ترافیک'));
+      var speedBox = el('div', 'card');
+      [['delay_seconds', 'تأخیر پیش از ارسال (ثانیه)', '۰ یعنی بی‌درنگ'],
+       ['max_per_hour', 'حداکثر پست در ساعت', '۰ یعنی نامحدود']
+      ].forEach(function (item) {
+        var label = el('label', 'f');
+        label.appendChild(el('span', 'cap', item[1]));
+        var input = document.createElement('input');
+        input.type = 'number'; input.min = '0';
+        input.value = cfg[item[0]] || 0;
+        label.appendChild(input);
+        label.appendChild(el('div', 'hint', item[2]));
+        speedBox.appendChild(label);
+        input.onchange = function () {
+          var patch = {}; patch[item[0]] = input.value;
+          save(taskId, patch);
+        };
+      });
+      body.appendChild(speedBox);
+
+      var actions = el('div', 'tail');
+      var remove = el('button', 'btn ghost danger', '🗑 حذف این کار');
+      remove.onclick = function () {
+        ask('کار «' + task.title + '» حذف شود؟ برگشت‌پذیر نیست.', function (yes) {
+          if (!yes) return;
+          api('/tasks/' + taskId + '/delete', { method: 'POST' })
+            .then(function () {
+              buzz('success'); loaded.tasks = false;
+              closeOver(); pick('tasks');
+            })
+            .catch(function (e) { buzz('error'); say(e.message); });
+        });
+      };
+      actions.appendChild(remove);
+      body.appendChild(actions);
+    }).catch(function (e) {
+      failed(body, e.message, function () { taskView(box, taskId); });
+    });
+  }
+
+  function save(taskId, patch, done) {
+    api('/tasks/' + taskId + '/settings', { body: patch })
+      .then(function () { buzz('success'); if (done) done(); })
+      .catch(function (e) { buzz('error'); say(e.message); });
+  }
+
+  // ── ساخت کار ──────────────────────────────────────────────────
+  var draft = {};
+
+  function startNewTask() {
+    draft = {};
+    openOver(function (box) { chooseChat(box, 'source'); });
+  }
+
+  function chooseChat(box, kind) {
+    box.textContent = '';
+    var body = el('div', 'view');
+    box.appendChild(body);
+
+    body.appendChild(el('h1', null, kind === 'source' ? 'کانال مبدا' : 'کانال مقصد'));
+    body.appendChild(el('p', 'sub', kind === 'source'
+      ? 'از کدام کانال کپی شود؟ لازم نیست در آن ادمین باشید — فقط عضو باشید.'
+      : 'به کدام کانال فرستاده شود؟ در این یکی باید ادمین باشید.'));
+
+    var list = el('div');
+    body.appendChild(list);
+    skeleton(list, 5);
+
+    api('/chats' + (kind === 'dest' ? '?writable=1' : '')).then(function (data) {
+      list.textContent = '';
+      if (!data.chats.length) {
+        nothing(list, '🔍', 'کانالی پیدا نشد.',
+          kind === 'dest'
+            ? 'برای مقصد باید در کانال ادمین باشید.'
+            : 'مطمئن شوید با همان شماره‌ای که در ربات وارد شدید عضو کانال هستید.');
+        return;
+      }
+
+      var search = document.createElement('input');
+      search.type = 'text';
+      search.placeholder = 'جستجو در ' + fa(data.chats.length) + ' کانال';
+      search.style.marginBottom = '10px';
+      list.appendChild(search);
+
+      var rows = el('div');
+      list.appendChild(rows);
+
+      function draw(filter) {
+        rows.textContent = '';
+        data.chats.filter(function (chat) {
+          return !filter || chat.title.toLowerCase().indexOf(filter) >= 0;
+        }).slice(0, 60).forEach(function (chat) {
+          var item = el('div', 'card tap');
+          var row = el('div', 'row');
+          var grow = el('div', 'grow');
+          grow.appendChild(el('div', null, chat.title));
+          grow.appendChild(el('div', 'mini',
+            (chat.channel ? '📢 کانال' : '👥 گروه') + ' • ' +
+            (chat.private ? '🔒 خصوصی' : '🌐 ' + (chat.username ? '@' + chat.username : 'عمومی'))));
+          row.appendChild(grow);
+          row.appendChild(el('span', 'chev', '‹'));
+          item.appendChild(row);
+          item.onclick = function () {
+            tick();
+            if (kind === 'source') {
+              draft.source = String(chat.id);
+              draft.source_title = chat.title;
+              openOver(function (b) { chooseChat(b, 'dest'); });
+            } else {
+              if (String(chat.id) === draft.source) {
+                say('مبدا و مقصد نمی‌توانند یکی باشند.');
+                return;
+              }
+              draft.dest = String(chat.id);
+              draft.dest_title = chat.title;
+              openOver(confirmNewTask);
+            }
+          };
+          rows.appendChild(item);
+        });
+      }
+      draw('');
+      search.oninput = function () { draw(search.value.trim().toLowerCase()); };
+    }).catch(function (e) {
+      if (String(e.message).indexOf('وصل نیست') >= 0) {
+        nothing(list, '🔌', 'اکانت کاربری وصل نیست.',
+          'ربات کانال‌ها را با اکانت شما می‌خواند. اتصال یک بار و در خودِ ربات است.',
+          'اتصال در ربات', function () { openBot('login'); });
+        return;
+      }
+      failed(list, e.message, function () { chooseChat(box, kind); });
+    });
+  }
+
+  function confirmNewTask(box) {
+    box.textContent = '';
+    var body = el('div', 'view');
+    box.appendChild(body);
+
+    body.appendChild(el('h1', null, 'ساخت کار'));
+    var summary = el('div', 'card');
+    [['مبدا', draft.source_title], ['مقصد', draft.dest_title]].forEach(function (pair) {
+      var opt = el('div', 'opt');
+      var grow = el('div', 'grow');
+      grow.appendChild(el('div', 'why', pair[0]));
+      grow.appendChild(el('div', 'name', pair[1]));
+      opt.appendChild(grow);
+      summary.appendChild(opt);
+    });
+    body.appendChild(summary);
+
+    var label = el('label', 'f');
+    label.appendChild(el('span', 'cap', 'نام این کار'));
+    var name = document.createElement('input');
+    name.type = 'text';
+    name.value = draft.source_title + ' ← ' + draft.dest_title;
+    label.appendChild(name);
+    label.appendChild(el('div', 'hint', 'فقط برای خودتان است؛ هر وقت خواستید عوضش کنید.'));
+    body.appendChild(label);
+
+    var go = el('button', 'btn', 'بساز و روشن کن');
+    go.onclick = function () {
+      go.disabled = true;
+      go.textContent = 'در حال ساخت…';
+      api('/tasks', {
+        body: {
+          source: draft.source, source_title: draft.source_title,
+          dest: draft.dest, dest_title: draft.dest_title,
+          title: name.value.trim()
+        }
+      }).then(function (result) {
+        buzz('success');
+        loaded.tasks = false;
+        overStack = [];
+        closeOver();
+        pick('tasks');
+        openOver(function (b) { taskView(b, result.id); });
+      }).catch(function (e) {
+        buzz('error');
+        say(e.message);
+        go.disabled = false;
+        go.textContent = 'بساز و روشن کن';
+      });
+    };
+    body.appendChild(go);
+  }
+
+  // ── آمار ──────────────────────────────────────────────────────
+  fill.stats = function () {
+    var box = panes.stats;
+    skeleton(box, 4);
+
+    api('/stats').then(function (data) {
+      box.textContent = '';
+
+      var grid = el('div', 'grid2');
+      grid.appendChild(card('کارها', fa(data.active) + ' از ' + fa(data.tasks)));
+      grid.appendChild(card('کپی‌شده', fa(data.copied), 'ok'));
+      box.appendChild(grid);
+
+      var speed = data.speed;
+      box.appendChild(el('h2', null, 'سرعت انتشار (۷ روز)'));
+      if (!speed.count) {
+        var note = el('div', 'card');
+        note.appendChild(el('div', 'mini',
+          'هنوز پستی کپی نشده. بعد از اولین پست‌ها اینجا پر می‌شود.'));
+        box.appendChild(note);
+      } else {
+        var speedBox = el('div', 'card');
+        [['نصفِ پست‌ها زیر', secs(speed.median)],
+         ['۹۰٪ زیر', secs(speed.p90)],
+         ['کندترین', secs(speed.worst)],
+         ['بیش از یک دقیقه', fa(speed.slow_percent) + '٪']
+        ].forEach(function (pair) {
+          var opt = el('div', 'opt');
+          var grow = el('div', 'grow');
+          grow.appendChild(el('div', 'name', pair[0]));
+          opt.appendChild(grow);
+          opt.appendChild(el('div', 'num', pair[1]));
+          speedBox.appendChild(opt);
+        });
+        box.appendChild(speedBox);
+
+        if (data.daily.length) {
+          box.appendChild(el('h2', null, 'میانه‌ی روزانه'));
+          var chartBox = el('div', 'card');
+          chartBox.appendChild(spark(data.daily));
+          chartBox.appendChild(el('div', 'mini',
+            'میانه است نه میانگین: یک ویدئوی سنگین میانگین را می‌برد بالا و ' +
+            'تصویری می‌سازد که هیچ پستی تجربه‌اش نکرده.'));
+          box.appendChild(chartBox);
+        }
+      }
+
+      if (data.skipped) {
+        var skipped = el('div', 'card');
+        skipped.appendChild(el('div', 'mini',
+          fa(data.skipped) + ' پست رد شده — یا فیلترها گرفته‌اندشان، ' +
+          'یا تکراری بوده‌اند. در ربات «🔍 چرا پستی نزد؟» دلیلِ هرکدام را می‌گوید.'));
+        box.appendChild(skipped);
+      }
+    }).catch(function (e) { failed(box, e.message, fill.stats); });
+  };
+
+  function spark(points) {
+    var top = 1;
+    points.forEach(function (p) { if (p[1] > top) top = p[1]; });
+    var wrap = el('div', 'spark');
+    points.forEach(function (p) {
+      var col = el('div', 'col');
+      col.title = p[0] + ' — ' + secs(p[1]);
+      var track = el('div', 'track');
+      var fillBar = el('div', 'fill');
+      fillBar.style.height = Math.max(3, Math.round(p[1] * 100 / top)) + '%';
+      track.appendChild(fillBar);
+      col.appendChild(track);
+      col.appendChild(el('div', 'tick', fa(p[0])));
+      wrap.appendChild(col);
+    });
+    return wrap;
+  }
 
   // ── خرید ──────────────────────────────────────────────────────
   fill.plans = function () {
@@ -429,58 +1001,35 @@ h2 { font-size: 14px; margin: 26px 0 10px; font-weight: 600; color: var(--muted)
     skeleton(box, 4);
 
     api('/plans').then(function (data) {
-      box.innerHTML = '';
+      box.textContent = '';
       data.plans.forEach(function (plan) {
-        var item = document.createElement('div');
-        item.className = 'card plan' + (plan.code === data.popular ? ' pick' : '');
-
+        var item = el('div', 'card plan' + (plan.code === data.popular ? ' pick' : ''));
         if (plan.code === data.popular) {
-          var star = document.createElement('span');
-          star.className = 'star';
-          star.textContent = '⭐ پیشنهاد ما';
-          item.appendChild(star);
+          item.appendChild(el('span', 'star', '⭐ پیشنهاد ما'));
         }
-
-        var title = document.createElement('div');
-        title.style.fontWeight = '600';
-        title.textContent = plan.title;
-
-        var tagline = document.createElement('div');
-        tagline.className = 'mini';
-        tagline.textContent = plan.tagline;
-
-        var price = document.createElement('div');
-        price.className = 'price';
+        item.appendChild(el('div', null, plan.title)).style.fontWeight = '600';
+        item.appendChild(el('div', 'mini', plan.tagline));
+        var price = el('div', 'price', money(plan.price));
         price.style.margin = '8px 0 2px';
-        price.textContent = money(plan.price);
-
-        var facts = document.createElement('div');
-        facts.className = 'mini';
+        item.appendChild(price);
         // جداکننده «•» و نه «·»: نقطه‌ی وسط در این اندازه شبیه «۰»
         // دیده می‌شود و «۳ کار · تا ۳ مقصد» را «۳ کار ۰ تا ۳» می‌خواند.
-        facts.textContent =
+        item.appendChild(el('div', 'mini',
           fa(plan.days) + ' روز • ' + plan.messages + ' پیام • ' +
-          fa(plan.tasks) + ' کار • تا ' + fa(plan.destinations) + ' مقصد';
+          fa(plan.tasks) + ' کار • تا ' + fa(plan.destinations) + ' مقصد'));
 
-        var buy = document.createElement('button');
-        buy.className = 'btn' + (plan.code === data.popular ? '' : ' ghost');
+        var buy = el('button', 'btn' + (plan.code === data.popular ? '' : ' ghost'), 'خرید');
         buy.style.marginTop = '12px';
-        buy.textContent = 'خرید';
         buy.onclick = function () {
           // پرداخت داخل ربات انجام می‌شود، نه اینجا. مینی‌اپ به کارت و
           // درگاه و رسید دسترسی ندارد و ساختن نسخه‌ی دوم از آن جریان
-          // یعنی دو جا برای اشتباه کردن.
+          // یعنی دو جا برای اشتباه کردن با پول واقعی.
           openBot('plan_' + plan.code);
         };
-
-        item.appendChild(title);
-        item.appendChild(tagline);
-        item.appendChild(price);
-        item.appendChild(facts);
         item.appendChild(buy);
         box.appendChild(item);
       });
-    }).catch(function () { failed(box, 'طرح‌ها نیامدند.'); });
+    }).catch(function (e) { failed(box, e.message, fill.plans); });
   };
 
   loaded.home = true;
