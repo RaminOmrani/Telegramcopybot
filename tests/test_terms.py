@@ -155,3 +155,77 @@ def test_the_reading_view_has_no_accept_button():
 
     assert "terms.accept" not in source
     assert "terms_keyboard" not in source
+
+
+# ------------------------------------------------------- صفحه‌ی فروش
+def _landing() -> str:
+    from pathlib import Path
+
+    return (Path(__file__).parent.parent / "site" / "index.html").read_text(
+        encoding="utf-8"
+    )
+
+
+def test_the_landing_prices_match_the_real_plans():
+    """<b>قیمتِ کهنه روی صفحه‌ی فروش، بدترین نوع اشتباه است.</b>
+
+    مشتری عددی را می‌بیند و وقتی وارد ربات می‌شود عدد دیگری است. یک
+    بار همین اتفاق افتاد، چون صفحه نسخه‌ی دستیِ خودش را داشت. حالا از
+    plans.py ساخته می‌شود و این تست می‌سنجد که کهنه نشده باشد.
+    """
+    import subprocess
+    import sys
+    from pathlib import Path
+
+    root = Path(__file__).parent.parent
+    result = subprocess.run(
+        [sys.executable, str(root / "tools" / "site.py"), "--check"],
+        capture_output=True,
+        text=True,
+        cwd=root,
+    )
+    assert result.returncode == 0, result.stderr or result.stdout
+
+
+def test_every_purchasable_plan_appears_on_the_landing_page():
+    from telkap.plans import _fa as fa
+    from telkap.plans import all_purchasable
+
+    page = _landing()
+    for plan in all_purchasable():
+        assert fa(plan.price_toman) in page, plan.code
+
+
+def test_the_landing_font_is_not_fetched_from_a_cdn():
+    """<b>مخاطب این صفحه کاربر ایرانی است.</b>
+
+    فونتی که از fonts.googleapis.com بیاید یا کند می‌آید یا اصلاً
+    نمی‌آید، و صفحه‌ی فروشی که با فونت پیش‌فرض ویندوز رندر شود پیش از
+    آنکه خوانده شود قضاوت می‌شود.
+    """
+    page = _landing()
+
+    assert "@import url('https://fonts.googleapis.com" not in page
+    assert "/fonts/Vazirmatn-Regular.woff2" in page
+
+
+def test_the_landing_font_files_are_really_there():
+    from pathlib import Path
+
+    fonts = Path(__file__).parent.parent / "site" / "fonts"
+    for weight in ("Regular", "Medium", "SemiBold", "Bold"):
+        assert (fonts / f"Vazirmatn-{weight}.woff2").exists()
+
+
+def test_the_landing_page_never_promises_a_refund():
+    """<b>قانون کسب‌وکار: عودت وجه نداریم.</b>
+
+    وعده‌ای که روی صفحه‌ی فروش داده شود، بعداً باید یا اجرا شود یا
+    توضیح داده شود؛ هر دو گران‌اند.
+    """
+    page = _landing()
+
+    for promise in ("عودت وجه", "بازگشت وجه", "ضمانت بازگشت", "مسترد"):
+        assert promise not in page, promise
+    # و صریح می‌گوید که برگشت‌ناپذیر است
+    assert "بازگشت‌پذیر نیستند" in page

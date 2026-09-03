@@ -1,6 +1,35 @@
-<title>کپی‌یار</title>
+<title>فورواردبات — کپی خودکار محتوای کانال تلگرام</title>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="description" content="محتوای هر کانال تلگرامی را بردارید، تبلیغ و لینکش را پاک کنید و با نام خودتان منتشر کنید — بدون اینکه در کانال مبدا ادمین باشید.">
 <style>
-@import url('https://fonts.googleapis.com/css2?family=Noto+Kufi+Arabic:wght@400;600;800&family=Vazirmatn:wght@400;500;700&display=swap');
+/* ── فونت ────────────────────────────────────────────────────────────
+   وزیرمتن، از خودِ سرور نه از CDN. مخاطب این صفحه کاربر ایرانی است و
+   فونتی که از fonts.googleapis.com بیاید یا کند می‌آید یا اصلاً
+   نمی‌آید — و صفحه‌ی فروشی که با فونت پیش‌فرض ویندوز رندر شود، پیش
+   از آنکه خوانده شود قضاوت می‌شود.
+
+   font-display: swap تا متن بی‌درنگ دیده شود و بعد فونت جا بیفتد. */
+@font-face {
+  font-family: 'Vazirmatn'; font-style: normal; font-weight: 400;
+  src: local('Vazirmatn'), url('/fonts/Vazirmatn-Regular.woff2') format('woff2');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Vazirmatn'; font-style: normal; font-weight: 500;
+  src: local('Vazirmatn Medium'), url('/fonts/Vazirmatn-Medium.woff2') format('woff2');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Vazirmatn'; font-style: normal; font-weight: 600;
+  src: local('Vazirmatn SemiBold'), url('/fonts/Vazirmatn-SemiBold.woff2') format('woff2');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Vazirmatn'; font-style: normal; font-weight: 700;
+  src: local('Vazirmatn Bold'), url('/fonts/Vazirmatn-Bold.woff2') format('woff2');
+  font-display: swap;
+}
 
 /* ── نشانه‌ها ────────────────────────────────────────────────────────
    دو لهجه‌ی رنگی معنا دارند و تزئین نیستند:
@@ -22,7 +51,7 @@
   --good:       #1F7A4D;
   --shadow:     0 1px 2px rgba(14,22,32,.05), 0 12px 32px -12px rgba(14,22,32,.14);
 
-  --display: 'Noto Kufi Arabic', 'Vazirmatn', Tahoma, sans-serif;
+  --display: 'Vazirmatn', Tahoma, sans-serif;
   --body:    'Vazirmatn', 'Segoe UI', Tahoma, sans-serif;
   --mono:    ui-monospace, 'Cascadia Mono', Consolas, monospace;
 }
@@ -265,7 +294,10 @@ section { padding: 84px 0; }
 .feature .rule { font-size: 13px; color: var(--src); margin-top: 10px; display: block; }
 
 /* قیمت */
-.plans { display: grid; grid-template-columns: repeat(4, 1fr); gap: 14px; align-items: start; }
+/* پنج طرح داریم، نه چهار. با ستون ثابت، طرح اختصاصی تنها به سطر دوم
+   می‌افتاد — یعنی گران‌ترین طرح، شکسته و بی‌قواره. */
+.plans { display: grid; grid-template-columns: repeat(auto-fit, minmax(190px, 1fr));
+  gap: 14px; align-items: start; }
 @media (max-width: 1000px) { .plans { grid-template-columns: repeat(2, 1fr); } }
 @media (max-width: 560px) { .plans { grid-template-columns: 1fr; } }
 .plan {
@@ -323,16 +355,32 @@ footer {
   padding: 30px 0; font-size: 14px; color: var(--muted);
 }
 footer .wrap { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space-between; }
+
+/* ── بلندمدت ────────────────────────────────────────────────────── */
+.longterm { overflow-x: auto; border: 1px solid var(--line); border-radius: 14px;
+  background: var(--surface); box-shadow: var(--shadow); }
+.longterm table { border-collapse: collapse; width: 100%; min-width: 520px; }
+.longterm th, .longterm td { padding: 13px 18px; text-align: right;
+  border-bottom: 1px solid var(--line-soft); }
+.longterm th { font-size: 13px; color: var(--muted); font-weight: 600;
+  background: var(--surface-2); white-space: nowrap; }
+.longterm tr:last-child td { border-bottom: 0; }
+.longterm td b { font-variant-numeric: tabular-nums; }
+.plan .badge { position: absolute; top: -12px; inset-inline-start: 18px;
+  background: var(--dest); color: #fff; font-size: 12px; font-weight: 600;
+  padding: 3px 12px; border-radius: 999px; white-space: nowrap; }
+.plan { position: relative; }
 </style>
 
 <header class="top">
   <div class="wrap">
-    <div class="brand">کپی<span>یار</span></div>
+    <div class="brand">فوروارد<span>بات</span></div>
     <nav>
       <a href="#how">چطور کار می‌کند</a>
       <a href="#features">امکانات</a>
       <a href="#plans">تعرفه</a>
       <a href="#faq">پرسش‌ها</a>
+      <a href="/app">مینی‌اپ</a>
     </nav>
     <a class="btn" href="https://t.me/AdvancedForwardBot">شروع رایگان</a>
   </div>
@@ -406,7 +454,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space
           در عمل یعنی هیچ‌وقت.
         </p>
         <p>
-          کپی‌یار مسیر دیگری می‌رود: <strong>اکانت خودتان</strong> را یک بار وصل
+          فورواردبات مسیر دیگری می‌رود: <strong>اکانت خودتان</strong> را یک بار وصل
           می‌کنید. کانال مبدا را با همان اکانت می‌خواند، درست مثل وقتی خودتان
           آن را باز می‌کنید. پس هر کانالی که <strong>شما</strong> می‌توانید ببینید،
           ربات هم می‌تواند — از جمله کانال‌های خصوصی و پست‌های قدیمی.
@@ -532,67 +580,38 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space
         </p>
       </div>
 
+<!-- تعرفه: ساخته‌ی tools/site.py — دستی عوضش نکنید -->
       <div class="plans">
-        <div class="plan">
-          <h3>آزمایشی</h3>
-          <p class="tagline">تست امکانات پایه</p>
-          <div class="price"><b>رایگان</b><span>۱ روز</span></div>
-          <ul>
-            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۲۰</b> پیام</span></li>
-            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۱</b> کار کپی</span></li>
-            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span>کانال عمومی</span></li>
-            <li><span class="dash">—</span><span>کانال خصوصی</span></li>
-            <li><span class="dash">—</span><span>واترمارک</span></li>
-          </ul>
-          <a class="btn ghost" href="https://t.me/AdvancedForwardBot">شروع کنید</a>
-        </div>
-
-        <div class="plan">
-          <h3>۷ روزه</h3>
-          <p class="tagline">پلن پایه برای شروع</p>
-          <div class="price"><b>۱۲۹٬۰۰۰</b><span>تومان</span></div>
-          <ul>
-            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۲٬۰۰۰</b> پیام</span></li>
-            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۳</b> کار کپی</span></li>
-            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span>تا <b>۳</b> مقصد</span></li>
-            <li><span class="dash">—</span><span>کانال خصوصی</span></li>
-            <li><span class="dash">—</span><span>واترمارک</span></li>
-          </ul>
-          <a class="btn ghost" href="https://t.me/AdvancedForwardBot">خرید</a>
-        </div>
-
-        <div class="plan pick">
-          <h3>۱۴ روزه</h3>
-          <p class="tagline">با کانال خصوصی و واترمارک</p>
-          <div class="price"><b>۲۲۹٬۰۰۰</b><span>تومان</span></div>
-          <ul>
-            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۱۰٬۰۰۰</b> پیام</span></li>
-            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۶</b> کار کپی</span></li>
-            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span>تا <b>۵</b> مقصد</span></li>
-            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span>کانال خصوصی</span></li>
-            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۱۰</b> واترمارک</span></li>
-          </ul>
-          <a class="btn" href="https://t.me/AdvancedForwardBot">خرید</a>
-        </div>
-
-        <div class="plan">
-          <h3>۳۰ روزه</h3>
-          <p class="tagline">حرفه‌ای، با همه‌ی امکانات</p>
-          <div class="price"><b>۴۲۹٬۰۰۰</b><span>تومان</span></div>
-          <ul>
-            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۲۰٬۰۰۰</b> پیام</span></li>
-            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۲۰</b> کار کپی</span></li>
-            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span>تا <b>۱۰</b> مقصد</span></li>
-            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۵۰</b> پیام گذشته</span></li>
-            <li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span>پشتیبانی ویژه</span></li>
-          </ul>
-          <a class="btn ghost" href="https://t.me/AdvancedForwardBot">خرید</a>
-        </div>
+        <div class="plan"><h3>اشتراک آزمایشی</h3><p class="tagline">تست رایگان امکانات پایه</p><div class="price"><b>رایگان</b><span>۱ روز</span></div><ul><li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۲۰</b> پیام</span></li><li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۱</b> کار کپی</span></li><li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span>تا <b>۱</b> مقصد</span></li><li><span class="dash">—</span><span>کانال خصوصی</span></li><li><span class="dash">—</span><span>واترمارک</span></li></ul><a class="btn ghost" href="https://t.me/AdvancedForwardBot">شروع کنید</a></div>
+        <div class="plan"><h3>اشتراک ۷ روزه</h3><p class="tagline">پلن پایه برای شروع</p><div class="price"><b>۱۲۹،۰۰۰</b><span>تومان</span></div><ul><li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۲،۰۰۰</b> پیام</span></li><li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۳</b> کار کپی</span></li><li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span>تا <b>۳</b> مقصد</span></li><li><span class="dash">—</span><span>کانال خصوصی</span></li><li><span class="dash">—</span><span>واترمارک</span></li></ul><a class="btn ghost" href="https://t.me/AdvancedForwardBot">خرید</a></div>
+        <div class="plan"><h3>اشتراک ۱۴ روزه</h3><p class="tagline">پلن محبوب، با کانال خصوصی و واترمارک</p><div class="price"><b>۲۲۹،۰۰۰</b><span>تومان</span></div><ul><li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۱۰،۰۰۰</b> پیام</span></li><li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۶</b> کار کپی</span></li><li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span>تا <b>۵</b> مقصد</span></li><li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span>کانال خصوصی</span></li><li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۱۰</b> واترمارک</span></li></ul><a class="btn ghost" href="https://t.me/AdvancedForwardBot">خرید</a></div>
+        <div class="plan"><h3>اشتراک ۳۰ روزه</h3><p class="tagline">پلن حرفه‌ای با همه‌ی امکانات</p><div class="price"><b>۴۲۹،۰۰۰</b><span>تومان</span></div><ul><li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۲۰،۰۰۰</b> پیام</span></li><li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۲۰</b> کار کپی</span></li><li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span>تا <b>۱۰</b> مقصد</span></li><li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span>کانال خصوصی</span></li><li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۲۰</b> واترمارک</span></li></ul><a class="btn ghost" href="https://t.me/AdvancedForwardBot">خرید</a></div>
+        <div class="plan"><h3>طرح اختصاصی</h3><p class="tagline">۳۰ روزه، مثل طرح ۳۰ روزه ولی با پیام نامحدود و سهمیه‌های بالاتر</p><div class="price"><b>۸۹۰،۰۰۰</b><span>تومان</span></div><ul><li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>نامحدود</b> پیام</span></li><li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۵۰</b> کار کپی</span></li><li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span>تا <b>۲۰</b> مقصد</span></li><li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span>کانال خصوصی</span></li><li><svg class="check" viewBox="0 0 16 16" fill="none" stroke="currentColor" stroke-width="2"><path d="M3 8.5l3.5 3.5L13 5"/></svg><span><b>۵۰</b> واترمارک</span></li></ul><a class="btn ghost" href="https://t.me/AdvancedForwardBot">خرید</a></div>
       </div>
 
+      <div class="section-head" style="margin-top:56px">
+        <h3>اشتراک بلندمدت</h3>
+        <p>هرچه دوره بلندتر، ماهانه ارزان‌تر. سهمیه‌ها هم به همان نسبت بزرگ‌تر می‌شوند — یعنی طرح یک‌ساله واقعاً دوازده برابر طرح ماهانه ظرفیت دارد، نه فقط دوازده برابر مدت.</p>
+      </div>
+      <div class="longterm">
+        <table>
+          <thead><tr><th>طرح</th><th>مدت</th><th>قیمت</th><th>معادل ماهانه</th></tr></thead>
+          <tbody>
+            <tr><td>اشتراک ۲ ماهه</td><td>۶۰ روز</td><td><b>۷۹۹،۰۰۰</b> تومان</td><td>ماهی ۳۹۹،۵۰۰ تومان</td></tr>
+            <tr><td>اشتراک ۳ ماهه</td><td>۹۰ روز</td><td><b>۱،۱۴۹،۰۰۰</b> تومان</td><td>ماهی ۳۸۳،۰۰۰ تومان</td></tr>
+            <tr><td>اشتراک ۶ ماهه</td><td>۱۸۰ روز</td><td><b>۲،۱۴۹،۰۰۰</b> تومان</td><td>ماهی ۳۵۸،۱۶۶ تومان</td></tr>
+            <tr><td>اشتراک ۱۲ ماهه</td><td>۳۶۵ روز</td><td><b>۳،۸۹۹،۰۰۰</b> تومان</td><td>ماهی ۳۲۴،۹۱۶ تومان</td></tr>
+            <tr><td>طرح اختصاصی ۲ ماهه</td><td>۶۰ روز</td><td><b>۱،۶۵۹،۰۰۰</b> تومان</td><td>ماهی ۸۲۹،۵۰۰ تومان</td></tr>
+            <tr><td>طرح اختصاصی ۳ ماهه ⭐</td><td>۹۰ روز</td><td><b>۲،۳۷۹،۰۰۰</b> تومان</td><td>ماهی ۷۹۳،۰۰۰ تومان</td></tr>
+            <tr><td>طرح اختصاصی ۶ ماهه</td><td>۱۸۰ روز</td><td><b>۴،۴۲۹،۰۰۰</b> تومان</td><td>ماهی ۷۳۸،۱۶۶ تومان</td></tr>
+            <tr><td>طرح اختصاصی ۱۲ ماهه</td><td>۳۶۵ روز</td><td><b>۸،۱۱۹،۰۰۰</b> تومان</td><td>ماهی ۶۷۶،۵۸۳ تومان</td></tr>
+          </tbody>
+        </table>
+      </div>
+<!-- پایان تعرفه -->
+
       <div class="pay-note">
-        <span><b>طرح اختصاصی</b> — ۸۹۰٬۰۰۰ تومان، پیام نامحدود، ۵۰ کار، ۲۰ مقصد</span>
-        <span><b>پرداخت</b> کارت‌به‌کارت داخل ربات؛ رسید را می‌فرستید و اشتراک بلافاصله فعال می‌شود</span>
+                <span><b>پرداخت</b> کارت‌به‌کارت، درگاه زرین‌پال، یا تتر و ترون — همه داخل ربات</span>
         <span><b>دعوت دوستان</b> — از هر خرید دعوت‌شده‌هایتان به کیف پول شما برمی‌گردد</span>
       </div>
     </div>
@@ -681,8 +700,8 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space
 
 <footer>
   <div class="wrap">
-    <span>کپی‌یار — ربات کپی خودکار محتوای تلگرام</span>
-    <span>پشتیبانی داخل ربات، هر روز</span>
+    <span>فورواردبات — ربات کپی خودکار محتوای تلگرام</span>
+    <span><a href="/app">مینی‌اپ</a> · <a href="/panel">پنل مدیریت</a> · پشتیبانی داخل ربات، هر روز</span>
   </div>
 </footer>
 
