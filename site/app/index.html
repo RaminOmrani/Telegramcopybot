@@ -1,0 +1,491 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>فورواردبات</title>
+
+<!--
+  مینی‌اپ فورواردبات.
+
+  چرا رنگ‌ها از متغیرهای تلگرام می‌آیند و نه از پالت خودمان: این صفحه
+  داخل خودِ تلگرام باز می‌شود، وسط چیزی که کاربر همان لحظه بازش دارد.
+  اگر تمِ کاربر تیره باشد و صفحه‌ی ما سفید، مثل یک وصله دیده می‌شود.
+  تلگرام رنگ‌های تمِ فعلی را در var(--tg-theme-*) می‌گذارد؛ ما همان‌ها
+  را برمی‌داریم و فقط جایی که ندادند مقدارِ جایگزین می‌گذاریم.
+
+  چرا هیچ کتابخانه‌ای اینجا نیست: کاربر ایرانی این صفحه را باز می‌کند
+  و هر فایلی که از CDN خارجی بیاید یا کند می‌آید یا اصلاً نمی‌آید.
+  فونت هم از سرور خودمان است، به همین دلیل.
+-->
+
+<script src="https://telegram.org/js/telegram-web-app.js"></script>
+<style>
+@font-face {
+  font-family: 'Vazirmatn'; font-weight: 400; font-style: normal;
+  src: local('Vazirmatn'), url('/fonts/Vazirmatn-Regular.woff2') format('woff2');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Vazirmatn'; font-weight: 500; font-style: normal;
+  src: local('Vazirmatn Medium'), url('/fonts/Vazirmatn-Medium.woff2') format('woff2');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Vazirmatn'; font-weight: 600; font-style: normal;
+  src: local('Vazirmatn SemiBold'), url('/fonts/Vazirmatn-SemiBold.woff2') format('woff2');
+  font-display: swap;
+}
+@font-face {
+  font-family: 'Vazirmatn'; font-weight: 700; font-style: normal;
+  src: local('Vazirmatn Bold'), url('/fonts/Vazirmatn-Bold.woff2') format('woff2');
+  font-display: swap;
+}
+
+:root {
+  --bg:     var(--tg-theme-bg-color, #0b0e14);
+  --card:   var(--tg-theme-secondary-bg-color, #151a24);
+  --ink:    var(--tg-theme-text-color, #e8ecf4);
+  --muted:  var(--tg-theme-hint-color, #8b95a8);
+  --accent: var(--tg-theme-button-color, #3b82f6);
+  --on-accent: var(--tg-theme-button-text-color, #ffffff);
+  --link:   var(--tg-theme-link-color, #60a5fa);
+
+  --ok:   #34d399;
+  --warn: #fbbf24;
+  --bad:  #f87171;
+  --line: color-mix(in srgb, var(--ink) 12%, transparent);
+  --radius: 14px;
+}
+
+* { box-sizing: border-box; }
+body {
+  margin: 0; background: var(--bg); color: var(--ink);
+  font-family: 'Vazirmatn', system-ui, Tahoma, sans-serif;
+  font-size: 15px; line-height: 1.7; direction: rtl;
+  -webkit-font-smoothing: antialiased;
+  padding: 14px 14px calc(28px + env(safe-area-inset-bottom));
+}
+a { color: var(--link); text-decoration: none; }
+h1 { font-size: 19px; margin: 0 0 2px; font-weight: 700; }
+h2 { font-size: 14px; margin: 26px 0 10px; font-weight: 600; color: var(--muted); }
+.sub { color: var(--muted); font-size: 13px; margin: 0 0 18px; }
+
+.card {
+  background: var(--card); border-radius: var(--radius);
+  padding: 15px 16px; margin-bottom: 10px;
+}
+.row { display: flex; align-items: center; gap: 12px; }
+.row .grow { flex: 1; min-width: 0; }
+.mini { color: var(--muted); font-size: 12.5px; }
+.num { font-variant-numeric: tabular-nums; font-weight: 700; }
+
+.pill {
+  font-size: 11.5px; padding: 2px 10px; border-radius: 999px;
+  background: color-mix(in srgb, var(--ink) 8%, transparent);
+  color: var(--muted); white-space: nowrap;
+}
+.pill.ok   { color: var(--ok);   background: color-mix(in srgb, var(--ok) 16%, transparent); }
+.pill.warn { color: var(--warn); background: color-mix(in srgb, var(--warn) 16%, transparent); }
+.pill.bad  { color: var(--bad);  background: color-mix(in srgb, var(--bad) 16%, transparent); }
+
+.btn {
+  display: inline-flex; align-items: center; justify-content: center;
+  background: var(--accent); color: var(--on-accent);
+  border: 0; border-radius: 11px; padding: 11px 18px;
+  font: inherit; font-weight: 600; font-size: 14px; cursor: pointer;
+  width: 100%;
+}
+.btn.ghost {
+  background: transparent; color: var(--ink);
+  border: 1px solid var(--line); font-weight: 500;
+}
+.btn.small { width: auto; padding: 7px 14px; font-size: 13px; }
+
+/* ── تب‌ها ─────────────────────────────────────────────────────── */
+.tabs { display: flex; gap: 6px; margin: 0 0 16px; }
+.tabs button {
+  flex: 1; background: transparent; border: 0; color: var(--muted);
+  font: inherit; font-size: 13.5px; font-weight: 500; cursor: pointer;
+  padding: 9px 4px; border-radius: 10px;
+}
+.tabs button[aria-selected="true"] {
+  background: var(--card); color: var(--ink); font-weight: 600;
+}
+
+/* ── طرح‌ها ────────────────────────────────────────────────────── */
+.plan { position: relative; }
+.plan .price { font-size: 19px; font-weight: 700; font-variant-numeric: tabular-nums; }
+.plan .star {
+  position: absolute; top: -8px; inset-inline-start: 14px;
+  background: var(--accent); color: var(--on-accent);
+  font-size: 11px; font-weight: 600; padding: 2px 10px; border-radius: 999px;
+}
+.plan.pick { outline: 1.5px solid var(--accent); }
+
+/* ── کلید روشن/خاموش ───────────────────────────────────────────── */
+.sw {
+  width: 44px; height: 26px; border-radius: 999px; border: 0; padding: 0;
+  background: color-mix(in srgb, var(--ink) 18%, transparent);
+  position: relative; cursor: pointer; flex: 0 0 44px;
+  transition: background .15s;
+}
+.sw[aria-pressed="true"] { background: var(--ok); }
+/* حالت خاموش، کنارِ شروع — که در راست‌به‌چپ یعنی راست. روشن که شد
+   ۱۸ پیکسل به چپ می‌رود: ۴۴ عرضِ کلید منهای ۲۰ قطرِ دکمه منهای دو
+   حاشیه‌ی ۳تایی. با inset-inline-end، دکمه از روی ریل بیرون می‌زد. */
+.sw::after {
+  content: ''; position: absolute; top: 3px; inset-inline-start: 3px;
+  width: 20px; height: 20px; border-radius: 50%; background: #fff;
+  transition: transform .15s;
+}
+.sw[aria-pressed="true"]::after { transform: translateX(-18px); }
+
+.empty { text-align: center; color: var(--muted); padding: 34px 12px; }
+.empty .big { font-size: 30px; display: block; margin-bottom: 8px; opacity: .5; }
+.hidden { display: none !important; }
+
+.skeleton {
+  height: 62px; border-radius: var(--radius); margin-bottom: 10px;
+  background: var(--card); opacity: .55;
+  animation: pulse 1.1s ease-in-out infinite;
+}
+@keyframes pulse { 50% { opacity: .28; } }
+@media (prefers-reduced-motion: reduce) { .skeleton { animation: none; } }
+</style>
+</head>
+<body>
+
+<div id="head" class="hidden">
+  <h1 id="hello">سلام</h1>
+  <p class="sub" id="state"></p>
+</div>
+
+<div class="tabs" id="tabs" role="tablist">
+  <button role="tab" aria-selected="true"  data-tab="home">خانه</button>
+  <button role="tab" aria-selected="false" data-tab="tasks">کارها</button>
+  <button role="tab" aria-selected="false" data-tab="plans">خرید</button>
+</div>
+
+<div id="home"></div>
+<div id="tasks" class="hidden"></div>
+<div id="plans" class="hidden"></div>
+
+<script>
+(function () {
+  'use strict';
+
+  var tg = window.Telegram && window.Telegram.WebApp;
+  if (tg) { tg.ready(); tg.expand(); }
+
+  var BOT = 'AdvancedForwardBot';
+  var $ = function (id) { return document.getElementById(id); };
+
+  // ── ابزار ──────────────────────────────────────────────────────
+  //
+  // متن از سرور می‌آید و بعضی‌اش را خودِ کاربر نوشته — عنوان کار.
+  // همه‌جا با textContent می‌نشیند نه innerHTML؛ هرجا ناچار به ساخت
+  // HTML باشیم، از esc رد می‌شود.
+  function esc(value) {
+    return String(value == null ? '' : value)
+      .replace(/&/g, '&amp;').replace(/</g, '&lt;').replace(/>/g, '&gt;')
+      .replace(/"/g, '&quot;').replace(/'/g, '&#39;');
+  }
+
+  var FA = ['۰','۱','۲','۳','۴','۵','۶','۷','۸','۹'];
+  function fa(n) {
+    return String(n).replace(/\d/g, function (d) { return FA[+d]; });
+  }
+  function money(n) {
+    return fa(String(n).replace(/\B(?=(\d{3})+(?!\d))/g, '٬')) + ' تومان';
+  }
+
+  function api(path, options) {
+    options = options || {};
+    options.headers = Object.assign({}, options.headers, {
+      // هویت در سرصفحه می‌رود، نه در نشانی: نشانی در لاگ سرور و
+      // تاریخچه‌ی مرورگر می‌نشیند.
+      'X-Telegram-Init-Data': (tg && tg.initData) || ''
+    });
+    return fetch('/app/api' + path, options).then(function (response) {
+      if (!response.ok) throw new Error(String(response.status));
+      return response.json();
+    });
+  }
+
+  function openBot(payload) {
+    var url = 'https://t.me/' + BOT + (payload ? '?start=' + payload : '');
+    if (tg && tg.openTelegramLink) { tg.openTelegramLink(url); return; }
+    window.open(url, '_blank');
+  }
+
+  function buzz(kind) {
+    if (tg && tg.HapticFeedback) {
+      try { tg.HapticFeedback.notificationOccurred(kind); } catch (e) { /* بی‌اهمیت */ }
+    }
+  }
+
+  function skeleton(box, count) {
+    box.innerHTML = new Array(count + 1).join('<div class="skeleton"></div>');
+  }
+
+  function failed(box, what) {
+    box.innerHTML = '<div class="empty"><span class="big">⚠️</span>' +
+      esc(what) + '<br><span class="mini">اینترنت را بررسی کنید و دوباره باز کنید.</span></div>';
+  }
+
+  // ── تب‌ها ──────────────────────────────────────────────────────
+  var panes = { home: $('home'), tasks: $('tasks'), plans: $('plans') };
+  var loaded = {};
+
+  $('tabs').addEventListener('click', function (event) {
+    var button = event.target.closest('button[data-tab]');
+    if (!button) return;
+    var name = button.dataset.tab;
+
+    Array.prototype.forEach.call(this.querySelectorAll('button'), function (other) {
+      other.setAttribute('aria-selected', String(other === button));
+    });
+    Object.keys(panes).forEach(function (key) {
+      panes[key].classList.toggle('hidden', key !== name);
+    });
+    if (!loaded[name]) { loaded[name] = true; fill[name](); }
+  });
+
+  // ── خانه ──────────────────────────────────────────────────────
+  var fill = {};
+
+  fill.home = function () {
+    var box = panes.home;
+    skeleton(box, 3);
+
+    api('/me').then(function (me) {
+      if (!me.known) {
+        box.innerHTML =
+          '<div class="empty"><span class="big">👋</span>' +
+          'هنوز ربات را استارت نکرده‌اید.<br>' +
+          '<span class="mini">یک بار بازش کنید تا حسابتان ساخته شود.</span></div>';
+        var start = document.createElement('button');
+        start.className = 'btn';
+        start.textContent = 'باز کردن ربات';
+        start.onclick = function () { openBot(''); };
+        box.appendChild(start);
+        return;
+      }
+
+      $('hello').textContent = 'سلام ' + (me.name || '');
+      $('head').classList.remove('hidden');
+
+      var plan = me.plan;
+      var state, tone;
+      if (!plan) { state = 'اشتراک فعالی ندارید'; tone = 'bad'; }
+      else if (plan.days_left <= 3) {
+        state = plan.title + ' — ' + fa(plan.days_left) + ' روز مانده'; tone = 'warn';
+      } else {
+        state = plan.title + ' — ' + fa(plan.days_left) + ' روز مانده'; tone = 'ok';
+      }
+      $('state').textContent = state;
+
+      box.innerHTML = '';
+
+      box.appendChild(card(
+        'اشتراک', state, tone,
+        plan ? 'تمدید' : 'خرید اشتراک',
+        function () { pick('plans'); }
+      ));
+
+      box.appendChild(card(
+        'کیف پول', money(me.wallet), '',
+        'شارژ',
+        function () { openBot('wallet'); }
+      ));
+
+      box.appendChild(card(
+        'اکانت کاربری',
+        me.connected ? 'وصل است' : 'وصل نیست',
+        me.connected ? 'ok' : 'bad',
+        me.connected ? '' : 'اتصال',
+        function () { openBot('login'); }
+      ));
+
+      if (me.banned) {
+        var warn = document.createElement('div');
+        warn.className = 'card';
+        warn.innerHTML = '<span class="pill bad">حساب شما مسدود است</span>';
+        box.prepend(warn);
+      }
+    }).catch(function () { failed(box, 'اطلاعات حساب نیامد.'); });
+  };
+
+  function card(label, value, tone, action, onclick) {
+    var box = document.createElement('div');
+    box.className = 'card';
+
+    var row = document.createElement('div');
+    row.className = 'row';
+
+    var grow = document.createElement('div');
+    grow.className = 'grow';
+    var top = document.createElement('div');
+    top.className = 'mini';
+    top.textContent = label;
+    var bottom = document.createElement('div');
+    bottom.style.fontWeight = '600';
+    if (tone) { bottom.style.color = 'var(--' + tone + ')'; }
+    bottom.textContent = value;
+    grow.appendChild(top);
+    grow.appendChild(bottom);
+    row.appendChild(grow);
+
+    if (action) {
+      var button = document.createElement('button');
+      button.className = 'btn ghost small';
+      button.textContent = action;
+      button.onclick = onclick;
+      row.appendChild(button);
+    }
+    box.appendChild(row);
+    return box;
+  }
+
+  function pick(name) {
+    var button = $('tabs').querySelector('button[data-tab="' + name + '"]');
+    if (button) button.click();
+  }
+
+  // ── کارها ─────────────────────────────────────────────────────
+  fill.tasks = function () {
+    var box = panes.tasks;
+    skeleton(box, 3);
+
+    api('/tasks').then(function (data) {
+      box.innerHTML = '';
+      if (!data.tasks.length) {
+        box.innerHTML =
+          '<div class="empty"><span class="big">📋</span>' +
+          'هنوز کاری نساخته‌اید.<br>' +
+          '<span class="mini">ساختن کار تازه در خودِ ربات انجام می‌شود.</span></div>';
+        var make = document.createElement('button');
+        make.className = 'btn';
+        make.textContent = 'ساختن کار در ربات';
+        make.onclick = function () { openBot('newtask'); };
+        box.appendChild(make);
+        return;
+      }
+
+      data.tasks.forEach(function (task) {
+        var item = document.createElement('div');
+        item.className = 'card';
+
+        var row = document.createElement('div');
+        row.className = 'row';
+
+        var grow = document.createElement('div');
+        grow.className = 'grow';
+        var name = document.createElement('div');
+        name.style.fontWeight = '600';
+        name.textContent = task.title;
+        var note = document.createElement('div');
+        note.className = 'mini';
+        note.textContent = fa(task.copied) + ' پست کپی شده';
+        grow.appendChild(name);
+        grow.appendChild(note);
+
+        var sw = document.createElement('button');
+        sw.className = 'sw';
+        sw.setAttribute('aria-pressed', String(!!task.enabled));
+        sw.setAttribute('aria-label', 'روشن یا خاموش کردن ' + task.title);
+        sw.onclick = function () {
+          // بی‌درنگ عوض می‌شود تا کلیک بی‌جواب نماند، و اگر سرور نپذیرفت
+          // برمی‌گردد — وگرنه کاربر فکر می‌کند کار خاموش شده در حالی که
+          // کپی ادامه دارد.
+          var was = sw.getAttribute('aria-pressed') === 'true';
+          sw.setAttribute('aria-pressed', String(!was));
+          sw.disabled = true;
+          api('/tasks/' + task.id + '/toggle', { method: 'POST' })
+            .then(function (result) {
+              sw.setAttribute('aria-pressed', String(!!result.enabled));
+              buzz('success');
+            })
+            .catch(function () {
+              sw.setAttribute('aria-pressed', String(was));
+              buzz('error');
+              if (tg && tg.showAlert) tg.showAlert('تغییر ثبت نشد. دوباره امتحان کنید.');
+            })
+            .then(function () { sw.disabled = false; });
+        };
+
+        row.appendChild(grow);
+        row.appendChild(sw);
+        item.appendChild(row);
+        box.appendChild(item);
+      });
+    }).catch(function () { failed(box, 'فهرست کارها نیامد.'); });
+  };
+
+  // ── خرید ──────────────────────────────────────────────────────
+  fill.plans = function () {
+    var box = panes.plans;
+    skeleton(box, 4);
+
+    api('/plans').then(function (data) {
+      box.innerHTML = '';
+      data.plans.forEach(function (plan) {
+        var item = document.createElement('div');
+        item.className = 'card plan' + (plan.code === data.popular ? ' pick' : '');
+
+        if (plan.code === data.popular) {
+          var star = document.createElement('span');
+          star.className = 'star';
+          star.textContent = '⭐ پیشنهاد ما';
+          item.appendChild(star);
+        }
+
+        var title = document.createElement('div');
+        title.style.fontWeight = '600';
+        title.textContent = plan.title;
+
+        var tagline = document.createElement('div');
+        tagline.className = 'mini';
+        tagline.textContent = plan.tagline;
+
+        var price = document.createElement('div');
+        price.className = 'price';
+        price.style.margin = '8px 0 2px';
+        price.textContent = money(plan.price);
+
+        var facts = document.createElement('div');
+        facts.className = 'mini';
+        // جداکننده «•» و نه «·»: نقطه‌ی وسط در این اندازه شبیه «۰»
+        // دیده می‌شود و «۳ کار · تا ۳ مقصد» را «۳ کار ۰ تا ۳» می‌خواند.
+        facts.textContent =
+          fa(plan.days) + ' روز • ' + plan.messages + ' پیام • ' +
+          fa(plan.tasks) + ' کار • تا ' + fa(plan.destinations) + ' مقصد';
+
+        var buy = document.createElement('button');
+        buy.className = 'btn' + (plan.code === data.popular ? '' : ' ghost');
+        buy.style.marginTop = '12px';
+        buy.textContent = 'خرید';
+        buy.onclick = function () {
+          // پرداخت داخل ربات انجام می‌شود، نه اینجا. مینی‌اپ به کارت و
+          // درگاه و رسید دسترسی ندارد و ساختن نسخه‌ی دوم از آن جریان
+          // یعنی دو جا برای اشتباه کردن.
+          openBot('plan_' + plan.code);
+        };
+
+        item.appendChild(title);
+        item.appendChild(tagline);
+        item.appendChild(price);
+        item.appendChild(facts);
+        item.appendChild(buy);
+        box.appendChild(item);
+      });
+    }).catch(function () { failed(box, 'طرح‌ها نیامدند.'); });
+  };
+
+  loaded.home = true;
+  fill.home();
+})();
+</script>
+</body>
+</html>

@@ -6,6 +6,7 @@ from aiogram.types import (
     InlineKeyboardMarkup,
     KeyboardButton,
     ReplyKeyboardMarkup,
+    WebAppInfo,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
@@ -665,6 +666,23 @@ PLAN_ICONS = {
 }
 
 
+def _mini_app_button() -> InlineKeyboardButton | None:
+    """دکمه‌ی باز کردن مینی‌اپ — فقط وقتی نشانی‌اش واقعاً هست.
+
+    تلگرام فقط https می‌پذیرد و دکمه‌ای که با خطا باز نشود از نبودنش
+    بدتر است؛ پس اگر WEB_BASE_URL خالی یا http باشد، دکمه‌ای ساخته
+    نمی‌شود.
+    """
+    from telkap.web.miniapp import public_url
+
+    url = public_url()
+    if not url:
+        return None
+    return InlineKeyboardButton(
+        text="🚀 باز کردن اپ", web_app=WebAppInfo(url=url)
+    )
+
+
 def plans_menu() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for plan in purchasable():
@@ -685,6 +703,9 @@ def plans_menu() -> InlineKeyboardMarkup:
             callback_data="plan:long",
         )
     )
+    app = _mini_app_button()
+    if app is not None:
+        kb.row(app)
     kb.row(
         InlineKeyboardButton(text="📊 مقایسه‌ی طرح‌ها", callback_data="cmp:plans"),
         InlineKeyboardButton(text="🎫 خرید اعتبار", callback_data="credit:menu"),

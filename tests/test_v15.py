@@ -368,11 +368,16 @@ def test_every_page_but_the_gate_needs_a_session():
     app = server.build_app(bot=None)
     # مسیرها با پیشوند ثبت می‌شوند؛ اینجا برای خوانایی برداشته می‌شود
     # تا فهرستِ پایین همانی بماند که در کد نوشته شده.
+    # مینی‌اپ اصلاً زیر پنل نیست: هویتش را تلگرام با امضای initData
+    # می‌دهد و هر مسیرش خودش می‌سنجدش. اینجا کنار گذاشته می‌شود تا
+    # فهرستِ پایین فقط درباره‌ی پنل بماند.
     paths = set()
     for route in app.router.routes():
         if route.resource is None:
             continue
         canonical = route.resource.canonical
+        if canonical.startswith(server.APP_PREFIX):
+            continue
         assert canonical.startswith(PREFIX + "/") or canonical == PREFIX, canonical
         paths.add(canonical[len(PREFIX):] or "/")
 
@@ -467,6 +472,15 @@ def test_every_writing_route_checks_the_csrf_token():
         # توکنی داشته باشد. محافظش چیز دیگری است — رمز، کد تلگرام، و
         # قفل شدن پس از چند تلاش.
         if path in server.PUBLIC_PATHS:
+            continue
+        # مینی‌اپ هم استثناست، و دلیلش ساختاری است نه سهل‌انگاری:
+        # هویتش با سرصفحه‌ی X-Telegram-Init-Data می‌آید، نه با کوکی.
+        # حمله‌ی CSRF روی این معنا ندارد چون مرورگر آن سرصفحه را
+        # خودکار به درخواستی که سایتِ دیگری ساخته نمی‌چسباند — کاری
+        # که با کوکی می‌کند. در عوض هر مسیرش امضا را می‌سنجد.
+        if path.startswith(server.APP_PREFIX):
+            source = inspect.getsource(route.handler)
+            assert "_who(request)" in source, path
             continue
         source = inspect.getsource(route.handler)
         assert "_guard_post" in source, path

@@ -33,7 +33,7 @@ from telkap.services import (
     usdtrate,
     zarinpal,
 )
-from telkap.web import auth, render
+from telkap.web import auth, miniapp, render
 from telkap.web.render import (
     card,
     chart,
@@ -216,6 +216,12 @@ PUBLIC_PATHS = frozenset(
     for path in ("/enter", "/healthz", "/login", "/theme", zarinpal.CALLBACK_PATH)
 )
 
+# مینی‌اپ بیرونِ پنل است و ورودِ پنل را ندارد؛ هویتش را خودِ تلگرام با
+# امضای initData می‌دهد و هر مسیرش جداگانه می‌سنجدش. جدا از
+# PUBLIC_PATHS چون یک پیشوند است نه فهرستی از مسیرها، و آن فهرست
+# عمداً مو‌به‌مو سنجیده می‌شود.
+APP_PREFIX = miniapp.API_PREFIX + "/"
+
 # فونت و فایل‌های ثابت. جدا از PUBLIC_PATHS چون یک مسیر نیست بلکه یک
 # پیشوند است، و آن فهرست عمداً مو‌به‌مو سنجیده می‌شود.
 STATIC_PREFIX = u("/static") + "/"
@@ -224,7 +230,11 @@ STATIC_DIR = Path(__file__).parent / "static"
 
 @web.middleware
 async def auth_middleware(request: web.Request, handler):
-    if request.path in PUBLIC_PATHS or request.path.startswith(STATIC_PREFIX):
+    if (
+        request.path in PUBLIC_PATHS
+        or request.path.startswith(STATIC_PREFIX)
+        or request.path.startswith(APP_PREFIX)
+    ):
         return await handler(request)
 
     session = await auth.get_session_for(request.cookies.get(auth.COOKIE_NAME))
@@ -1977,6 +1987,7 @@ def build_app(bot) -> web.Application:
     def post(path, handler):
         return web.post(u(path), handler)
 
+    app.add_routes(miniapp.routes())
     app.add_routes(
         [
             get("/healthz", healthz),

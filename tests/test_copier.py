@@ -5,6 +5,7 @@ import asyncio
 from dataclasses import dataclass, field
 
 import pytest
+import pytest_asyncio
 
 
 # --------------------------------------------------------------- ساختگی‌ها
@@ -358,7 +359,9 @@ class _Event:
 _MADE: list = []
 
 
-@pytest.fixture(autouse=True)
+# asyncio_mode=strict است: فیکسچرِ async با pytest.fixture اصلاً
+# اجرا نمی‌شود و بی‌صدا رد می‌شود.
+@pytest_asyncio.fixture(autouse=True)
 async def _close_copiers():
     yield
     while _MADE:
