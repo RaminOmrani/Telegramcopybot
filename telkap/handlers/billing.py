@@ -200,8 +200,9 @@ async def cb_long_term(call: CallbackQuery) -> None:
     ]
     for plan in long_term():
         monthly = plan.price_toman // max(1, round(plan.days / 30))
+        star = "  ⭐️ <i>پیشنهاد ما</i>" if plan.code == POPULAR_CODE else ""
         lines.append(
-            f"🗓 <b>{plan.title}</b> — {plan.price_label}\n"
+            f"🗓 <b>{plan.title}</b> — {plan.price_label}{star}\n"
             f"   ماهی {toman(monthly)} · <i>{plan.tagline}</i>"
         )
     lines += [

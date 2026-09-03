@@ -358,7 +358,7 @@ powershell -Command "Get-Content C:\Telegramcopybot\data\bot.log -Wait -Tail 50"
 
 | نام | نوع | مقدار |
 |---|---|---|
-| `botpanel` | A | `194.5.195.93` |
+| `forwardbot` | A | `194.5.195.93` |
 
 ### ۷.۵.۲ روشن کردن در `.env`
 
@@ -366,8 +366,13 @@ powershell -Command "Get-Content C:\Telegramcopybot\data\bot.log -Wait -Tail 50"
 WEB_ENABLED=true
 WEB_HOST=127.0.0.1
 WEB_PORT=8080
-WEB_BASE_URL=https://botpanel.softmiliac.com
+WEB_BASE_URL=https://forwardbot.softmiliac.com/panel
 ```
+
+> **`/panel` را از تهِ نشانی برندارید.** یک زیردامنه سه چیز دارد —
+> `/` صفحه‌ی فروش، `/panel` پنل، `/app` مینی‌اپ. لینک ورود و نشانی
+> بازگشتِ زرین‌پال هر دو از `WEB_BASE_URL` ساخته می‌شوند و بدون
+> پیشوند روی صفحه‌ی فروش می‌افتند.
 
 سپس `nssm restart TelkapBot`.
 
@@ -386,8 +391,16 @@ Let's Encrypt گواهی می‌گیرد و تمدیدش هم می‌کند.
 ۲. فایل `C:\caddy\Caddyfile` را بسازید (بدون پسوند):
 
 ```
-botpanel.softmiliac.com {
-    reverse_proxy 127.0.0.1:8080
+forwardbot.softmiliac.com {
+    # صفحه‌ی فروش و مینی‌اپ فایل ثابت‌اند، پنل به ربات می‌رود
+    handle /panel* {
+        reverse_proxy 127.0.0.1:8080
+    }
+    handle {
+        root * C:\telkap\site
+        try_files {path} /index.html
+        file_server
+    }
 }
 ```
 
@@ -401,8 +414,8 @@ cd C:\caddy
 caddy run
 ```
 
-اگر گواهی گرفته شد، `https://botpanel.softmiliac.com` باید صفحه‌ی ورود پنل را
-نشان دهد. با `Ctrl+C` ببندید.
+اگر گواهی گرفته شد، `https://forwardbot.softmiliac.com/panel` باید صفحه‌ی
+ورود پنل را نشان دهد. با `Ctrl+C` ببندید.
 
 ۵. سرویس دائمی، مثل خود ربات:
 

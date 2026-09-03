@@ -48,7 +48,7 @@ def _standalone(html: str) -> str:
         blob = base64.b64encode(path.read_bytes()).decode()
         return f"url('data:font/woff2;base64,{blob}')"
 
-    return re.sub(r"url\('/static/fonts/([^']+)'\)", swap, html)
+    return re.sub(r"url\('[^']*/static/fonts/([^']+)'\)", swap, html)
 
 
 def _dashboard() -> str:
@@ -201,13 +201,21 @@ def main() -> int:
     out = Path(sys.argv[1] if len(sys.argv) > 1 else ROOT / "data" / "preview")
     out.mkdir(parents=True, exist_ok=True)
 
-    for name, (title, active, body) in PAGES.items():
-        html = render.page(title, body, active=active, who="۷۷۳۱۲۴۵۵", waiting=3)
-        (out / name).write_text(_standalone(html), encoding="utf-8")
-        print(f"✓ {out / name}")
+    # هر صفحه در هر دو تم، چون تم یک انتخاب است نه یک پیش‌فرضِ ثابت و
+    # هر دو باید دیده شوند.
+    for theme in render.THEMES:
+        for name, (title, active, body) in PAGES.items():
+            html = render.page(
+                title, body, active=active, who="۷۷۳۱۲۴۵۵", waiting=3,
+                theme=theme, path=active,
+            )
+            path = out / f"{Path(name).stem}-{theme}.html"
+            path.write_text(_standalone(html), encoding="utf-8")
+            print(f"✓ {path}")
 
-    (out / "login.html").write_text(_standalone(render.login()), encoding="utf-8")
-    print(f"✓ {out / 'login.html'}")
+        path = out / f"login-{theme}.html"
+        path.write_text(_standalone(render.login(theme=theme)), encoding="utf-8")
+        print(f"✓ {path}")
     return 0
 
 

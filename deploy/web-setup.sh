@@ -1,13 +1,28 @@
 #!/usr/bin/env bash
 #
-# nginx و گواهی SSL برای پنل وب — با یک دستور.
+# nginx و گواهی SSL برای یک زیردامنه — با یک دستور.
 #
-#   sudo bash /opt/telkap/deploy/web-setup.sh botpanel.softmiliac.com you@email.com
+#   sudo bash /opt/telkap/deploy/web-setup.sh forwardbot.softmiliac.com you@email.com
+#
+# و اگر نام دیگری هم به همین‌جا اشاره می‌کند، بعد از ایمیل بیاورید؛
+# روی همان گواهی می‌نشیند و به نامِ اصلی تغییرمسیر می‌خورد:
+#
+#   sudo bash ... forwardbot.softmiliac.com you@email.com botpanel.softmiliac.com
+#
+# یک زیردامنه، سه چیز:
+#
+#   /        صفحه‌ی فروش — فایل ثابت از پوشه‌ی site/
+#   /panel   پنل مدیریت — به ربات پراکسی می‌شود
+#   /app     مینی‌اپ تلگرام — فایل ثابت از site/app/
+#
+# چرا یکی و نه سه زیردامنه. هر زیردامنه یک رکورد DNS، یک گواهی و یک
+# جای دیگر برای خراب شدن است؛ و دامنه‌ی اصلی مالِ سایت شرکت است. با
+# یک نام، همه‌ی این‌ها یک گواهی و یک فایل پیکربندی دارند.
 #
 # چرا nginx لازم است. پنل داخل خودِ پروسه‌ی ربات بالا می‌آید و روی
 # 127.0.0.1 گوش می‌دهد، یعنی فقط از خودِ سرور در دسترس است. nginx تنها
-# چیزی است که از بیرون دیده می‌شود: HTTPS را می‌رساند، و درخواست را به
-# ربات می‌دهد.
+# چیزی است که از بیرون دیده می‌شود: HTTPS را می‌رساند، فایل‌های ثابت را
+# خودش می‌دهد، و بقیه را به ربات می‌سپارد.
 #
 # چرا HTTPS اختیاری نیست. کوکی ورود به پنل با پرچم Secure فرستاده
 # می‌شود، پس روی http اصلاً برنمی‌گردد و ورود در حلقه می‌افتد. مهم‌تر
@@ -28,8 +43,20 @@ ENV_FILE="$APP_DIR/.env"
 SERVICE="${SERVICE:-telkap}"
 WEB_PORT="${WEB_PORT:-8080}"
 
+PANEL_PATH="${PANEL_PATH:-/panel}"     # باید با render.PREFIX یکی باشد
+SITE_DIR="${SITE_DIR:-$APP_DIR/site}"
+
 DOMAIN="${1:-}"
 EMAIL="${2:-}"
+# آرگومان سوم به بعد، نام‌های دیگری که به همین‌جا می‌آیند. shift فقط
+# وقتی که واقعاً آن‌قدر آرگومان هست؛ وگرنه با set -u می‌ایستد و — بدتر —
+# با «|| true» نمی‌ایستد ولی $@ دست‌نخورده می‌ماند و خودِ دامنه به
+# فهرست نام‌های دیگر می‌رود.
+ALIASES=()
+if [ "$#" -gt 2 ]; then
+    shift 2
+    ALIASES=("$@")
+fi
 
 # رنگ فقط وقتی خروجی به ترمینال می‌رود؛ در لاگ و فایل، کدهای رنگ
 # فقط آشغال اضافه‌اند
@@ -51,13 +78,15 @@ step() { printf '\n%s── %s%s\n' "$B" "$*" "$N"; }
 
 if [ -z "$DOMAIN" ]; then
     die "دامنه را بدهید:
-    sudo bash $0 botpanel.softmiliac.com you@email.com"
+    sudo bash $0 forwardbot.softmiliac.com you@email.com"
 fi
 
-case "$DOMAIN" in
-    *.*) : ;;
-    *) die "«$DOMAIN» دامنه به نظر نمی‌رسد." ;;
-esac
+for name in "$DOMAIN" "${ALIASES[@]}"; do
+    case "$name" in
+        *.*) : ;;
+        *) die "«$name» دامنه به نظر نمی‌رسد." ;;
+    esac
+done
 
 [ -f "$ENV_FILE" ] || die "فایل $ENV_FILE پیدا نشد. مسیر نصب درست است؟"
 
@@ -69,21 +98,24 @@ step "بررسی DNS"
 # IP سرور از روی خودِ کارت شبکه خوانده می‌شود نه از یک سرویس بیرونی،
 # چون سرویس بیرونی ممکن است از این شبکه در دسترس نباشد و بررسی را
 # بی‌دلیل خراب کند.
-resolved="$(getent ahostsv4 "$DOMAIN" 2>/dev/null | awk '{print $1; exit}' || true)"
 mine="$(ip -4 -o addr show scope global 2>/dev/null | awk '{print $4}' | cut -d/ -f1)"
 
-if [ -z "$resolved" ]; then
-    die "«$DOMAIN» به هیچ IP اشاره نمی‌کند.
-    رکورد A را در Zone Editor پنل دامنه بسازید و چند دقیقه صبر کنید."
-fi
+for name in "$DOMAIN" "${ALIASES[@]}"; do
+    resolved="$(getent ahostsv4 "$name" 2>/dev/null | awk '{print $1; exit}' || true)"
 
-if printf '%s\n' $mine | grep -qx "$resolved"; then
-    ok "$DOMAIN → $resolved (همین سرور)"
-else
-    warn "«$DOMAIN» به $resolved اشاره می‌کند، ولی IP این سرور اینهاست:"
-    printf '%s\n' $mine | sed 's/^/    /'
-    warn "اگر پشت CDN یا فایروال ابری هستید طبیعی است؛ وگرنه گواهی گرفته نمی‌شود."
-fi
+    if [ -z "$resolved" ]; then
+        die "«$name» به هیچ IP اشاره نمی‌کند.
+    رکورد A را در Zone Editor پنل دامنه بسازید و چند دقیقه صبر کنید."
+    fi
+
+    if printf '%s\n' $mine | grep -qx "$resolved"; then
+        ok "$name → $resolved (همین سرور)"
+    else
+        warn "«$name» به $resolved اشاره می‌کند، ولی IP این سرور اینهاست:"
+        printf '%s\n' $mine | sed 's/^/    /'
+        warn "اگر پشت CDN یا فایروال ابری هستید طبیعی است؛ وگرنه گواهی گرفته نمی‌شود."
+    fi
+done
 
 step "نصب nginx و certbot"
 
@@ -117,7 +149,11 @@ set_env() {
 set_env WEB_ENABLED true
 set_env WEB_HOST 127.0.0.1
 set_env WEB_PORT "$WEB_PORT"
-set_env WEB_BASE_URL "https://$DOMAIN"
+# پیشوند حتماً داخل WEB_BASE_URL می‌آید. لینکِ ورودی که ربات می‌فرستد و
+# نشانی بازگشتِ زرین‌پال هر دو از همین ساخته می‌شوند؛ بدون پیشوند، هر دو
+# روی صفحه‌ی فروش می‌افتند. ربات موقع بالا آمدن هم این را می‌سنجد و اگر
+# نخواند در لاگ هشدار می‌دهد.
+set_env WEB_BASE_URL "https://$DOMAIN$PANEL_PATH"
 ok "WEB_ENABLED، WEB_HOST، WEB_PORT و WEB_BASE_URL نوشته شدند"
 say "  نسخه‌ی پشتیبان: $ENV_FILE.bak-*"
 
@@ -132,7 +168,7 @@ systemctl restart "$SERVICE"
 # کیست.
 upstream_ok=0
 for _ in $(seq 1 20); do
-    if curl -fsS --max-time 3 "http://127.0.0.1:$WEB_PORT/healthz" >/dev/null 2>&1; then
+    if curl -fsS --max-time 3 "http://127.0.0.1:$WEB_PORT$PANEL_PATH/healthz" >/dev/null 2>&1; then
         upstream_ok=1
         break
     fi
@@ -140,10 +176,10 @@ for _ in $(seq 1 20); do
 done
 
 if [ "$upstream_ok" -ne 1 ]; then
-    die "پنل روی 127.0.0.1:$WEB_PORT بالا نیامد.
+    die "پنل روی 127.0.0.1:$WEB_PORT$PANEL_PATH بالا نیامد.
     لاگ را ببینید:  journalctl -u $SERVICE -n 50 --no-pager"
 fi
-ok "پنل روی 127.0.0.1:$WEB_PORT جواب می‌دهد"
+ok "پنل روی 127.0.0.1:$WEB_PORT$PANEL_PATH جواب می‌دهد"
 
 # ── nginx ────────────────────────────────────────────────────────────
 
@@ -159,20 +195,72 @@ cat > /etc/nginx/conf.d/telkap-limits.conf <<'LIMITS'
 limit_req_zone $binary_remote_addr zone=telkap_panel:10m rate=10r/s;
 LIMITS
 
+# صفحه‌ی فروش و مینی‌اپ از خودِ مخزن سرو می‌شوند، پس «git pull» هم
+# به‌روزشان می‌کند. nginx با کاربر www-data می‌خواند و باید بتواند.
+mkdir -p "$SITE_DIR"
+chmod o+rx "$APP_DIR" "$SITE_DIR" 2>/dev/null || true
+
+# سرصفحه‌های امنیتی در یک فایل جدا و از هر location اینclude می‌شوند.
+#
+# <b>چرا نه یک‌بار در سطح server.</b> در nginx، هر بلوکی که خودش
+# add_header داشته باشد، همه‌ی add_headerهای بالادست را کنار می‌گذارد —
+# ارث نمی‌رسد، جایگزین می‌شود. یعنی یک add_header در یک location،
+# بی‌صدا HSTS و بقیه را از همان‌جا برمی‌دارد. با include، هر جا کامل
+# است و HSTS هم که بعداً به این فایل اضافه می‌شود، همه‌جا می‌آید.
+mkdir -p /etc/nginx/snippets
+cat > /etc/nginx/snippets/telkap-headers.conf <<'HEADERS'
+add_header X-Content-Type-Options "nosniff"     always;
+add_header Referrer-Policy        "same-origin" always;
+HEADERS
+
+# نام‌های دیگر روی همان گواهی می‌نشینند ولی به نامِ اصلی تغییرمسیر
+# می‌خورند. یک نشانیِ قانونی داشتن مهم است: کوکی نشست به دامنه بسته
+# است، و اگر کسی از دو نام وارد شود دو نشست جدا می‌گیرد و بی‌دلیل
+# دوباره ازش رمز خواسته می‌شود.
+ALIAS_LIST="${ALIASES[*]}"
+
 cat > "/etc/nginx/sites-available/telkap" <<NGINX
-# پنل مدیریت تلکاپ — ساخته‌ی deploy/web-setup.sh
+# فورواردبات — ساخته‌ی deploy/web-setup.sh
 #
 # دست‌نویس تغییرش ندهید مگر بدانید چه می‌کنید؛ اجرای دوباره‌ی اسکریپت
 # این فایل را بازمی‌نویسد. بخش‌های مربوط به SSL را certbot خودش اضافه
 # می‌کند.
+#
+#   /        صفحه‌ی فروش (فایل ثابت)
+#   $PANEL_PATH   پنل مدیریت (پراکسی به ربات)
+#   /app     مینی‌اپ تلگرام (فایل ثابت)
 
 server {
     listen 80;
     listen [::]:80;
     server_name $DOMAIN;
 
-    # certbot این را به تغییرمسیر https تبدیل می‌کند
+    root $SITE_DIR;
+    index index.html;
+
+    # تصویر رسید تا چند مگابایت می‌شود
+    client_max_body_size 10m;
+    server_tokens off;
+
+    # ── صفحه‌ی فروش ──────────────────────────────────────────────
     location / {
+        try_files \$uri \$uri/ /index.html;
+        include /etc/nginx/snippets/telkap-headers.conf;
+        add_header X-Frame-Options "DENY" always;
+    }
+
+    # ── مینی‌اپ ──────────────────────────────────────────────────
+    # مینی‌اپ داخل تلگرام و در یک iframe باز می‌شود، پس اینجا — و فقط
+    # اینجا — قاب شدن ممنوع نیست؛ در عوض صریح گفته می‌شود که فقط
+    # تلگرام اجازه دارد قابش کند.
+    location /app {
+        try_files \$uri \$uri/ /app/index.html =404;
+        include /etc/nginx/snippets/telkap-headers.conf;
+        add_header Content-Security-Policy "frame-ancestors https://web.telegram.org https://*.telegram.org" always;
+    }
+
+    # ── پنل مدیریت ───────────────────────────────────────────────
+    location $PANEL_PATH {
         proxy_pass http://127.0.0.1:$WEB_PORT;
 
         proxy_set_header Host              \$host;
@@ -194,21 +282,27 @@ server {
         proxy_send_timeout    60s;
 
         limit_req zone=telkap_panel burst=20 nodelay;
+
+        include /etc/nginx/snippets/telkap-headers.conf;
+        # پنل هیچ‌وقت نباید داخل قاب سایت دیگری باز شود — دکمه‌های
+        # «تأیید» و «رد» پول واقعی جابه‌جا می‌کنند.
+        add_header X-Frame-Options "DENY" always;
     }
-
-    # تصویر رسید تا چند مگابایت می‌شود
-    client_max_body_size 10m;
-
-    # پنل هیچ‌وقت نباید داخل قاب سایت دیگری باز شود — دکمه‌های «تأیید»
-    # و «رد» پول واقعی جابه‌جا می‌کنند.
-    add_header X-Frame-Options           "DENY"        always;
-    add_header X-Content-Type-Options    "nosniff"     always;
-    add_header Referrer-Policy           "same-origin" always;
-
-    # نسخه‌ی nginx در سرصفحه‌ها اعلام نشود
-    server_tokens off;
 }
 NGINX
+
+if [ -n "$ALIAS_LIST" ]; then
+    cat >> "/etc/nginx/sites-available/telkap" <<NGINX
+
+# نام‌های دیگر، فقط تغییرمسیر به نامِ اصلی
+server {
+    listen 80;
+    listen [::]:80;
+    server_name $ALIAS_LIST;
+    return 301 https://$DOMAIN\$request_uri;
+}
+NGINX
+fi
 
 ln -sfn /etc/nginx/sites-available/telkap /etc/nginx/sites-enabled/telkap
 
@@ -250,6 +344,10 @@ certbot_args=(
     --keep-until-expiring
 )
 
+for name in "${ALIASES[@]}"; do
+    certbot_args+=(-d "$name")
+done
+
 if [ -n "$EMAIL" ]; then
     certbot_args+=(-m "$EMAIL")
 else
@@ -277,16 +375,18 @@ fi
 # ۱۸۰ روز، بدون preload. مدت‌های بلندتر و preload برگشت‌ناپذیرند: تا
 # وقتی نگذشته، مرورگر حاضر نیست این دامنه را روی http باز کند حتی اگر
 # خودتان بخواهید.
-if ! grep -q "Strict-Transport-Security" /etc/nginx/sites-available/telkap; then
-    # فقط اولین تطابق. certbot بلوک دومی برای تغییرمسیر می‌سازد و
-    # HSTS نباید دو بار فرستاده شود.
-    sed -i '0,/^    server_tokens off;$/s||    add_header Strict-Transport-Security "max-age=15552000" always;\n\n    server_tokens off;|' \
-        /etc/nginx/sites-available/telkap
+if ! grep -q "Strict-Transport-Security" /etc/nginx/snippets/telkap-headers.conf; then
+    # داخل همان فایلِ مشترک، تا هر سه مسیر بگیرندش. اگر در فایل سایت
+    # می‌رفت، locationهایی که add_header خودشان را دارند کنارش
+    # می‌گذاشتند و پنل — که مهم‌ترینشان است — بی‌HSTS می‌ماند.
+    printf '%s\n' \
+        'add_header Strict-Transport-Security "max-age=15552000" always;' \
+        >> /etc/nginx/snippets/telkap-headers.conf
     if nginx -t >/dev/null 2>&1; then
         systemctl reload nginx && ok "HSTS فعال شد"
     else
         warn "افزودن HSTS پیکربندی را خراب کرد؛ برگردانده شد."
-        sed -i '/Strict-Transport-Security/d' /etc/nginx/sites-available/telkap
+        sed -i '/Strict-Transport-Security/d' /etc/nginx/snippets/telkap-headers.conf
         nginx -t >/dev/null 2>&1 && systemctl reload nginx
     fi
 fi
@@ -317,22 +417,37 @@ fi
 
 step "بررسی نهایی"
 
-if curl -fsS --max-time 10 "https://$DOMAIN/healthz" 2>/dev/null | grep -q "^ok$"; then
-    ok "https://$DOMAIN/healthz جواب داد"
+if curl -fsS --max-time 10 "https://$DOMAIN$PANEL_PATH/healthz" 2>/dev/null | grep -q "^ok$"; then
+    ok "https://$DOMAIN$PANEL_PATH/healthz جواب داد"
 else
-    warn "از خودِ سرور به https://$DOMAIN نرسیدیم.
+    warn "از خودِ سرور به https://$DOMAIN$PANEL_PATH نرسیدیم.
     اگر از مرورگر باز می‌شود مشکلی نیست — بعضی شبکه‌ها اجازه‌ی
     برگشتن به IP خودشان را نمی‌دهند."
 fi
 
-printf '\n%s✓ پنل آماده است%s\n\n' "$G" "$N"
-say "  آدرس:  https://$DOMAIN"
+if [ -f "$SITE_DIR/index.html" ]; then
+    ok "صفحه‌ی فروش: https://$DOMAIN/"
+else
+    warn "$SITE_DIR/index.html نیست؛ «/» چیزی برای نشان دادن ندارد."
+fi
+
+if [ -f "$SITE_DIR/app/index.html" ]; then
+    ok "مینی‌اپ: https://$DOMAIN/app"
+else
+    warn "$SITE_DIR/app/index.html هنوز ساخته نشده؛ «/app» تا آن‌وقت ۴۰۴ می‌دهد."
+fi
+
+printf '\n%s✓ آماده است%s\n\n' "$G" "$N"
+say "  صفحه‌ی فروش:  https://$DOMAIN/"
+say "  پنل مدیریت:   https://$DOMAIN$PANEL_PATH"
+say "  مینی‌اپ:       https://$DOMAIN/app"
+if [ -n "${ALIASES[*]}" ]; then
+    say ""
+    say "  این نام‌ها هم به بالا تغییرمسیر می‌خورند: ${ALIASES[*]}"
+fi
 say ""
-say "  برای ورود، در ربات: ⚙️ سیستم ← 🖥 پنل وب"
-say "  لینکی که می‌دهد پنج دقیقه اعتبار دارد و یک‌بارمصرف است."
-say ""
-say "  ${B}پنل رمز عبور ندارد و لازم هم ندارد${N} — ورود فقط از داخل"
-say "  ربات و برای کسی که نقش مدیریتی دارد ممکن است."
+say "  برای ورود به پنل، در ربات: ⚙️ سیستم ← 🖥 پنل وب"
+say "  یا مستقیم: https://$DOMAIN$PANEL_PATH/login"
 say ""
 if [ -n "$EMAIL" ]; then
     say "  گواهی هر ۹۰ روز خودکار تمدید می‌شود؛ هشدارش به $EMAIL می‌رسد."

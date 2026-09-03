@@ -156,17 +156,55 @@ def test_a_page_carries_its_own_direction_and_charset():
 
 def test_the_active_section_is_marked():
     """کسی که پنل را باز نگه می‌دارد باید همیشه بداند کجاست."""
-    from telkap.web.render import page
+    from telkap.web.render import page, url
 
     html = page("رسیدها", "", active="/payments")
-    assert "href='/payments' class='on'" in html
-    assert "href='/users' class=''" in html
+    assert f"href='{url('/payments')}' class='on'" in html
+    assert f"href='{url('/users')}' class=''" in html
+
+
+def test_every_link_in_a_page_stays_inside_the_panel():
+    """<b>پنل تنها ساکنِ این زیردامنه نیست.</b>
+
+    «/» صفحه‌ی فروش است و «/app» مینی‌اپ. لینکی که پیشوند نگرفته باشد
+    آدم را از پنل بیرون می‌اندازد — و چون صفحه بالا می‌آید و فقط
+    لینکش غلط است، تا وقتی کسی رویش کلیک نکند دیده نمی‌شود.
+    """
+    import re
+
+    from telkap.web.render import PREFIX, login, page
+
+    body = (
+        "<a href='/users/9'>کاربر</a>"
+        "<form action='/settings/card'></form>"
+        "<a href='https://example.com'>بیرون</a>"
+    )
+    for html in (page("t", body, who="7", path="/"), login()):
+        stray = [
+            m.group(0)
+            for m in re.finditer(r"""(?:href|action)=['"]/[^'"]*""", html)
+            if not m.group(0).split("=", 1)[1][1:].startswith(PREFIX + "/")
+        ]
+        assert stray == [], stray
+
+    # و نشانی بیرونی دست‌نخورده می‌ماند
+    assert "href='https://example.com'" in page("t", body)
+
+
+def test_the_font_url_gets_the_prefix_too():
+    """<b>اگر جا بماند، صفحه بالا می‌آید ولی بی‌فونت.</b>
+
+    و چون خطایی هم داده نمی‌شود، علتش دیر پیدا می‌شود.
+    """
+    from telkap.web.render import PREFIX, page
+
+    assert f"url('{PREFIX}/static/fonts/Vazirmatn-Regular.woff2')" in page("t", "")
 
 
 def test_every_section_in_the_menu_has_a_real_page():
     """<b>منویی که به ۴۰۴ برسد، از نبودنِ آن گزینه بدتر است.</b>"""
     from telkap.web import server
-    from telkap.web.render import NAV
+    from telkap.web.render import NAV, url
 
     app = server.build_app(bot=None)
     paths = {
@@ -176,7 +214,7 @@ def test_every_section_in_the_menu_has_a_real_page():
     }
     for _group, items in NAV:
         for href, _icon, _label, _badge in items:
-            assert href in paths, href
+            assert url(href) in paths, href
 
 
 def test_the_font_is_served_from_our_own_server():
@@ -200,19 +238,70 @@ def test_the_font_files_are_really_there():
         assert (STATIC_DIR / "fonts" / f"Vazirmatn-{weight}.woff2").exists()
 
 
-def test_the_dark_theme_does_not_depend_on_the_visitor_s_windows():
+def test_the_theme_follows_the_person_not_their_windows():
     """<b>«تم سفیده» شکایتِ واقعی بود و علتش همین بود.</b>
 
     نمای روشن با <code>prefers-color-scheme</code> بالا می‌آمد، و
     ویندوزِ پیش‌فرض روشن است — پس پنل برای اغلب آدم‌ها سفید می‌ماند
-    و کسی هم نمی‌فهمید چرا. محصول یک هویت رنگی دارد، نه هویتی که به
-    تنظیمات سیستمِ بیننده واگذار شده باشد.
+    بی‌آنکه کسی خواسته باشد. حالا تیره پیش‌فرض است و روشن یک انتخابِ
+    صریح.
     """
     from telkap.web.render import CSS
 
     assert "color-scheme: dark" in CSS
+    assert ':root[data-theme="light"]' in CSS
     # توضیحش در خودِ CSS هست؛ آنچه نباید باشد، قاعده است نه توضیح
     assert "@media (prefers-color-scheme" not in CSS
+
+
+def test_the_chosen_theme_is_stamped_on_the_page_itself():
+    """<b>تم باید از همان اولِ رندر درست باشد.</b>
+
+    اگر جاوااسکریپت بعد از بارگذاری عوضش می‌کرد، هر بار یک پرشِ رنگ
+    دیده می‌شد — صفحه تیره می‌آمد و بعد سفید می‌شد.
+    """
+    from telkap.web.render import login, page
+
+    assert "data-theme='light'" in page("t", "", theme="light")
+    assert "data-theme='dark'" in page("t", "", theme="dark")
+    assert "data-theme='light'" in login(theme="light")
+
+
+def test_a_tampered_theme_cookie_cannot_reach_the_html():
+    """مقدار کوکی مستقیم داخل یک صفت HTML می‌نشیند و کوکی دستکاری‌شدنی است."""
+    from telkap.web.render import clean_theme, page
+
+    assert clean_theme("light") == "light"
+    assert clean_theme("dark") == "dark"
+    assert clean_theme(None) == "dark"
+    assert clean_theme("' onload='alert(1)") == "dark"
+    assert "onload" not in page("t", "", theme="' onload='alert(1)")
+
+
+def test_the_theme_switch_comes_back_to_the_page_you_were_on():
+    from telkap.web.render import page, theme_switch
+
+    link = theme_switch("dark", "/users?q=%D8%B1")
+
+    assert "to=light" in link
+    assert "back=%2Fusers" in link                # نشانی کدگذاری شده
+    # و روی خودِ صفحه هم هست، نه فقط در تابع
+    assert "/theme?" in page("کاربران", "", who="7", path="/users")
+
+
+def test_the_theme_switch_will_not_send_you_to_another_site():
+    """<b>بدون این، پنل یک تغییرمسیرِ آماده برای دیگران بود.</b>
+
+    لینکی که دامنه‌ی شما را دارد ولی آدم را جای دیگری می‌برد، دقیقاً
+    همان چیزی است که در ایمیل‌های تقلبی به کار می‌آید.
+    """
+    from telkap.web.server import _safe_back
+
+    assert _safe_back("/users") == "/users"
+    assert _safe_back("/users?q=1") == "/users?q=1"
+    assert _safe_back("https://example.com") == "/"
+    assert _safe_back("//example.com") == "/"
+    assert _safe_back("") == "/"
 
 
 def test_a_chart_bar_is_drawn_inside_a_container_with_a_real_height():
@@ -274,27 +363,35 @@ def test_the_env_flag_only_accepts_a_real_yes():
 def test_every_page_but_the_gate_needs_a_session():
     """اگر مسیری از میدل‌ور معاف شود، بی‌صدا عمومی می‌شود."""
     from telkap.web import server
+    from telkap.web.render import PREFIX, url
 
     app = server.build_app(bot=None)
-    paths = {
-        route.resource.canonical
-        for route in app.router.routes()
-        if route.resource is not None
-    }
+    # مسیرها با پیشوند ثبت می‌شوند؛ اینجا برای خوانایی برداشته می‌شود
+    # تا فهرستِ پایین همانی بماند که در کد نوشته شده.
+    paths = set()
+    for route in app.router.routes():
+        if route.resource is None:
+            continue
+        canonical = route.resource.canonical
+        assert canonical.startswith(PREFIX + "/") or canonical == PREFIX, canonical
+        paths.add(canonical[len(PREFIX):] or "/")
+
+    public = {path[len(PREFIX):] or "/" for path in server.PUBLIC_PATHS}
+    assert server.PUBLIC_PATHS == {url(path) for path in public}
 
     # فهرست معافیت‌ها صریح است و اینجا مو‌به‌مو سنجیده می‌شود. اگر روزی
     # مسیری به آن اضافه شود، این تست می‌ایستد و کسی مجبور می‌شود
     # تصمیمش را توضیح بدهد — به‌جای اینکه پنل بی‌صدا عمومی شود.
-    assert server.PUBLIC_PATHS == {
-        "/enter", "/healthz", "/login", "/pay/zarinpal"
-    }
+    # «/theme» فقط رنگ صفحه‌ی همان مرورگر را عوض می‌کند و صفحه‌ی
+    # ورود هم به آن نیاز دارد؛ هیچ داده‌ای پشتش نیست.
+    assert public == {"/enter", "/healthz", "/login", "/theme", "/pay/zarinpal"}
 
     # فایل‌های ثابت (فونت) عمداً بازند: مرورگر پیش از ورود هم صفحه‌ی
     # لاگین را با همین فونت می‌کشد. چیزی جز فونت آنجا نیست.
     paths.discard("/static")
 
     # و هرچه معاف نیست باید پشت ورود بماند
-    assert paths - server.PUBLIC_PATHS == {
+    assert paths - public == {
         "/",
         "/payments",
         "/payments/{id}/approve",
@@ -413,3 +510,57 @@ def test_a_hash_in_a_flash_message_survives_the_redirect():
 
         assert parts.fragment == ""          # چیزی به قطعه نرفته
         assert parse_qs(parts.query)["ok"] == [message]
+
+
+# ------------------------------------------------- پیشوند و نشانی بیرونی
+def test_the_zarinpal_return_address_lands_on_the_panel(monkeypatch):
+    """<b>نشانی بازگشتِ درگاه باید دقیقاً روی مسیرِ ثبت‌شده بیفتد.</b>
+
+    این تنها نشانی‌ای است که ما نمی‌سازیمش و کاربر رویش هدایت می‌شود؛
+    اگر یک پله بالاتر بیفتد، آدم بعد از پرداخت صفحه‌ی فروش را می‌بیند و
+    خیال می‌کند پولش رفته. WEB_BASE_URL باید پیشوند پنل را داشته باشد و
+    همین اینجا سنجیده می‌شود.
+    """
+    from types import SimpleNamespace
+
+    from telkap.services import zarinpal
+    from telkap.web import server
+    from telkap.web.render import PREFIX
+
+    host = "https://forwardbot.example"
+    monkeypatch.setattr(
+        zarinpal, "get_settings", lambda: SimpleNamespace(web_base_url=host + PREFIX)
+    )
+
+    app = server.build_app(bot=None)
+    routes = {
+        route.resource.canonical
+        for route in app.router.routes()
+        if route.resource is not None
+    }
+
+    assert zarinpal.callback_url() == f"{host}{PREFIX}/pay/zarinpal"
+    assert zarinpal.callback_url().removeprefix(host) in routes
+
+
+def test_the_example_env_shows_a_base_url_with_the_prefix():
+    """<b>کسی که .env را پر می‌کند، از همین نمونه کپی می‌کند.</b>
+
+    و WEB_BASE_URL بدون پیشوند خطایی نمی‌دهد؛ فقط لینک ورود و بازگشتِ
+    درگاه را یک پله بالاتر می‌اندازد.
+    """
+    from pathlib import Path
+
+    from telkap.web.render import PREFIX
+
+    text = (Path(__file__).parent.parent / ".env.example").read_text(encoding="utf-8")
+    samples = [
+        line.split("=", 1)[1].strip()
+        for line in text.splitlines()
+        if line.lstrip("# ").startswith("WEB_BASE_URL=")
+        and line.lstrip("# ").split("=", 1)[1].strip()
+    ]
+
+    assert samples, "نمونه‌ای برای WEB_BASE_URL در .env.example نیست"
+    for sample in samples:
+        assert sample.endswith(PREFIX), sample

@@ -300,7 +300,11 @@ LONG_TERM_CODES: tuple[str, ...] = (
     CUSTOM_2.code, CUSTOM_3.code, CUSTOM_6.code, CUSTOM_YEAR.code,
 )
 
-POPULAR_CODE = TWO_WEEK.code
+# ⭐ روی طرحی می‌نشیند که می‌خواهیم مردم بخرند، نه لزوماً آنکه بیشتر
+# فروخته. «۱۴ روزه» ارزان‌ترین راهِ امتحان کردن است و ستاره‌اش مردم را
+# به کم‌ترین خرید هدایت می‌کرد؛ «اختصاصی ۳ ماهه» هم درآمدِ بیشتری
+# دارد و هم مشتری را سه ماه نگه می‌دارد.
+POPULAR_CODE = CUSTOM_3.code
 
 
 def get_plan(code: str) -> Plan | None:

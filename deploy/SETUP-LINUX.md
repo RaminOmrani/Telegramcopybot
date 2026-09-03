@@ -176,8 +176,14 @@ PROXY_URL=
 WEB_ENABLED=true
 WEB_HOST=127.0.0.1
 WEB_PORT=8080
-WEB_BASE_URL=https://botpanel.softmiliac.com
+WEB_BASE_URL=https://forwardbot.softmiliac.com/panel
 ```
+
+> **`/panel` را از تهِ نشانی برندارید.** یک زیردامنه سه چیز دارد —
+> `/` صفحه‌ی فروش، `/panel` پنل، `/app` مینی‌اپ. لینک ورود و نشانی
+> بازگشتِ زرین‌پال هر دو از `WEB_BASE_URL` ساخته می‌شوند و بدون پیشوند
+> روی صفحه‌ی فروش می‌افتند. اسکریپت بخش ۷ خودش درستش می‌نویسد؛ این
+> فقط برای وقتی است که دستی پرش می‌کنید.
 
 مالکیت فایل‌ها را درست کنید:
 
@@ -246,26 +252,47 @@ systemctl start telkap
 
 ---
 
-## بخش ۷ — پنل وب روی دامنه با HTTPS
+## بخش ۷ — زیردامنه با HTTPS
 
-پنل روی `127.0.0.1:8080` است، یعنی از بیرون در دسترس نیست. یک وب‌سرور
-جلویش می‌گذاریم که HTTPS را هم برساند.
+**یک زیردامنه، سه چیز:**
+
+| نشانی | چیست | از کجا می‌آید |
+|---|---|---|
+| `/` | صفحه‌ی فروش | فایل ثابت از `site/` |
+| `/panel` | پنل مدیریت | پراکسی به ربات روی `127.0.0.1:8080` |
+| `/app` | مینی‌اپ تلگرام | فایل ثابت از `site/app/` |
+
+دامنه‌ی اصلی مالِ سایت شرکت است و دست نمی‌خورد. سه زیردامنه‌ی جدا هم
+یعنی سه رکورد DNS، سه گواهی و سه جای دیگر برای خراب شدن؛ با یک نام،
+همه‌ی این‌ها یک گواهی و یک فایل پیکربندی دارند.
 
 **اول دامنه را به IP سرور ببرید.** در cPanel → Zone Editor، رکورد A را
-برای `botpanel.softmiliac.com` روی IP سرور بگذارید. رکورد را روی خودِ VPS
-نمی‌سازید؛ سرورهای نامِ دامنه دست cPanel است و VPS فقط مقصد است.
+برای `forwardbot.softmiliac.com` روی IP سرور بگذارید. رکورد را روی خودِ
+VPS نمی‌سازید؛ سرورهای نامِ دامنه دست cPanel است و VPS فقط مقصد است.
 
 بررسی کنید که پخش شده:
 
 ```bash
-nslookup botpanel.softmiliac.com
+nslookup forwardbot.softmiliac.com
 ```
 
 بعد یک دستور، بقیه‌اش خودکار:
 
 ```bash
-sudo bash /opt/telkap/deploy/web-setup.sh botpanel.softmiliac.com you@email.com
+sudo bash /opt/telkap/deploy/web-setup.sh forwardbot.softmiliac.com you@email.com
 ```
+
+اگر نام دیگری هم از قبل به همین سرور اشاره می‌کند، بعد از ایمیل
+بیاوریدش؛ روی همان گواهی می‌نشیند و به نامِ اصلی تغییرمسیر می‌خورد:
+
+```bash
+sudo bash /opt/telkap/deploy/web-setup.sh \
+    forwardbot.softmiliac.com you@email.com botpanel.softmiliac.com
+```
+
+> **چرا تغییرمسیر و نه دو نامِ برابر.** کوکی نشست به دامنه بسته است.
+> اگر پنل از دو نام باز شود، هر کدام نشستِ جدا می‌گیرد و بی‌دلیل دوباره
+> از شما رمز خواسته می‌شود.
 
 اسکریپت نصب nginx و certbot، تنظیم `.env`، راه‌اندازی دوباره‌ی ربات،
 پیکربندی nginx، گرفتن گواهی و روشن کردن تمدید خودکار را انجام می‌دهد و
@@ -294,7 +321,7 @@ Let's Encrypt برای صدور گواهی باید از بیرون به **پو�
 nginx در هر سه حالت روی http بالا مانده. بعد از رفع مشکل فقط همین:
 
 ```bash
-sudo certbot --nginx -d botpanel.softmiliac.com --redirect
+sudo certbot --nginx -d forwardbot.softmiliac.com --redirect
 ```
 
 ### تمدید خودکار
@@ -316,13 +343,13 @@ sudo certbot renew --dry-run
 
 ```
 ZARINPAL_MERCHANT=xxxxxxxx-xxxx-xxxx-xxxx-xxxxxxxxxxxx
-WEB_BASE_URL=https://botpanel.softmiliac.com
+WEB_BASE_URL=https://forwardbot.softmiliac.com/panel
 ```
 
 ۲. **در پنل زرین‌پال، نشانی بازگشت را ثبت کنید:**
 
 ```
-https://botpanel.softmiliac.com/pay/zarinpal
+https://forwardbot.softmiliac.com/panel/pay/zarinpal
 ```
 
 > این قدم را جا نیندازید. بدون ثبت این نشانی، کاربر پرداخت می‌کند ولی

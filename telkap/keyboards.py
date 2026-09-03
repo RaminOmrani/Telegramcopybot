@@ -697,9 +697,10 @@ def long_term_menu() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for plan in long_term():
         icon = PLAN_ICONS.get(plan.code, "🗓")
+        star = " ⭐️" if plan.code == POPULAR_CODE else ""
         kb.row(
             InlineKeyboardButton(
-                text=f"{icon} {plan.title} · {plan.price_label}",
+                text=f"{icon} {plan.title} · {plan.price_label}{star}",
                 callback_data=f"plan:{plan.code}",
             )
         )

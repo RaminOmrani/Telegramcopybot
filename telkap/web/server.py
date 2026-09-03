@@ -45,6 +45,7 @@ from telkap.web.render import (
     pill,
     table,
 )
+from telkap.web.render import url as u
 
 log = logging.getLogger(__name__)
 
@@ -93,6 +94,45 @@ def _over_https(request: web.Request) -> bool:
     return request.scheme == "https" or forwarded.lower() == "https"
 
 
+# نامِ کوکیِ تم. انتخاب سمتِ سرور نگه داشته می‌شود تا صفحه از همان اول
+# با تمِ درست رندر شود؛ اگر جاوااسکریپت بعد از بارگذاری عوضش می‌کرد،
+# هر بار یک پرشِ رنگ دیده می‌شد.
+THEME_COOKIE = "panel_theme"
+THEME_MAX_AGE = 365 * 24 * 3600
+
+
+def _theme(request: web.Request) -> str:
+    return render.clean_theme(request.cookies.get(THEME_COOKIE))
+
+
+def _safe_back(raw: str) -> str:
+    """نشانی بازگشت، فقط اگر داخل خودِ پنل باشد.
+
+    بدون این، «?back=https://…» پنل را به یک تغییرمسیرِ آماده برای
+    سایت‌های دیگر تبدیل می‌کرد — لینکی که دامنه‌ی شما را دارد ولی
+    آدم را جای دیگری می‌برد.
+
+    مقدارِ برگشتی بدون پیشوند است؛ پیشوند را `u()` سرِ تغییرمسیر
+    می‌گذارد، مثل هر نشانی دیگری.
+    """
+    if raw.startswith("/") and not raw.startswith("//"):
+        return raw
+    return "/"
+
+
+def _here(request: web.Request) -> str:
+    """نشانی همین درخواست، بدون پیشوندِ پنل.
+
+    منطق برنامه همه‌جا با نشانی‌های بدون پیشوند کار می‌کند؛ آنچه از
+    مرورگر می‌آید پیشوند دارد و باید همین‌جا برداشته شود، وگرنه دکمه‌ی
+    تم به «/panel/panel/users» برمی‌گشت.
+    """
+    raw = str(request.rel_url)
+    if render.PREFIX and raw.startswith(render.PREFIX):
+        return raw[len(render.PREFIX) :] or "/"
+    return raw
+
+
 async def _shell(
     request: web.Request, title: str, body: str, *, active: str = "", status: int = 200
 ) -> web.Response:
@@ -108,7 +148,15 @@ async def _shell(
     if session is not None and await roles.can(session.user_id, roles.CAP_MONEY):
         waiting = await payments.pending_count()
     return web.Response(
-        text=page(title, body, active=active, who=who, waiting=waiting),
+        text=page(
+            title,
+            body,
+            active=active,
+            who=who,
+            waiting=waiting,
+            theme=_theme(request),
+            path=_here(request),
+        ),
         content_type="text/html",
         status=status,
     )
@@ -131,7 +179,7 @@ def _back(path: str, *, ok: str = "", err: str = "") -> web.HTTPFound:
     «رسید » بود. همین برای «&» هم صادق است، که پیام را دو تکه می‌کند.
     """
     query = urlencode({"ok": ok} if ok else {"err": err})
-    return web.HTTPFound(f"{path}?{query}")
+    return web.HTTPFound(f"{u(path)}?{query}")
 
 
 async def _deny(request: web.Request, cap: str) -> web.Response | None:
@@ -146,6 +194,8 @@ async def _deny(request: web.Request, cap: str) -> web.Response | None:
             "<p class='sub'>نقش شما این بخش را شامل نمی‌شود. "
             "اگر فکر می‌کنید اشتباهی شده، با مالک ربات صحبت کنید.</p>",
             who=str(session.user_id),
+            theme=_theme(request),
+            path=_here(request),
         ),
         content_type="text/html",
         status=403,
@@ -161,11 +211,14 @@ async def _deny(request: web.Request, cap: str) -> web.Response | None:
 #   بازگشت درگاه — مرورگر کاربر به آن هدایت می‌شود و کاربر ادمین نیست،
 #   پس نمی‌تواند پشت ورود بماند. چیزی جز نتیجه‌ی همان پرداخت نشان
 #   نمی‌دهد و به پارامترهای نشانی هم اعتماد نمی‌کند.
-PUBLIC_PATHS = frozenset({"/enter", "/healthz", "/login", zarinpal.CALLBACK_PATH})
+PUBLIC_PATHS = frozenset(
+    u(path)
+    for path in ("/enter", "/healthz", "/login", "/theme", zarinpal.CALLBACK_PATH)
+)
 
 # فونت و فایل‌های ثابت. جدا از PUBLIC_PATHS چون یک مسیر نیست بلکه یک
 # پیشوند است، و آن فهرست عمداً مو‌به‌مو سنجیده می‌شود.
-STATIC_PREFIX = "/static/"
+STATIC_PREFIX = u("/static") + "/"
 STATIC_DIR = Path(__file__).parent / "static"
 
 
@@ -178,14 +231,14 @@ async def auth_middleware(request: web.Request, handler):
     if session is None:
         # به صفحه‌ی ورود می‌رود، نه یک پیام بن‌بست. کسی که نشستش تمام
         # شده باید بتواند همان‌جا دوباره وارد شود.
-        raise web.HTTPFound("/login")
+        raise web.HTTPFound(u("/login"))
 
     # نقش ممکن است بعد از ورود گرفته شده باشد؛ هر درخواست دوباره سنجیده
     # می‌شود تا کسی با نشستِ باز، بعدِ عزل هم داخل نماند
     if not await roles.is_staff(session.user_id):
         await auth.end_all(session.user_id)
         return web.Response(
-            text=render.gate("دیگر دسترسی مدیریتی ندارید.", bad=True),
+            text=render.gate("دیگر دسترسی مدیریتی ندارید.", bad=True, theme=_theme(request)),
             content_type="text/html",
             status=403,
         )
@@ -214,6 +267,9 @@ def _set_cookie(response, request: web.Request, token: str):
         samesite="Lax",
         max_age=auth.SESSION_TTL_SECONDS,
         secure=secure,
+        # کوکیِ نشست فقط به خودِ پنل فرستاده می‌شود. صفحه‌ی فروش و
+        # مینی‌اپ روی همین دامنه‌اند و هیچ کارشان با آن نیست.
+        path=render.PREFIX or "/",
     )
     return response
 
@@ -221,12 +277,12 @@ def _set_cookie(response, request: web.Request, token: str):
 async def login_page(request: web.Request) -> web.Response:
     """صفحه‌ی ورود — نام کاربری و رمز، بعد کد تلگرام."""
     if await auth.get_session_for(request.cookies.get(auth.COOKIE_NAME)):
-        raise web.HTTPFound("/")
+        raise web.HTTPFound(u("/"))
 
     error = request.query.get("err", "")
     key = request.query.get("k", "")
     return web.Response(
-        text=render.login(error=error, pending_key=key),
+        text=render.login(error=error, pending_key=key, theme=_theme(request)),
         content_type="text/html",
     )
 
@@ -243,17 +299,17 @@ async def login_submit(request: web.Request) -> web.Response:
             user_agent=request.headers.get("User-Agent", ""),
         )
         if problem:
-            return web.HTTPFound(f"/login?{urlencode({'k': key, 'err': problem})}")
-        return _set_cookie(web.HTTPFound("/"), request, token)
+            return web.HTTPFound(f"{u('/login')}?{urlencode({'k': key, 'err': problem})}")
+        return _set_cookie(web.HTTPFound(u("/")), request, token)
 
     username = str(posted.get("username", ""))
     password = str(posted.get("password", ""))
     key, problem, user_id = await auth.start_login(username, password)
     if problem:
-        return web.HTTPFound(f"/login?{urlencode({'err': problem})}")
+        return web.HTTPFound(f"{u('/login')}?{urlencode({'err': problem})}")
 
     if not await roles.is_staff(user_id):
-        return web.HTTPFound("/login?" + urlencode({"err": "دسترسی مدیریتی ندارید."}))
+        return web.HTTPFound(u("/login") + "?" + urlencode({"err": "دسترسی مدیریتی ندارید."}))
 
     # کد از راه تلگرام می‌رود، نه ایمیل یا پیامک: همان‌جایی که ربات
     # قبلاً هست و رایگان است، و صاحب حساب همیشه بازش دارد.
@@ -269,13 +325,14 @@ async def login_submit(request: web.Request) -> web.Response:
     except Exception:
         log.warning("فرستادن کد ورود به %s ناموفق بود", user_id, exc_info=True)
         return web.HTTPFound(
-            "/login?"
+            u("/login")
+            + "?"
             + urlencode(
                 {"err": "کد به تلگرام نرسید. مطمئن شوید ربات را استارت کرده‌اید."}
             )
         )
 
-    return web.HTTPFound(f"/login?{urlencode({'k': key})}")
+    return web.HTTPFound(f"{u('/login')}?{urlencode({'k': key})}")
 
 
 async def enter(request: web.Request) -> web.Response:
@@ -286,13 +343,14 @@ async def enter(request: web.Request) -> web.Response:
                 "این لینک منقضی شده یا قبلاً استفاده شده است. "
                 "در ربات دوباره «🖥 پنل وب» را بزنید.",
                 bad=True,
+                theme=_theme(request),
             ),
             content_type="text/html",
             status=401,
         )
     if not await roles.is_staff(user_id):
         return web.Response(
-            text=render.gate("دسترسی مدیریتی ندارید.", bad=True),
+            text=render.gate("دسترسی مدیریتی ندارید.", bad=True, theme=_theme(request)),
             content_type="text/html",
             status=403,
         )
@@ -300,21 +358,49 @@ async def enter(request: web.Request) -> web.Response:
     sid = await auth.start_session(
         user_id, user_agent=request.headers.get("User-Agent", "")
     )
-    return _set_cookie(web.HTTPFound("/"), request, sid)
+    return _set_cookie(web.HTTPFound(u("/")), request, sid)
 
 
 async def logout(request: web.Request) -> web.Response:
     await auth.end_session(request.cookies.get(auth.COOKIE_NAME))
     response = web.Response(
-        text=render.gate("از پنل خارج شدید."),
+        text=render.gate("از پنل خارج شدید.", theme=_theme(request)),
         content_type="text/html",
     )
-    response.del_cookie(auth.COOKIE_NAME)
+    # مسیر باید همان مسیرِ ست کردن باشد، وگرنه مرورگر کوکی را نگه
+    # می‌دارد و «خروج» فقط ظاهرش را دارد.
+    response.del_cookie(auth.COOKIE_NAME, path=render.PREFIX or "/")
     return response
 
 
 async def healthz(request: web.Request) -> web.Response:
     return web.Response(text="ok")
+
+
+async def theme_switch(request: web.Request) -> web.Response:
+    """انتخاب تم را در کوکی می‌گذارد و به همان صفحه برمی‌گردد.
+
+    <b>چرا عمومی است.</b> صفحه‌ی ورود هم دکمه‌ی تم دارد؛ کسی که هنوز
+    وارد نشده باید بتواند صفحه را طوری ببیند که برایش راحت است.
+
+    <b>و چرا CSRF ندارد.</b> این تنها چیزی است که تغییرش هیچ اثری جز
+    رنگِ صفحه‌ی خودِ همان مرورگر ندارد — نه پولی جابه‌جا می‌کند، نه
+    دسترسی‌ای. گذاشتنِ توکن روی آن، دکمه‌ی تم را از صفحه‌ی ورود
+    برمی‌داشت بی‌آنکه چیزی امن‌تر شود.
+    """
+    chosen = render.clean_theme(request.query.get("to"))
+    back = _safe_back(request.query.get("back", "/"))
+    response = web.HTTPFound(u(back))
+    response.set_cookie(
+        THEME_COOKIE,
+        chosen,
+        max_age=THEME_MAX_AGE,
+        samesite="Lax",
+        httponly=False,
+        path=render.PREFIX or "/",
+        secure=get_settings().web_base_url.startswith("https://"),
+    )
+    return response
 
 
 # --------------------------------------------------------- نمای کلی
@@ -1716,7 +1802,8 @@ async def zarinpal_return(request: web.Request) -> web.Response:
     """
     def done(message: str, *, bad: bool = False) -> web.Response:
         return web.Response(
-            text=render.gate(message, bad=bad), content_type="text/html"
+            text=render.gate(message, bad=bad, theme=_theme(request)),
+            content_type="text/html",
         )
 
     request_id = _int_or_zero(request.query.get("rid"))
@@ -1773,45 +1860,55 @@ def _int_or_zero(raw) -> int:
 def build_app(bot) -> web.Application:
     app = web.Application(middlewares=[auth_middleware])
     app[BOT] = bot
+    # مسیرها بدون پیشوند نوشته می‌شوند و اینجا یک‌جا پیشوند می‌خورند —
+    # همان‌جایی که HTML و تغییرمسیرها هم پیشوند می‌گیرند. اگر هر مسیر
+    # پیشوندش را خودش می‌نوشت، یکی‌شان جا می‌ماند و ۴۰۴ می‌شد.
+    def get(path, handler):
+        return web.get(u(path), handler)
+
+    def post(path, handler):
+        return web.post(u(path), handler)
+
     app.add_routes(
         [
-            web.get("/healthz", healthz),
+            get("/healthz", healthz),
             # فایل‌های ثابت (فونت). عمومی است و باید باشد: مرورگر
             # پیش از ورود هم صفحه‌ی لاگین را با همین فونت می‌کشد.
-            web.static("/static", STATIC_DIR, show_index=False),
-            web.get(zarinpal.CALLBACK_PATH, zarinpal_return),
-            web.get("/enter", enter),
-            web.get("/login", login_page),
-            web.post("/login", login_submit),
-            web.get("/logout", logout),
-            web.get("/", dashboard),
-            web.get("/payments", payment_list),
-            web.post("/payments/{id}/approve", payment_approve),
-            web.post("/payments/{id}/reject", payment_reject),
-            web.get("/receipt/{id}", receipt),
-            web.get("/users", user_list),
-            web.get("/users/{id}", user_detail),
-            web.post("/users/{id}/grant", user_grant),
-            web.post("/users/{id}/days", user_days),
-            web.post("/users/{id}/ban", user_ban),
-            web.post("/users/{id}/revoke", user_revoke),
-            web.get("/tasks", task_list),
-            web.post("/tasks/{id}/toggle", task_toggle),
-            web.get("/resellers", reseller_page),
-            web.post("/resellers/default", reseller_default),
-            web.post("/resellers/set", reseller_set),
-            web.post("/resellers/{id}/remove", reseller_remove),
-            web.get("/finance", finance_page),
-            web.get("/activity", activity_page),
-            web.get("/account", account_page),
-            web.post("/account/password", account_password),
-            web.post("/account/logout-all", account_logout_all),
-            web.get("/settings", settings_page),
-            web.post("/settings/card", settings_card),
-            web.post("/settings/crypto", settings_crypto),
-            web.post("/settings/autorate", settings_autorate),
-            web.post("/settings/ratenow", settings_ratenow),
-            web.post("/settings/zarinpal", settings_zarinpal),
+            web.static(u("/static"), STATIC_DIR, show_index=False),
+            get(zarinpal.CALLBACK_PATH, zarinpal_return),
+            get("/enter", enter),
+            get("/theme", theme_switch),
+            get("/login", login_page),
+            post("/login", login_submit),
+            get("/logout", logout),
+            get("/", dashboard),
+            get("/payments", payment_list),
+            post("/payments/{id}/approve", payment_approve),
+            post("/payments/{id}/reject", payment_reject),
+            get("/receipt/{id}", receipt),
+            get("/users", user_list),
+            get("/users/{id}", user_detail),
+            post("/users/{id}/grant", user_grant),
+            post("/users/{id}/days", user_days),
+            post("/users/{id}/ban", user_ban),
+            post("/users/{id}/revoke", user_revoke),
+            get("/tasks", task_list),
+            post("/tasks/{id}/toggle", task_toggle),
+            get("/resellers", reseller_page),
+            post("/resellers/default", reseller_default),
+            post("/resellers/set", reseller_set),
+            post("/resellers/{id}/remove", reseller_remove),
+            get("/finance", finance_page),
+            get("/activity", activity_page),
+            get("/account", account_page),
+            post("/account/password", account_password),
+            post("/account/logout-all", account_logout_all),
+            get("/settings", settings_page),
+            post("/settings/card", settings_card),
+            post("/settings/crypto", settings_crypto),
+            post("/settings/autorate", settings_autorate),
+            post("/settings/ratenow", settings_ratenow),
+            post("/settings/zarinpal", settings_zarinpal),
         ]
     )
     return app
@@ -1830,11 +1927,29 @@ async def start_panel(bot) -> None:
     await _runner.setup()
     site = web.TCPSite(_runner, cfg.web_host, cfg.web_port)
     await site.start()
-    log.info("پنل وب روی http://%s:%s بالا آمد", cfg.web_host, cfg.web_port)
+    log.info(
+        "پنل وب روی http://%s:%s%s بالا آمد",
+        cfg.web_host,
+        cfg.web_port,
+        render.PREFIX,
+    )
     if not cfg.web_base_url:
         log.warning(
             "WEB_BASE_URL خالی است؛ لینک ورود ساخته نمی‌شود. "
             "آدرس عمومی پنل را در .env بگذارید."
+        )
+    elif render.PREFIX and not cfg.web_base_url.rstrip("/").endswith(render.PREFIX):
+        # <b>این خطا بی‌صداست و پیدا کردنش سخت.</b> پنل بالا می‌آید و
+        # کار می‌کند، ولی لینکِ ورودی که ربات می‌فرستد و نشانی بازگشتِ
+        # زرین‌پال هر دو یک پله بالاتر می‌افتند — یعنی روی صفحه‌ی فروش،
+        # که ۴۰۴ می‌دهد یا صفحه‌ی اشتباه نشان می‌دهد.
+        log.warning(
+            "WEB_BASE_URL «%s» است ولی پنل زیر «%s» نشسته. لینک ورود و "
+            "بازگشت زرین‌پال به جای درست نمی‌روند. WEB_BASE_URL را به "
+            "«…%s» ختم کنید.",
+            cfg.web_base_url,
+            render.PREFIX,
+            render.PREFIX,
         )
 
 

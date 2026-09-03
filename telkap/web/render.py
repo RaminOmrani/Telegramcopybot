@@ -15,9 +15,46 @@
 from __future__ import annotations
 
 import json
+import re
 from html import escape
+from urllib.parse import urlencode
 
 from telkap import i18n
+
+# ---------------------------------------------------------- پیشوندِ پنل
+# پنل روی یک زیردامنه با بقیه شریک است: «/» صفحه‌ی فروش، «/panel» پنل،
+# «/app» مینی‌اپ. پس همه‌ی نشانی‌های پنل زیر این پیشوند می‌آیند.
+#
+# <b>چرا فقط در دو جا پیشوند می‌خورد.</b> صد جای این پروژه نشانی
+# می‌سازد؛ اگر هرکدام خودش پیشوند را می‌چسباند، یکی‌شان جا می‌ماند و
+# لینکی می‌شود که به بیرونِ پنل می‌رود و ۴۰۴ می‌دهد. به‌جایش منطق
+# برنامه نشانی‌های بدون پیشوند می‌سازد و پیشوند فقط سرِ مرز اضافه
+# می‌شود: اینجا برای HTML، و در سرور برای تغییرمسیرها.
+#
+# WEB_BASE_URL هم باید به همین پیشوند ختم شود؛ سرور موقع بالا آمدن
+# می‌سنجدش و اگر نخواند هشدار می‌دهد.
+PREFIX = "/panel"
+
+# نشانی‌ها دو شکل دارند: صفتِ href/action در HTML، و url() در CSS —
+# که فونت از همان می‌آید. اگر دومی جا بماند، صفحه بالا می‌آید ولی
+# بی‌فونت، و علتش هم پیدا نمی‌شود.
+_LINK = re.compile(r"""\b(href|action)=(['"])/(?!/)""")
+_CSS_URL = re.compile(r"""\burl\((['"])/(?!/)""")
+
+
+def prefixed(html: str) -> str:
+    """هر نشانیِ داخلیِ صفحه را زیر پیشوندِ پنل می‌برد."""
+    if not PREFIX:
+        return html
+    return _CSS_URL.sub(rf"url(\1{PREFIX}/", _LINK.sub(rf"\1=\2{PREFIX}/", html))
+
+
+def url(path: str) -> str:
+    """نشانی مطلقِ یک مسیرِ داخلی — برای تغییرمسیر و ثبت مسیرها."""
+    if path == "/":
+        return PREFIX or "/"
+    return f"{PREFIX}{path}"
+
 
 CSS = """
 /* ── فونت ───────────────────────────────────────────────────────── */
@@ -86,12 +123,39 @@ CSS = """
 }
 
 /*
-   <b>و بدون «هرچه ویندوزت گفت».</b> اول یک نمای روشن هم داشتیم که
-   با prefers-color-scheme بالا می‌آمد. نتیجه‌اش این بود که روی
-   ویندوزِ پیش‌فرض — که روشن است — پنل باز هم سفید دیده می‌شد؛ یعنی
-   همان چیزی که قرار بود درست شود. محصول یک هویت رنگی دارد، نه هویتی
-   که به تنظیمات سیستمِ بیننده واگذار شده باشد.
+   <b>نمای روشن، با انتخابِ خودِ آدم — نه با prefers-color-scheme.</b>
+
+   اول نمای روشن با prefers-color-scheme بالا می‌آمد. نتیجه‌اش این بود
+   که روی ویندوزِ پیش‌فرض — که روشن است — پنل باز هم سفید دیده می‌شد،
+   بی‌آنکه کسی خواسته باشد. حالا تیره پیش‌فرض است و روشن یک دکمه در
+   نوار بالاست که انتخابش در کوکی می‌ماند؛ پس هر بار همان چیزی می‌آید
+   که خودتان انتخاب کرده‌اید، روی هر کامپیوتری.
+
+   انتخاب روی خودِ <html> می‌نشیند و سرور رندرش می‌کند، نه جاوااسکریپت
+   بعد از بارگذاری — وگرنه صفحه یک لحظه تیره می‌آمد و بعد سفید می‌شد.
 */
+:root[data-theme="light"] {
+  color-scheme: light;
+  --bg: #f1f4f9;
+  --bg-soft: #e8edf5;
+  --card: #ffffff;
+  --card-2: #f6f8fc;
+  --ink: #0f141c;
+  --muted: #5b6577;
+  --line: #dfe5ef;
+  --soft: #eef2f8;
+
+  --accent: #2563eb;
+  --accent-2: #1d4ed8;
+  --accent-ink: #ffffff;
+  --accent-soft: rgba(37,99,235,.10);
+
+  --ok: #047857;     --ok-bg: rgba(4,120,87,.10);
+  --bad: #dc2626;    --bad-bg: rgba(220,38,38,.09);
+  --warn: #b45309;   --warn-bg: rgba(180,83,9,.11);
+
+  --shadow: 0 1px 2px rgba(16,24,40,.06), 0 6px 18px rgba(16,24,40,.07);
+}
 
 * { box-sizing: border-box; }
 html { -webkit-text-size-adjust: 100%; }
@@ -388,6 +452,29 @@ def money(amount: int) -> str:
     return f"{i18n.num(int(amount), 'fa')} تومان"
 
 
+DARK = "dark"
+LIGHT = "light"
+THEMES = (DARK, LIGHT)
+
+
+def clean_theme(value: str | None) -> str:
+    """هر چیزی جز «روشن»، تیره است.
+
+    مقدار از کوکی می‌آید و کوکی را می‌شود دستکاری کرد؛ این مقدار مستقیم
+    داخل یک صفت HTML می‌نشیند، پس باید از یک فهرست بسته بیاید نه از
+    ورودی.
+    """
+    return LIGHT if value == LIGHT else DARK
+
+
+def theme_switch(theme: str, back: str) -> str:
+    """دکمه‌ی جابه‌جایی تم، که به همان صفحه برمی‌گردد."""
+    other = DARK if theme == LIGHT else LIGHT
+    label = "🌙 تیره" if other == DARK else "☀️ روشن"
+    href = f"/theme?{urlencode({'to': other, 'back': back})}"
+    return f"<a class='btn small' href='{esc(href)}' title='تغییر تم'>{label}</a>"
+
+
 def page(
     title: str,
     body: str,
@@ -395,6 +482,8 @@ def page(
     active: str = "",
     who: str = "",
     waiting: int = 0,
+    theme: str = DARK,
+    path: str = "/",
 ) -> str:
     """یک صفحه‌ی کامل.
 
@@ -402,6 +491,9 @@ def page(
     می‌نشیند. کارِ روزمره‌ی این پنل همان است، و اگر برای دیدنش باید
     صفحه‌ای باز کرد، گاهی باز نمی‌شود — و رسیدِ دیده‌نشده یعنی
     مشتریِ منتظر.
+
+    <code>path</code> نشانی همین صفحه است و فقط برای این است که دکمه‌ی
+    تم بتواند به همین‌جا برگردد.
     """
     groups = []
     for group, items in NAV:
@@ -422,14 +514,15 @@ def page(
             f"<div class='group'>{esc(group)}</div><nav>{''.join(links)}</nav>"
         )
 
+    switch = theme_switch(theme, path)
     identity = (
-        f"<span class='who'>{esc(who)}</span>"
+        f"<span class='who'>{esc(who)}</span>{switch}"
         "<a class='btn small' href='/logout'>خروج</a>"
         if who
-        else ""
+        else f"<span class='who'></span>{switch}"
     )
-    return (
-        "<!doctype html><html lang='fa' dir='rtl'><head>"
+    return prefixed(
+        f"<!doctype html><html lang='fa' dir='rtl' data-theme='{clean_theme(theme)}'><head>"
         "<meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         "<meta name='robots' content='noindex, nofollow'>"
@@ -445,7 +538,7 @@ def page(
     )
 
 
-def gate(message: str, *, bad: bool = False) -> str:
+def gate(message: str, *, bad: bool = False, theme: str = DARK) -> str:
     """صفحه‌ای که به کسی نشان داده می‌شود که هنوز وارد نشده."""
     body = (
         "<div class='gate'><div class='panel'>"
@@ -453,8 +546,8 @@ def gate(message: str, *, bad: bool = False) -> str:
         f"<p class='sub' style='margin:14px 0 0'>{esc(message)}</p>"
         "</div></div>"
     )
-    return (
-        "<!doctype html><html lang='fa' dir='rtl'><head>"
+    return prefixed(
+        f"<!doctype html><html lang='fa' dir='rtl' data-theme='{clean_theme(theme)}'><head>"
         "<meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         "<meta name='robots' content='noindex, nofollow'>"
@@ -463,7 +556,7 @@ def gate(message: str, *, bad: bool = False) -> str:
     )
 
 
-def login(*, error: str = "", pending_key: str = "") -> str:
+def login(*, error: str = "", pending_key: str = "", theme: str = DARK) -> str:
     """صفحه‌ی ورود — یک مرحله در هر نما.
 
     <b>چرا دو صفحه و نه یکی.</b> نشان دادن هم‌زمانِ رمز و کد یعنی
@@ -507,10 +600,11 @@ def login(*, error: str = "", pending_key: str = "") -> str:
             "</form>"
             "<p class='mini' style='margin-top:16px'>پس از رمز، یک کد در تلگرام "
             "برایتان می‌آید.<br>حساب ندارید؟ در ربات: ⚙️ سیستم ← 🖥 پنل وب</p>"
+            f"<p class='mini' style='margin-top:14px'>{theme_switch(theme, '/login')}</p>"
         )
 
-    return (
-        "<!doctype html><html lang='fa' dir='rtl'><head>"
+    return prefixed(
+        f"<!doctype html><html lang='fa' dir='rtl' data-theme='{clean_theme(theme)}'><head>"
         "<meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         "<meta name='robots' content='noindex, nofollow'>"
