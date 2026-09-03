@@ -86,6 +86,15 @@ class User(Base):
     is_reseller: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
     reseller_discount: Mapped[int] = mapped_column(Integer, default=0)
 
+    # کدام نماینده این مشتری را آورده. مثل referred_by فقط یک بار بسته
+    # می‌شود و هرگز بازنویسی نمی‌شود.
+    #
+    # <b>چرا اصلاً هست.</b> بزرگ‌ترین نگرانی نماینده این است که مشتری‌اش
+    # مستقیم بیاید و دفعه‌ی بعد از او نخرد. با این ستون، خریدِ مستقیمِ
+    # آن مشتری هم سهم نماینده را به کیف پولش می‌ریزد — یعنی رفتنِ
+    # مشتری به سراغ ما، چیزی از نماینده کم نمی‌کند.
+    owned_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+
     # سلامت اکانت کاربری متصل: ok | flood | peer_flood | banned | revoked
     account_state: Mapped[str] = mapped_column(String(16), default="ok", index=True)
     account_note: Mapped[str] = mapped_column(String(120), default="")
@@ -520,6 +529,7 @@ class WalletEntry(Base):
     REASON_PURCHASE = "purchase"     # خرید از موجودی
     REASON_REFUND = "refund"         # اصلاح برداشتی که چیزی نخرید
     REASON_ADMIN = "admin"           # تنظیم دستی ادمین
+    REASON_COMMISSION = "commission"  # سهم نماینده از خرید مستقیم مشتری‌اش
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)

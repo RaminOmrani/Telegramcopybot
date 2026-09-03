@@ -404,6 +404,7 @@ def test_every_page_but_the_gate_needs_a_session():
         "/users/{id}/ban",
         "/users/{id}/revoke",
         "/resellers",
+        "/resellers/{id}",
         "/resellers/default",
         "/resellers/set",
         "/resellers/{id}/remove",

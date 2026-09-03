@@ -691,3 +691,141 @@ async def test_recent_sales_are_newest_first_across_all_resellers(
         ]
     finally:
         await db_module.close_db()
+
+
+# --------------------------------------- مشتریِ نماینده و سهم خرید مستقیم
+@pytest.mark.asyncio
+async def test_activating_for_someone_makes_them_that_reseller_s_customer(
+    tmp_path, monkeypatch
+):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import reseller, wallet
+
+        await _add_user(db_module, 8, "مشتری")
+        await reseller.set_reseller(7, True, 25)
+        await wallet.credit(7, 5_000_000)
+
+        await reseller.activate(7, 8, "month")
+
+        assert await reseller.owner_of(8) == 7
+        assert [c.user_id for c in await reseller.customers(7)] == [8]
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_a_customer_cannot_be_taken_from_their_reseller(tmp_path, monkeypatch):
+    """<b>اگر بازنویسی می‌شد، مشتری دزدیدنی بود.</b>
+
+    هر نماینده‌ای می‌توانست با یک فعال‌سازیِ ارزان، مشتریِ نماینده‌ی
+    دیگری را به نام خودش کند — و سهم همه‌ی خریدهای بعدی‌اش را بگیرد.
+    """
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import reseller, wallet
+
+        await _add_user(db_module, 8, "مشتری")
+        await _add_user(db_module, 20, "نماینده‌ی دوم")
+        await reseller.set_reseller(7, True, 25)
+        await reseller.set_reseller(20, True, 25)
+        await wallet.credit(7, 5_000_000)
+        await wallet.credit(20, 5_000_000)
+
+        await reseller.activate(7, 8, "month")
+        await reseller.activate(20, 8, "month")     # نماینده‌ی دوم هم فروخت
+
+        assert await reseller.owner_of(8) == 7      # مالکش عوض نشد
+        assert await reseller.claim(20, 8) is False
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_a_direct_purchase_still_pays_the_reseller(tmp_path, monkeypatch):
+    """<b>این پاسخِ بزرگ‌ترین نگرانی نماینده است.</b>
+
+    نماینده می‌ترسد مشتری‌اش مستقیم بیاید و دفعه‌ی بعد از او نخرد. با
+    سهمِ خرید مستقیم، رفتنِ مشتری به سراغ ما چیزی از او کم نمی‌کند.
+    """
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.plans import MONTH
+        from telkap.services import reseller, wallet
+
+        await _add_user(db_module, 8, "مشتری")
+        await reseller.set_reseller(7, True, 25)
+        await wallet.credit(7, 5_000_000)
+        await reseller.activate(7, 8, "month")
+
+        before = await wallet.balance(7)
+        share = await reseller.pay_commission(8, "month")
+
+        expected = MONTH.price_toman - reseller.discounted(MONTH.price_toman, 25)
+        assert share == expected > 0
+        assert await wallet.balance(7) == before + expected
+        assert (await reseller.stats(7)).commission == expected
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_nobody_gets_a_share_of_a_customer_they_never_brought(
+    tmp_path, monkeypatch
+):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import reseller
+
+        await _add_user(db_module, 8, "کاربر آزاد")
+
+        assert await reseller.pay_commission(8, "month") == 0
+        assert await reseller.owner_of(8) is None
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_a_former_reseller_stops_earning(tmp_path, monkeypatch):
+    """نمایندگی که برداشته شده، دیگر سهم نمی‌گیرد."""
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import reseller, wallet
+
+        await _add_user(db_module, 8, "مشتری")
+        await reseller.set_reseller(7, True, 25)
+        await wallet.credit(7, 5_000_000)
+        await reseller.activate(7, 8, "month")
+        await reseller.set_reseller(7, False)
+
+        assert await reseller.pay_commission(8, "month") == 0
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_customers_about_to_expire_come_first(tmp_path, monkeypatch):
+    """<b>ترتیب عمدی است: کاری که باید انجام شود بالاست.</b>
+
+    نماینده باید پیش از ما سراغ مشتریِ رو به اتمام برود، نه بعدِ ما.
+    """
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import reseller, wallet
+
+        await _add_user(db_module, 8, "زودتر تمام می‌شود")
+        await _add_user(db_module, 9, "دیرتر تمام می‌شود")
+        await reseller.set_reseller(7, True, 25)
+        await wallet.credit(7, 20_000_000)
+
+        await reseller.activate(7, 9, "month")     # ۳۰ روزه
+        await reseller.activate(7, 8, "week")      # ۷ روزه
+
+        people = await reseller.customers(7)
+
+        assert [c.user_id for c in people] == [8, 9]
+        assert people[0].days_left < people[1].days_left
+        assert people[0].expiring is True          # زیر یک هفته
+        assert people[1].expiring is False
+    finally:
+        await db_module.close_db()

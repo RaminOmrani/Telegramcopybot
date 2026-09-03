@@ -93,6 +93,7 @@ def _add_missing_columns(conn) -> None:
             ("auto_renew", "BOOLEAN DEFAULT 0"),
             ("is_reseller", "BOOLEAN DEFAULT 0"),
             ("reseller_discount", "INTEGER DEFAULT 0"),
+            ("owned_by", "BIGINT"),
             ("account_state", "VARCHAR(16) DEFAULT 'ok'"),
             ("account_note", "VARCHAR(120) DEFAULT ''"),
             ("account_checked_at", "TIMESTAMP"),

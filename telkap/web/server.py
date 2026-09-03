@@ -862,10 +862,25 @@ async def user_detail(request: web.Request) -> web.Response:
         else "<span class='mini'>اشتراک فعالی ندارد</span>"
     )
 
+    # از کجا آمده: نماینده‌ای که آورده‌اش، یا کسی که دعوتش کرده. وقتی
+    # کسی می‌پرسد «چرا سهم این خرید به فلانی رفت»، جواب باید یک‌جا باشد.
+    origin = "<span class='mini'>مستقیم</span>"
+    if user.owned_by:
+        origin = (
+            f"<a href='/resellers/{user.owned_by}'>نماینده "
+            f"<code>{esc(user.owned_by)}</code></a>"
+        )
+    elif user.referred_by:
+        origin = (
+            f"<a href='/users/{user.referred_by}'>دعوت "
+            f"<code>{esc(user.referred_by)}</code></a>"
+        )
+
     facts = (
         "<dl class='facts'>"
         f"<dt>شناسه</dt><dd><code>{esc(user.id)}</code></dd>"
         f"<dt>وضعیت</dt><dd>{state}</dd>"
+        f"<dt>از کجا</dt><dd>{origin}</dd>"
         f"<dt>اشتراک</dt><dd>{plan_text}</dd>"
         f"<dt>کیف پول</dt><dd class='money'>{esc(money(user.wallet_toman))}</dd>"
         f"<dt>مجموع خرید</dt><dd class='money'>{esc(money(int(paid or 0)))}</dd>"
@@ -1155,7 +1170,7 @@ async def reseller_page(request: web.Request) -> web.Response:
         discount = int(user.reseller_discount or 0)
         badge = pill(f"{i18n.num(discount, 'fa')}٪", "ok" if discount else "bad")
         rows_html.append(
-            f"<tr><td><a href='/users/{user.id}'>{esc(_who(user))}</a>"
+            f"<tr><td><a href='/resellers/{user.id}'>{esc(_who(user))}</a>"
             f"<div class='mini'>{esc(user.id)}</div></td>"
             f"<td>{badge}</td>"
             f"<td class='money'>{esc(i18n.num(stats.sales, 'fa'))}</td>"
@@ -1277,6 +1292,99 @@ async def reseller_page(request: web.Request) -> web.Response:
         )
     )
     return await _shell(request, "نمایندگی", body, active="/resellers")
+
+
+async def reseller_detail(request: web.Request) -> web.Response:
+    """یک نماینده: مشتری‌هایش، فروش‌هایش، و آنچه باید پیگیری شود."""
+    denied = await _deny(request, roles.CAP_MONEY)
+    if denied is not None:
+        return denied
+
+    user_id = int(request.match_info["id"])
+    async with get_session() as db:
+        person = await db.get(User, user_id)
+    if person is None:
+        raise web.HTTPNotFound(text="کاربری با این شناسه نیست")
+
+    is_reseller, discount = await reseller.profile(user_id)
+    stats = await reseller.stats(user_id)
+    people = await reseller.customers(user_id)
+    sales = await reseller.sales(user_id, limit=30)
+
+    customer_rows = []
+    for customer in people:
+        if customer.expired:
+            state = pill("بدون اشتراک", "bad")
+        elif customer.expiring:
+            state = pill(f"{i18n.num(customer.days_left, 'fa')} روز مانده", "warn")
+        else:
+            state = pill(f"{i18n.num(customer.days_left, 'fa')} روز مانده", "ok")
+        plan = get_plan(customer.plan_code)
+        customer_rows.append(
+            f"<tr><td><a href='/users/{customer.user_id}'>{esc(customer.name)}</a>"
+            f"<div class='mini'>{esc(customer.user_id)}</div></td>"
+            f"<td>{esc(plan.title if plan else customer.plan_code or '—')}</td>"
+            f"<td>{state}</td>"
+            f"<td>{esc(_when(customer.expires_at) if customer.expires_at else '—')}</td>"
+            "</tr>"
+        )
+
+    sale_rows = []
+    for sale in sales:
+        plan = get_plan(sale.plan_code)
+        sale_rows.append(
+            f"<tr><td>{esc(_when(sale.created_at))}</td>"
+            f"<td><a href='/users/{sale.customer_id}'>{esc(sale.customer_id)}</a></td>"
+            f"<td>{esc(plan.title if plan else sale.plan_code)}</td>"
+            f"<td class='money'>{esc(money(sale.paid_toman))}</td>"
+            f"<td class='money'>{esc(money(sale.list_toman))}</td>"
+            f"<td>{esc(i18n.num(sale.discount_percent, 'fa'))}٪</td></tr>"
+        )
+
+    waiting = sum(1 for customer in people if customer.expiring or customer.expired)
+    cards = (
+        "<div class='cards'>"
+        + card("تخفیف", f"{i18n.num(discount, 'fa')}٪", "ok" if is_reseller else "bad")
+        + card("مشتری‌ها", i18n.num(len(people), "fa"))
+        + card("نیاز به پیگیری", i18n.num(waiting, "fa"), "warn" if waiting else "")
+        + card("پرداختی", money(stats.spent))
+        + card("سهم خرید مستقیم", money(stats.commission), "ok")
+        + card("کیف پول", money(person.wallet_toman))
+        + "</div>"
+    )
+
+    body = (
+        f"<h1>{esc(_who(person))}</h1>"
+        f"<p class='sub'>نماینده · <a href='/users/{user_id}'>صفحه‌ی کاربر</a></p>"
+        + _flash(request)
+        + ("" if is_reseller else "<div class='note warn'>نمایندگی این کاربر "
+           "برداشته شده. مشتری‌هایش سرِ جایشان می‌مانند ولی سهمی از خرید "
+           "مستقیمشان نمی‌گیرد.</div>")
+        + cards
+        + panel(
+            "مشتری‌ها",
+            table(
+                ["مشتری", "طرح", "وضعیت", "پایان"],
+                customer_rows,
+                empty="هنوز مشتری‌ای ندارد.",
+                icon="👥",
+            ),
+            sub=(
+                "هر خریدی که خودِ این مشتری‌ها مستقیم انجام بدهند هم سهم نماینده "
+                "را به کیف پولش می‌ریزد."
+            ),
+        )
+        + panel(
+            "فروش‌ها",
+            table(
+                ["زمان", "مشتری", "طرح", "پرداختی", "قیمت فهرست", "تخفیف"],
+                sale_rows,
+                empty="هنوز فروشی ثبت نشده.",
+                icon="🧾",
+            ),
+        )
+    )
+    return await _shell(request, "نماینده", body, active="/resellers")
 
 
 async def reseller_set(request: web.Request) -> web.Response:
@@ -1895,6 +2003,7 @@ def build_app(bot) -> web.Application:
             get("/tasks", task_list),
             post("/tasks/{id}/toggle", task_toggle),
             get("/resellers", reseller_page),
+            get("/resellers/{id}", reseller_detail),
             post("/resellers/default", reseller_default),
             post("/resellers/set", reseller_set),
             post("/resellers/{id}/remove", reseller_remove),

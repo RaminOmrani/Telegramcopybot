@@ -422,6 +422,13 @@ async def approve(request_id: int, admin_id: int):
         replace=used_credit > 0,
     )
     await referral.on_payment_approved(request)
+
+    # اگر این مشتری را نماینده‌ای آورده، سهمش را می‌گیرد — حتی وقتی
+    # خرید مستقیم بوده. بدون این، نماینده انگیزه‌ای برای معرفی مشتری
+    # نداشت چون هر مشتری فقط یک بار از او می‌خرید و بعد مستقیم می‌آمد.
+    from telkap.services import reseller as reseller_service
+
+    await reseller_service.pay_commission(user_id, plan_code, ref_id=request_id)
     await log_activity(
         user_id=user_id,
         event="payment_approved",

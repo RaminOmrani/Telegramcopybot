@@ -11,11 +11,19 @@ from __future__ import annotations
 
 import logging
 from dataclasses import dataclass
+from datetime import UTC
 
 from sqlalchemy import func, select
 
 from telkap.db import get_session, log_activity
-from telkap.models import AppSetting, ResellerSale, User, WalletEntry, utcnow
+from telkap.models import (
+    AppSetting,
+    ResellerSale,
+    Subscription,
+    User,
+    WalletEntry,
+    utcnow,
+)
 from telkap.plans import get_plan, toman
 from telkap.services import subscription, wallet
 
@@ -25,6 +33,10 @@ SETTING_KEY = "reseller"
 DEFAULT_DISCOUNT = 20        # درصد تخفیف پیش‌فرض نماینده‌ی تازه
 MAX_DISCOUNT = 90
 
+# از چند روز مانده، مشتری «در حال تمام شدن» شمرده می‌شود. نماینده باید
+# پیش از ما سراغش برود، نه بعدِ ما.
+EXPIRY_WARNING_DAYS = 7
+
 
 @dataclass(slots=True)
 class Stats:
@@ -32,6 +44,27 @@ class Stats:
     customers: int = 0
     spent: int = 0
     saved: int = 0
+    commission: int = 0      # از خریدهای مستقیمِ مشتری‌هایش
+
+
+@dataclass(slots=True)
+class Customer:
+    """یک مشتریِ نماینده، با آنچه برای پیگیری لازم است."""
+
+    user_id: int
+    name: str
+    expires_at: object | None = None
+    days_left: int = 0
+    plan_code: str = ""
+
+    @property
+    def expiring(self) -> bool:
+        """نزدیک به تمام شدن — یعنی همین حالا باید سراغش رفت."""
+        return 0 < self.days_left <= EXPIRY_WARNING_DAYS
+
+    @property
+    def expired(self) -> bool:
+        return self.days_left <= 0
 
 
 class ResellerError(Exception):
@@ -190,12 +223,143 @@ async def activate(reseller_id: int, customer_id: int, plan_code: str) -> Resell
         await db.commit()
         await db.refresh(sale)
 
+    await claim(reseller_id, customer_id)
+
     await log_activity(
         user_id=reseller_id,
         event="reseller_sale",
         detail=f"{plan.title} برای {customer_id} — {toman(price)}",
     )
     return sale
+
+
+# ------------------------------------------------- مشتریِ نماینده
+async def claim(reseller_id: int, customer_id: int) -> bool:
+    """مشتری را به نام این نماینده می‌بندد. فقط بار اول.
+
+    <b>چرا فقط بار اول.</b> اگر بازنویسی می‌شد، هر نماینده‌ای می‌توانست
+    با یک فعال‌سازیِ ارزان، مشتریِ نماینده‌ی دیگری را به نام خودش کند.
+    مثل <code>referred_by</code>، این هم یک‌بار بسته می‌شود.
+    """
+    if reseller_id == customer_id:
+        return False
+    async with get_session() as db:
+        customer = await db.get(User, customer_id)
+        if customer is None or customer.owned_by:
+            return False
+        customer.owned_by = reseller_id
+        await db.commit()
+    await log_activity(
+        user_id=customer_id,
+        event="reseller_claim",
+        detail=f"مشتریِ نماینده {reseller_id} شد",
+    )
+    return True
+
+
+async def owner_of(customer_id: int) -> int | None:
+    async with get_session() as db:
+        customer = await db.get(User, customer_id)
+    return customer.owned_by if customer is not None else None
+
+
+async def pay_commission(customer_id: int, plan_code: str, *, ref_id: int = 0) -> int:
+    """سهم نماینده از خریدِ مستقیمِ مشتریِ خودش.
+
+    <b>این پاسخِ بزرگ‌ترین نگرانی نماینده است.</b> نماینده می‌ترسد
+    مشتری‌اش مستقیم بیاید و دفعه‌ی بعد از او نخرد. با این، خریدِ مستقیم
+    هم همان سهم همیشگی‌اش را به کیف پولش می‌ریزد — پس رفتنِ مشتری به
+    سراغ ما چیزی از او کم نمی‌کند و دلیلی برای پنهان کردن مشتری ندارد.
+
+    سهم به <b>کیف پول</b> می‌رود، نه به حساب بانکی. اینجا پولی به کسی
+    واریز نمی‌شود؛ اعتباری است که با آن اشتراک‌های بعدی را می‌خرد.
+
+    مبلغ سهم را برمی‌گرداند (۰ یعنی چیزی پرداخت نشد).
+    """
+    owner = await owner_of(customer_id)
+    if not owner or owner == customer_id:
+        return 0
+
+    is_reseller, discount = await profile(owner)
+    if not is_reseller or discount <= 0:
+        # نمایندگی‌اش برداشته شده — سهمی هم در کار نیست
+        return 0
+
+    plan = get_plan(plan_code)
+    if plan is None or plan.price_toman <= 0:
+        return 0
+
+    share = plan.price_toman - discounted(plan.price_toman, discount)
+    if share <= 0:
+        return 0
+
+    await wallet.credit(
+        owner,
+        share,
+        reason=WalletEntry.REASON_COMMISSION,
+        note=f"سهم نمایندگی از خرید مستقیم {customer_id} ({plan.title})",
+        ref_id=ref_id or None,
+    )
+    await log_activity(
+        user_id=owner,
+        event="reseller_commission",
+        detail=f"{toman(share)} از خرید مستقیم {customer_id}",
+    )
+    return share
+
+
+async def customers(reseller_id: int) -> list[Customer]:
+    """مشتری‌های این نماینده، آنکه زودتر تمام می‌شود اول.
+
+    ترتیب عمدی است: کاری که باید انجام شود بالاست، نه تازه‌ترین اسم.
+    """
+    async with get_session() as db:
+        people = list(
+            (
+                await db.execute(
+                    select(User).where(User.owned_by == reseller_id)
+                )
+            ).scalars()
+        )
+        if not people:
+            return []
+
+        ids = [person.id for person in people]
+        rows = await db.execute(
+            select(Subscription)
+            .where(Subscription.user_id.in_(ids), Subscription.expires_at > utcnow())
+            .order_by(Subscription.expires_at.desc())
+        )
+        active: dict[int, Subscription] = {}
+        for sub in rows.scalars():
+            active.setdefault(sub.user_id, sub)
+
+    now = utcnow()
+    out = []
+    for person in people:
+        sub = active.get(person.id)
+        left = 0
+        expires = None
+        if sub is not None:
+            expires = sub.expires_at
+            # SQLite تاریخ را بدون منطقه‌ی زمانی برمی‌گرداند و تفریقش از
+            # یک تاریخِ آگاه خطا می‌دهد. همان کاری که remaining_days
+            # می‌کند.
+            if expires.tzinfo is None:
+                expires = expires.replace(tzinfo=UTC)
+            delta = expires - now
+            left = max(0, delta.days + (1 if delta.seconds else 0))
+        out.append(
+            Customer(
+                user_id=person.id,
+                name=(person.first_name or "").strip() or str(person.id),
+                expires_at=expires,
+                days_left=left,
+                plan_code=sub.plan_code if sub else "",
+            )
+        )
+    out.sort(key=lambda c: (c.days_left, c.user_id))
+    return out
 
 
 # ------------------------------------------------------------- آمار
@@ -285,9 +449,16 @@ async def stats(reseller_id: int) -> Stats:
                 ResellerSale.reseller_id == reseller_id
             )
         )
+        earned = await db.scalar(
+            select(func.coalesce(func.sum(WalletEntry.amount_toman), 0)).where(
+                WalletEntry.user_id == reseller_id,
+                WalletEntry.reason == WalletEntry.REASON_COMMISSION,
+            )
+        )
     return Stats(
         sales=int(total or 0),
         customers=int(customers or 0),
         spent=int(spent or 0),
         saved=int((listed or 0) - (spent or 0)),
+        commission=int(earned or 0),
     )

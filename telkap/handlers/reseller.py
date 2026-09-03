@@ -43,8 +43,27 @@ async def _panel(user_id: int) -> tuple[str, InlineKeyboardBuilder] | None:
             f"<b>{fa_num(stats.customers)}</b> مشتری",
             f"پرداختی: <b>{toman(stats.spent)}</b>",
             f"سود شما نسبت به قیمت فهرست: <b>{toman(stats.saved)}</b>",
-            "",
         ]
+        if stats.commission:
+            lines.append(
+                f"سهم از خریدهای مستقیم مشتری‌هایتان: <b>{toman(stats.commission)}</b>"
+            )
+        lines.append("")
+
+    people = await reseller.customers(user_id)
+    soon = [c for c in people if c.expiring]
+    over = [c for c in people if c.expired]
+    if soon or over:
+        lines.append("⏳ <b>نیاز به پیگیری</b>")
+        if soon:
+            lines.append(
+                f"<b>{fa_num(len(soon))}</b> مشتری تا کمتر از "
+                f"{fa_num(reseller.EXPIRY_WARNING_DAYS)} روز دیگر تمام می‌شود"
+            )
+        if over:
+            lines.append(f"<b>{fa_num(len(over))}</b> مشتری اشتراک فعال ندارد")
+        lines.append("")
+
     lines.append("طرحی را که می‌خواهید برای مشتری فعال کنید انتخاب کنید 👇")
 
     kb = InlineKeyboardBuilder()
@@ -57,8 +76,17 @@ async def _panel(user_id: int) -> tuple[str, InlineKeyboardBuilder] | None:
             )
         )
     kb.row(InlineKeyboardButton(text="👛 شارژ کیف پول", callback_data="wal:home"))
+    row = []
+    if people:
+        row.append(
+            InlineKeyboardButton(text="👥 مشتری‌های من", callback_data="rs:customers")
+        )
     if stats.sales:
-        kb.row(InlineKeyboardButton(text="📜 فروش‌های من", callback_data="rs:sales"))
+        row.append(
+            InlineKeyboardButton(text="📜 فروش‌های من", callback_data="rs:sales")
+        )
+    if row:
+        kb.row(*row)
     return "\n".join(lines), kb
 
 
@@ -193,6 +221,47 @@ async def cb_sales(call: CallbackQuery) -> None:
             f"<code>{sale.customer_id}</code>\n"
             f"  {toman(sale.paid_toman)} · <code>{fa_num(stamp)}</code>"
         )
+
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="🔙 پنل نمایندگی", callback_data="rs:home"))
+    await call.message.edit_text("\n".join(lines), reply_markup=kb.as_markup())
+
+
+@router.callback_query(F.data == "rs:customers")
+async def cb_customers(call: CallbackQuery) -> None:
+    """مشتری‌های نماینده، آنکه زودتر تمام می‌شود اول.
+
+    <b>چرا این صفحه هست.</b> نگرانی هر نماینده این است که مشتری‌اش
+    مستقیم بیاید و دفعه‌ی بعد از او نخرد. بخشی از جوابش سهمِ خرید
+    مستقیم است که خودکار پرداخت می‌شود؛ بخش دیگرش این است که نماینده
+    <b>پیش از ما</b> بداند اشتراک چه کسی دارد تمام می‌شود و خودش سراغش
+    برود.
+    """
+    is_reseller, _discount = await reseller.profile(call.from_user.id)
+    if not is_reseller:
+        await call.answer("شما نماینده نیستید", show_alert=True)
+        return
+    await call.answer()
+
+    people = await reseller.customers(call.from_user.id)
+    lines = ["👥 <b>مشتری‌های شما</b>", RULE, ""]
+    if not people:
+        lines.append("هنوز مشتری‌ای ندارید.")
+    for person in people:
+        if person.expired:
+            state = "❌ بدون اشتراک"
+        elif person.expiring:
+            state = f"⏳ {fa_num(person.days_left)} روز مانده"
+        else:
+            state = f"✅ {fa_num(person.days_left)} روز مانده"
+        lines.append(f"• <b>{person.name}</b> — <code>{person.user_id}</code>\n  {state}")
+
+    lines += [
+        "",
+        RULE,
+        "<i>هر خریدی که خودشان مستقیم انجام بدهند هم سهم شما را به کیف "
+        "پولتان می‌ریزد — مشتری از دست شما نمی‌رود.</i>",
+    ]
 
     kb = InlineKeyboardBuilder()
     kb.row(InlineKeyboardButton(text="🔙 پنل نمایندگی", callback_data="rs:home"))

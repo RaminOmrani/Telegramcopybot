@@ -31,6 +31,7 @@ REASON_LABELS: dict[str, str] = {
     WalletEntry.REASON_PURCHASE: "🛒 خرید",
     WalletEntry.REASON_REFUND: "↩️ اصلاح تراکنش ناموفق",
     WalletEntry.REASON_ADMIN: "🛠 تنظیم ادمین",
+    WalletEntry.REASON_COMMISSION: "🤝 سهم نمایندگی",
 }
 
 
