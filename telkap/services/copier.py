@@ -4,7 +4,6 @@ from __future__ import annotations
 import asyncio
 import logging
 import random
-import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, timedelta
@@ -75,9 +74,15 @@ log = logging.getLogger(__name__)
 # بماند. کمترش یعنی آلبوم دوتکه می‌شود، بیشترش یعنی تأخیر بی‌دلیل.
 ALBUM_SAFETY_SECONDS = 4.0
 
-# چقدر یادمان بماند که هندلر آلبوم یک گروه را گرفته. فقط باید از
-# ALBUM_SAFETY_SECONDS بیشتر باشد؛ بقیه‌اش حافظه‌ی بی‌فایده است.
-ALBUM_CLAIM_MEMORY_SECONDS = 60.0
+# چقدر منتظر پر شدن یک جای رزروشده می‌مانیم. کمی بیشتر از تور ایمنی
+# آلبوم، چون همان تور است که جا را آزاد می‌کند؛ این فقط برای وقتی است
+# که خودِ تور هم به هر دلیلی نیامده باشد و صف نباید برای همیشه بایستد.
+SLOT_WAIT_SECONDS = ALBUM_SAFETY_SECONDS + 2.0
+
+# صف هر مبدا از این بلندتر شود یعنی چیزی گیر کرده — معمولاً یک فایل
+# بزرگ. در لاگ هشدار می‌دهیم ولی چیزی دور ریخته نمی‌شود؛ دور ریختن،
+# همان «پستِ گم‌شده»ای است که کل این کد برای نبودنش نوشته شده.
+BUSY_QUEUE = 20
 
 # کپی کندتر از این، در لاگ هشدار می‌گیرد. کاربر یک دقیقه را تحمل
 # می‌کند؛ بیشترش یعنی چیزی درست کار نمی‌کند.
@@ -85,6 +90,25 @@ SLOW_COPY_SECONDS = 60
 
 # فاصله‌ی تلاش‌های مجدد بر حسب ثانیه (۱ دقیقه، ۵ دقیقه، ۱۵ دقیقه، ۱ ساعت)
 RETRY_BACKOFF = (60, 300, 900, 3600)
+
+
+class Slot:
+    """یک جای رزروشده در صفِ یک مبدا.
+
+    <b>چرا جا زودتر از محتوا رزرو می‌شود.</b> آلبوم پیام‌هایش جدا جدا
+    می‌رسد و چند ثانیه طول می‌کشد تا کامل شود. اگر تازه آن‌وقت وارد صف
+    می‌شد، پستِ متنیِ بعدی که فوراً آماده است از آن جلو می‌زد و ترتیبِ
+    کانالِ مقصد با مبدا فرق می‌کرد. حالا جا همان لحظه‌ی دیدنِ اولین
+    پیام گرفته می‌شود و صف همان‌جا منتظر پر شدنش می‌ماند.
+    """
+
+    __slots__ = ("messages", "ready")
+
+    def __init__(self, messages=None, *, ready: bool = False) -> None:
+        self.messages = list(messages or [])
+        self.ready = asyncio.Event()
+        if ready:
+            self.ready.set()
 
 
 def today_key(offset_hours: float | None = None) -> str:
@@ -320,9 +344,11 @@ class Copier:
         # کاربرانی که هشدار تمام شدن اعتبار واترمارک گرفته‌اند
         self._credit_warned: set[int] = set()
         # تور ایمنی آلبوم — پایین کلاس توضیح داده شده
-        self._album_buffer: dict[tuple, list] = {}
+        self._album_slots: dict[tuple, Slot] = {}
         self._album_timers: dict[tuple, asyncio.Task] = {}
-        self._album_claimed: dict[tuple, float] = {}
+        # یک صف و یک کارگر برای هر مبدا، تا ترتیب حفظ شود
+        self._queues: dict[tuple, asyncio.Queue] = {}
+        self._workers: dict[tuple, asyncio.Task] = {}
         # کدام مسیر برای آخرین ارسال به کار رفت — برای اندازه‌گیری تأخیر
         self._last_path: str = ""
 
@@ -337,20 +363,106 @@ class Copier:
             group = getattr(message, "grouped_id", None)
             if group:
                 # آلبوم را هندلر مخصوصش می‌گیرد — ولی اگر نگرفت، اینجا
-                # می‌ماند. توضیح کامل بالای _album_safety_net.
+                # می‌ماند. توضیح کامل بالای _album_release.
                 await self._buffer_album(user_id, event.chat_id, group, message)
                 return
-            await self._dispatch(user_id, event.chat_id, [message])
+            await self._enqueue(user_id, event.chat_id, Slot([message], ready=True))
         return handler
 
     def make_album_handler(self, user_id: int):
         async def handler(event):
             first = event.messages[0] if event.messages else None
             group = getattr(first, "grouped_id", None)
-            if group is not None:
-                self._album_claimed[(user_id, event.chat_id, group)] = time.monotonic()
-            await self._dispatch(user_id, event.chat_id, list(event.messages))
+            if group is None:
+                await self._enqueue(
+                    user_id, event.chat_id, Slot(event.messages, ready=True)
+                )
+                return
+            slot = await self._slot_for(user_id, event.chat_id, group)
+            # فهرست هندلر آلبوم معتبرتر از چیزی است که خودمان جمع کرده‌ایم
+            slot.messages = list(event.messages)
+            slot.ready.set()
         return handler
+
+    # ------------------------------------------------- صفِ ترتیب‌نگه‌دار
+    #
+    # <b>چرا صف.</b> تلethon هر به‌روزرسانی را در یک تسک جدا اجرا
+    # می‌کند، یعنی دو پست هم‌زمان پردازش می‌شوند. پستی که ویدئوی
+    # سنگین دارد باید دانلود و دوباره آپلود شود؛ پستِ متنیِ بعدی در
+    # همان مدت تمام می‌شود و <b>زودتر</b> به مقصد می‌رسد. نتیجه‌اش
+    # کانالی است که ترتیبش با مبدا فرق دارد.
+    #
+    # حالا هر مبدا یک صف و یک کارگر دارد: پست‌ها به همان ترتیبی که
+    # رسیده‌اند فرستاده می‌شوند. هزینه‌اش صریح است — پستِ سنگین جلوی
+    # پست‌های پشت سرش را می‌گیرد تا تمام شود. برای محصولی که وعده‌اش
+    # «کپیِ درست» است، ترتیبِ درست از چند ثانیه زودتر رسیدن مهم‌تر
+    # است.
+    #
+    # صف‌ها به ازای مبدا جدا هستند، پس یک کانالِ پرفایل کانال‌های دیگر
+    # را کند نمی‌کند.
+
+    async def _enqueue(self, user_id: int, chat_id: int, slot: Slot) -> None:
+        key = (user_id, chat_id)
+        queue = self._queues.get(key)
+        if queue is None:
+            queue = asyncio.Queue()
+            self._queues[key] = queue
+            self._workers[key] = asyncio.create_task(self._worker(key, queue))
+        if queue.qsize() >= BUSY_QUEUE:
+            log.warning(
+                "صف مبدا %s برای کاربر %s به %d پست رسید؛ چیزی گیر کرده",
+                chat_id, user_id, queue.qsize(),
+            )
+        await queue.put(slot)
+
+    async def _worker(self, key: tuple, queue: asyncio.Queue) -> None:
+        user_id, chat_id = key
+        while True:
+            slot = await queue.get()
+            try:
+                if not slot.ready.is_set():
+                    try:
+                        await asyncio.wait_for(
+                            slot.ready.wait(), SLOT_WAIT_SECONDS
+                        )
+                    except TimeoutError:
+                        # جا هیچ‌وقت پر نشد. صف نباید برای همیشه بایستد؛
+                        # با هرچه جمع شده ادامه می‌دهیم.
+                        log.warning(
+                            "جای رزروشده در صف مبدا %s پر نشد؛ با %d پیام ادامه",
+                            chat_id, len(slot.messages),
+                        )
+                if slot.messages:
+                    slot.messages.sort(key=lambda m: m.id)
+                    await self._dispatch(user_id, chat_id, slot.messages)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("کارگر صف مبدا %s با خطا مواجه شد", chat_id)
+            finally:
+                queue.task_done()
+
+    async def drain(self) -> None:
+        """تا وقتی همه‌ی صف‌ها خالی شوند صبر می‌کند. برای تست."""
+        for queue in list(self._queues.values()):
+            await queue.join()
+
+    def stop_user(self, user_id: int) -> None:
+        """صف‌ها و کارگرهای یک کاربر را می‌بندد.
+
+        وقتی اکانتی قطع می‌شود، کارگرش دیگر کاری ندارد؛ بدون این، هر
+        وصل و قطع یک تسکِ بیکار جا می‌گذارد.
+        """
+        for key in [k for k in self._queues if k[0] == user_id]:
+            worker = self._workers.pop(key, None)
+            if worker is not None:
+                worker.cancel()
+            self._queues.pop(key, None)
+        for key in [k for k in self._album_timers if k[0] == user_id]:
+            timer = self._album_timers.pop(key, None)
+            if timer is not None:
+                timer.cancel()
+            self._album_slots.pop(key, None)
 
     # ----------------------------------------------------- تورِ ایمنی آلبوم
     #
@@ -366,54 +478,48 @@ class Copier:
     # آلبوم برای همیشه گم می‌شد — بی‌هیچ خطایی، بی‌هیچ ردی در لاگ.
     #
     # برای محصولی که وعده‌اش «چیزی را از دست نمی‌دهید» است، این
-    # پذیرفتنی نیست. حالا پیام‌های گروه‌دار چند ثانیه نگه داشته می‌شوند:
-    # اگر هندلر آلبوم کارش را کرد، دور ریخته می‌شوند؛ اگر نکرد، خودمان
-    # می‌فرستیمشان.
+    # پذیرفتنی نیست. حالا پیام‌های گروه‌دار در یک جای رزروشده جمع
+    # می‌شوند: اگر هندلر آلبوم آمد، خودش پرش می‌کند؛ اگر نیامد، تور
+    # ایمنی با هرچه جمع شده آزادش می‌کند.
+
+    async def _slot_for(self, user_id: int, chat_id: int, group) -> Slot:
+        """جای این آلبوم در صف — و اگر هنوز نبود، همین حالا رزروش می‌کند."""
+        key = (user_id, chat_id, group)
+        slot = self._album_slots.get(key)
+        if slot is None:
+            slot = Slot()
+            self._album_slots[key] = slot
+            await self._enqueue(user_id, chat_id, slot)
+            self._album_timers[key] = asyncio.create_task(self._album_release(key))
+        return slot
 
     async def _buffer_album(self, user_id: int, chat_id: int, group, message) -> None:
-        key = (user_id, chat_id, group)
-        bucket = self._album_buffer.setdefault(key, [])
-        if any(m.id == message.id for m in bucket):
+        slot = await self._slot_for(user_id, chat_id, group)
+        if slot.ready.is_set():
+            # هندلر آلبوم قبلاً فهرست کاملش را گذاشته؛ این پیام همان است
             return
-        bucket.append(message)
-        if key not in self._album_timers:
-            self._album_timers[key] = asyncio.create_task(self._album_safety_net(key))
+        if not any(m.id == message.id for m in slot.messages):
+            slot.messages.append(message)
 
-    async def _album_safety_net(self, key) -> None:
-        """اگر هندلر آلبوم نیامد، خودمان می‌فرستیم."""
+    async def _album_release(self, key) -> None:
+        """اگر هندلر آلبوم نیامد، جا را با هرچه جمع شده آزاد می‌کند."""
         try:
             await asyncio.sleep(ALBUM_SAFETY_SECONDS)
-            messages = self._album_buffer.pop(key, [])
-            claimed = self._album_claimed.pop(key, None)
-            if claimed is not None or not messages:
-                return
-
-            user_id, chat_id, group = key
-            log.warning(
-                "هندلر آلبوم برای گروه %s نیامد؛ %d پیام با تور ایمنی فرستاده شد",
-                group, len(messages),
-            )
-            messages.sort(key=lambda m: m.id)
-            await self._dispatch(user_id, chat_id, messages)
+            slot = self._album_slots.get(key)
+            if slot is not None and not slot.ready.is_set():
+                _user_id, _chat_id, group = key
+                log.warning(
+                    "هندلر آلبوم برای گروه %s نیامد؛ %d پیام با تور ایمنی رفت",
+                    group, len(slot.messages),
+                )
+                slot.ready.set()
         except asyncio.CancelledError:
             raise
         except Exception:
             log.exception("تور ایمنی آلبوم با خطا مواجه شد")
         finally:
             self._album_timers.pop(key, None)
-            self._album_buffer.pop(key, None)
-            self._prune_album_state()
-
-    def _prune_album_state(self) -> None:
-        """نشانه‌های قدیمی را پاک می‌کند تا حافظه بی‌نهایت رشد نکند."""
-        now = time.monotonic()
-        stale = [
-            key
-            for key, when in self._album_claimed.items()
-            if now - when > ALBUM_CLAIM_MEMORY_SECONDS
-        ]
-        for key in stale:
-            self._album_claimed.pop(key, None)
+            self._album_slots.pop(key, None)
 
     def make_edit_handler(self, user_id: int):
         async def handler(event):

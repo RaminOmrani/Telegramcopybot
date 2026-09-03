@@ -352,6 +352,24 @@ class _Event:
         self.messages = messages or []
 
 
+# هر Copier یک کارگرِ صف می‌سازد که تا بسته نشود زنده می‌ماند. اگر
+# تست بدون بستنش تمام شود، تسکِ رهاشده موقع بسته شدن حلقه سر و صدا
+# می‌کند و خطای واقعیِ تستِ بعدی را زیر خودش گم می‌کند.
+_MADE: list = []
+
+
+@pytest.fixture(autouse=True)
+async def _close_copiers():
+    yield
+    while _MADE:
+        made = _MADE.pop()
+        for user_id in {key[0] for key in made._queues}:
+            made.stop_user(user_id)
+    # cancel() فقط علامت می‌گذارد؛ تسک باید یک بار نوبت بگیرد تا واقعاً
+    # تمام شود، وگرنه موقع بسته شدن حلقه سر و صدا می‌کند.
+    await asyncio.sleep(0)
+
+
 def _copier(monkeypatch):
     """یک Copier با _dispatch جایگزین‌شده تا فقط ببینیم چه رسید."""
     from telkap.services.copier import Copier
@@ -363,6 +381,7 @@ def _copier(monkeypatch):
         got.append((user_id, chat_id, [m.id for m in messages]))
 
     copier._dispatch = fake_dispatch
+    _MADE.append(copier)
     return copier, got
 
 
@@ -373,6 +392,7 @@ async def test_a_lone_message_goes_straight_through(monkeypatch):
     handler = copier.make_new_message_handler(7)
 
     await handler(_Event(-100, message=_Msg(5)))
+    await copier.drain()
 
     assert got == [(7, -100, [5])]
 
@@ -397,6 +417,7 @@ async def test_an_album_handled_normally_is_not_sent_twice(monkeypatch):
         _Event(-100, messages=[_Msg(5, group=99), _Msg(6, group=99)])
     )
     await asyncio.sleep(0.2)
+    await copier.drain()
 
     assert got == [(7, -100, [5, 6])]
 
@@ -418,6 +439,7 @@ async def test_an_album_the_handler_never_delivered_is_still_sent(monkeypatch):
     await new_handler(_Event(-100, message=_Msg(6, group=99)))
     await new_handler(_Event(-100, message=_Msg(5, group=99)))
     await asyncio.sleep(0.2)
+    await copier.drain()
 
     # مرتب‌شده بر اساس آیدی، وگرنه ترتیب آلبوم در مقصد به هم می‌ریزد
     assert got == [(7, -100, [5, 6])]
@@ -435,6 +457,7 @@ async def test_the_same_message_twice_is_only_kept_once(monkeypatch):
     await handler(_Event(-100, message=_Msg(5, group=99)))
     await handler(_Event(-100, message=_Msg(5, group=99)))
     await asyncio.sleep(0.2)
+    await copier.drain()
 
     assert got == [(7, -100, [5])]
 
@@ -452,6 +475,7 @@ async def test_two_albums_at_once_do_not_mix(monkeypatch):
     await handler(_Event(-200, message=_Msg(2, group=22)))
     await handler(_Event(-100, message=_Msg(3, group=11)))
     await asyncio.sleep(0.2)
+    await copier.drain()
 
     assert sorted(got) == [(7, -200, [2]), (7, -100, [1, 3])] or sorted(got) == [
         (7, -100, [1, 3]),
@@ -470,6 +494,119 @@ async def test_nothing_is_left_behind_in_memory(monkeypatch):
 
     await handler(_Event(-100, message=_Msg(5, group=99)))
     await asyncio.sleep(0.2)
+    await copier.drain()
 
-    assert copier._album_buffer == {}
+    assert copier._album_slots == {}
     assert copier._album_timers == {}
+
+    copier.stop_user(7)
+    assert copier._queues == {}
+    assert copier._workers == {}
+
+
+# ---------------------------------------------------------- ترتیب انتشار
+@pytest.mark.asyncio
+async def test_a_slow_post_does_not_let_the_next_one_overtake_it(monkeypatch):
+    """<b>همان چیزی که در کانال واقعی دیده شد.</b>
+
+    پستِ اول ویدئوی سنگین داشت و باید دانلود و دوباره آپلود می‌شد؛
+    پستِ دوم متن ساده بود و در همان مدت تمام شد و <b>زودتر</b> رسید.
+    تلethon هر به‌روزرسانی را در تسک جدا اجرا می‌کند، پس این دقیقاً
+    همان رفتاری بود که کد قدیمی داشت.
+    """
+    copier, got = _copier(monkeypatch)
+    handler = copier.make_new_message_handler(7)
+
+    slow = copier._dispatch
+
+    async def sometimes_slow(user_id, chat_id, messages):
+        if messages[0].id == 1:
+            await asyncio.sleep(0.15)      # فایل سنگین
+        await slow(user_id, chat_id, messages)
+
+    copier._dispatch = sometimes_slow
+
+    # هم‌زمان، نه یکی‌یکی — تلethon هم همین‌طور صدایشان می‌زند. اگر
+    # پشت سر هم صدا زده شوند، کدِ قدیمی هم از این تست رد می‌شد و تست
+    # چیزی را ثابت نمی‌کرد.
+    await asyncio.gather(
+        handler(_Event(-100, message=_Msg(1))),      # سنگین، اول
+        handler(_Event(-100, message=_Msg(2))),      # سبک، دوم
+    )
+    await copier.drain()
+
+    assert got == [(7, -100, [1]), (7, -100, [2])]
+
+
+@pytest.mark.asyncio
+async def test_a_text_post_does_not_jump_ahead_of_an_album_before_it(monkeypatch):
+    """<b>آلبوم چند ثانیه طول می‌کشد تا کامل شود.</b>
+
+    اگر جایش را تازه بعد از کامل شدن می‌گرفت، هر پستِ متنیِ بعدی از
+    آن جلو می‌زد — و آلبوم که معمولاً پستِ مهم‌تر است، بعدِ چیزی که
+    بعدش منتشر شده در کانال می‌نشست.
+    """
+    from telkap.services import copier as copier_mod
+
+    monkeypatch.setattr(copier_mod, "ALBUM_SAFETY_SECONDS", 0.1)
+    copier, got = _copier(monkeypatch)
+    handler = copier.make_new_message_handler(7)
+
+    await asyncio.gather(
+        handler(_Event(-100, message=_Msg(1, group=11))),
+        handler(_Event(-100, message=_Msg(2, group=11))),
+        handler(_Event(-100, message=_Msg(3))),        # متنِ بعد از آلبوم
+    )
+    await asyncio.sleep(0.3)
+    await copier.drain()
+
+    assert got == [(7, -100, [1, 2]), (7, -100, [3])]
+
+
+@pytest.mark.asyncio
+async def test_two_sources_do_not_wait_for_each_other(monkeypatch):
+    """<b>صف به ازای مبداست، نه به ازای کل ربات.</b>
+
+    وگرنه یک کانالِ پرفایل، کپیِ همه‌ی کانال‌های دیگر را هم کند می‌کرد.
+    """
+    copier, got = _copier(monkeypatch)
+    handler = copier.make_new_message_handler(7)
+
+    plain = copier._dispatch
+
+    async def slow_first_source(user_id, chat_id, messages):
+        if chat_id == -100:
+            await asyncio.sleep(0.15)
+        await plain(user_id, chat_id, messages)
+
+    copier._dispatch = slow_first_source
+
+    await asyncio.gather(
+        handler(_Event(-100, message=_Msg(1))),
+        handler(_Event(-200, message=_Msg(2))),
+    )
+    await copier.drain()
+
+    # مبدا دوم منتظر اولی نمانده
+    assert got[0] == (7, -200, [2])
+    assert sorted(got) == [(7, -200, [2]), (7, -100, [1])] or got[1] == (7, -100, [1])
+
+
+@pytest.mark.asyncio
+async def test_a_slot_that_never_fills_does_not_stall_the_queue(monkeypatch):
+    """<b>صفی که می‌ایستد یعنی همه‌ی پست‌های بعدی گم می‌شوند.</b>
+
+    اگر جای رزروشده‌ای به هر دلیلی پر نشود، کارگر باید بعد از یک مهلت
+    ادامه بدهد — نه اینکه برای همیشه منتظر بماند.
+    """
+    from telkap.services import copier as copier_mod
+
+    monkeypatch.setattr(copier_mod, "SLOT_WAIT_SECONDS", 0.1)
+    copier, got = _copier(monkeypatch)
+
+    stuck = copier_mod.Slot()                 # هیچ‌وقت ready نمی‌شود
+    await copier._enqueue(7, -100, stuck)
+    await copier._enqueue(7, -100, copier_mod.Slot([_Msg(9)], ready=True))
+    await copier.drain()
+
+    assert got == [(7, -100, [9])]

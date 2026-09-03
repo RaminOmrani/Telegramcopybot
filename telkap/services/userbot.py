@@ -260,6 +260,10 @@ class UserbotManager:
             await runtime.client.disconnect()
         except Exception:
             log.debug("قطع کلاینت ناموفق بود", exc_info=True)
+        # صف‌های ترتیب هم بسته می‌شوند؛ بدون این، هر وصل و قطع یک
+        # کارگرِ بیکار جا می‌گذارد که تا پایان عمر پروسه می‌ماند.
+        if self._copier is not None:
+            self._copier.stop_user(user_id)
 
     # ------------------------------------------------------------- هندلرها
     async def reload_user(self, user_id: int) -> int:
