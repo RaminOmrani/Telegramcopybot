@@ -373,17 +373,35 @@ async def _close_copiers():
     await asyncio.sleep(0)
 
 
-def _copier(monkeypatch):
+class _NoTasks:
+    """مدیرِ ساختگی: هیچ کاری روی هیچ مبدایی نیست.
+
+    یعنی _order_for به پیش‌فرض می‌افتد، که همان چیزی است که این
+    تست‌ها می‌سنجند مگر جایی صریح عوضش کنند.
+    """
+
+    def tasks_for_chat(self, user_id, chat_id):
+        return []
+
+
+def _copier(monkeypatch, *, mode: str | None = None, grace: float = 300.0):
     """یک Copier با _dispatch جایگزین‌شده تا فقط ببینیم چه رسید."""
     from telkap.services.copier import Copier
 
-    copier = Copier(manager=None)
+    copier = Copier(manager=_NoTasks())
     got = []
 
     async def fake_dispatch(user_id, chat_id, messages):
         got.append((user_id, chat_id, [m.id for m in messages]))
 
     copier._dispatch = fake_dispatch
+
+    if mode is not None:
+        async def fixed_order(user_id, chat_id):
+            return mode, grace
+
+        copier._order_for = fixed_order
+
     _MADE.append(copier)
     return copier, got
 
@@ -613,3 +631,144 @@ async def test_a_slot_that_never_fills_does_not_stall_the_queue(monkeypatch):
     await copier.drain()
 
     assert got == [(7, -100, [9])]
+
+
+# ------------------------------------------------------- حالت‌های ترتیب
+@pytest.mark.asyncio
+async def test_strict_never_lets_anything_overtake(monkeypatch):
+    copier, got = _copier(monkeypatch, mode="strict")
+    handler = copier.make_new_message_handler(7)
+    plain = copier._dispatch
+
+    async def slow_first(user_id, chat_id, messages):
+        if messages[0].id == 1:
+            await asyncio.sleep(0.2)
+        await plain(user_id, chat_id, messages)
+
+    copier._dispatch = slow_first
+
+    await asyncio.gather(
+        handler(_Event(-100, message=_Msg(1))),
+        handler(_Event(-100, message=_Msg(2))),
+    )
+    await copier.drain()
+
+    assert got == [(7, -100, [1]), (7, -100, [2])]
+
+
+@pytest.mark.asyncio
+async def test_fast_lets_the_quick_one_go_first(monkeypatch):
+    """<b>هرکس سرعت را به ترتیب ترجیح بدهد، این را می‌گیرد.</b>"""
+    copier, got = _copier(monkeypatch, mode="fast")
+    handler = copier.make_new_message_handler(7)
+    plain = copier._dispatch
+
+    async def slow_first(user_id, chat_id, messages):
+        if messages[0].id == 1:
+            await asyncio.sleep(0.2)
+        await plain(user_id, chat_id, messages)
+
+    copier._dispatch = slow_first
+
+    await asyncio.gather(
+        handler(_Event(-100, message=_Msg(1))),
+        handler(_Event(-100, message=_Msg(2))),
+    )
+    await asyncio.sleep(0.35)
+
+    assert got == [(7, -100, [2]), (7, -100, [1])]      # سبک زودتر رسید
+
+
+@pytest.mark.asyncio
+async def test_grace_waits_only_so_long_for_a_heavy_post(monkeypatch):
+    """<b>همان چیزی که خواسته شد: به ترتیب، ولی نه به هر قیمتی.</b>
+
+    پستِ سنگین از مهلت بیشتر طول می‌کشد، پس صف رهایش می‌کند و بقیه جلو
+    می‌روند — ولی خودش هم گم نمی‌شود و وقتی تمام شد می‌رود.
+    """
+    copier, got = _copier(monkeypatch, mode="grace", grace=0.1)
+    handler = copier.make_new_message_handler(7)
+    plain = copier._dispatch
+
+    async def slow_first(user_id, chat_id, messages):
+        if messages[0].id == 1:
+            await asyncio.sleep(0.4)          # بیشتر از مهلت
+        await plain(user_id, chat_id, messages)
+
+    copier._dispatch = slow_first
+
+    await asyncio.gather(
+        handler(_Event(-100, message=_Msg(1))),
+        handler(_Event(-100, message=_Msg(2))),
+    )
+    await asyncio.sleep(0.7)
+
+    # سبک جلو زد، ولی سنگین هم رسید — گم نشد
+    assert got == [(7, -100, [2]), (7, -100, [1])]
+
+
+@pytest.mark.asyncio
+async def test_grace_keeps_the_order_when_nothing_is_slow(monkeypatch):
+    """<b>حالت پیش‌فرض برای پست‌های عادی باید ترتیب را حفظ کند.</b>"""
+    copier, got = _copier(monkeypatch, mode="grace", grace=5.0)
+    handler = copier.make_new_message_handler(7)
+    plain = copier._dispatch
+
+    async def a_bit_slow(user_id, chat_id, messages):
+        if messages[0].id == 1:
+            await asyncio.sleep(0.15)         # کمتر از مهلت
+        await plain(user_id, chat_id, messages)
+
+    copier._dispatch = a_bit_slow
+
+    await asyncio.gather(
+        handler(_Event(-100, message=_Msg(1))),
+        handler(_Event(-100, message=_Msg(2))),
+    )
+    await copier.drain()
+    await asyncio.sleep(0.05)
+
+    assert got == [(7, -100, [1]), (7, -100, [2])]
+
+
+@pytest.mark.asyncio
+async def test_the_strictest_task_on_a_source_decides(tmp_path, monkeypatch):
+    """<b>بی‌ترتیبی برگشت‌پذیر نیست، کندی هست.</b>
+
+    اگر دو کار روی یک مبدا نظر متفاوت داشته باشند، سخت‌گیرترین برنده
+    می‌شود — وگرنه کسی که ترتیب برایش مهم بوده، بی‌خبر آن را از دست
+    می‌داد.
+    """
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.models import Task
+        from telkap.services import cache
+        from telkap.services.copier import Copier
+
+        async with db_module.get_session() as db:
+            fast = Task(
+                user_id=7, title="سریع", source_ref="@s", source_id=-500,
+                dest_ref="@d1", dest_id=-501, settings={"order_mode": "fast"},
+            )
+            strict = Task(
+                user_id=7, title="مرتب", source_ref="@s", source_id=-500,
+                dest_ref="@d2", dest_id=-502, settings={"order_mode": "strict"},
+            )
+            db.add_all([fast, strict])
+            await db.commit()
+            await db.refresh(fast)
+            await db.refresh(strict)
+            ids = [fast.id, strict.id]
+        cache.clear()
+
+        class _Two:
+            def tasks_for_chat(self, user_id, chat_id):
+                return ids if chat_id == -500 else []
+
+        copier = Copier(manager=_Two())
+        assert (await copier._order_for(7, -500))[0] == "strict"
+
+        # و مبدایی که هیچ کاری ندارد، پیش‌فرض می‌گیرد
+        assert (await copier._order_for(7, -999))[0] == "grace"
+    finally:
+        await db_module.close_db()

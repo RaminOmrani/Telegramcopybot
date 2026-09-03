@@ -229,3 +229,24 @@ def test_the_landing_page_never_promises_a_refund():
         assert promise not in page, promise
     # و صریح می‌گوید که برگشت‌ناپذیر است
     assert "بازگشت‌پذیر نیستند" in page
+
+
+def test_the_product_name_is_the_same_everywhere():
+    """<b>نام محصول یکی است: فورواردبات (ادمین پست).</b>
+
+    نامِ متفاوت در پنل و صفحه‌ی فروش و اپ، سه محصول به نظر می‌رسد.
+    """
+    from pathlib import Path
+
+    from telkap.web.render import page
+
+    root = Path(__file__).parent.parent
+    panel = page("t", "", who="7")
+    landing = (root / "site" / "index.html").read_text(encoding="utf-8")
+    app = (root / "site" / "app" / "index.html").read_text(encoding="utf-8")
+
+    for text in (panel, landing, app):
+        assert "فورواردبات" in text
+        assert "ادمین پست" in text
+    # و نامِ قدیمی هیچ‌جا نمانده باشد
+    assert "کپی‌یار" not in landing

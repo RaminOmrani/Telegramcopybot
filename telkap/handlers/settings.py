@@ -65,7 +65,21 @@ PANELS = {
     "media": ("🎞 <b>نوع محتوا</b>\nفقط انواع علامت‌خورده کپی می‌شوند:", media_menu),
     "text": ("✍️ <b>هدر، فوتر و امضا</b>\nمتن‌های ثابت پست‌ها:", text_menu),
     "wm": ("💧 <b>واترمارک تصاویر</b>\nروی عکس‌های ارسالی درج می‌شود:", watermark_menu),
-    "send": ("⚙️ <b>ارسال و ترافیک</b>\nشیوه و سرعت انتشار:", send_menu),
+    "send": (
+        "⚙️ <b>ارسال و ترافیک</b>\nشیوه و سرعت انتشار:\n\n"
+        "<b>ترتیب انتشار</b>\n"
+        "• <b>هوشمند</b> — به ترتیب مبدا، ولی اگر پستی (مثلاً ویدئوی "
+        "سنگین) بیش از مهلت طول بکشد، بقیه جلو می‌روند و خودش هم بعداً "
+        "می‌رسد. برای اغلب کانال‌ها بهترین است.\n"
+        "• <b>دقیق</b> — همیشه به ترتیب. یک فایل سنگین همه‌ی پست‌های "
+        "پشت سرش را نگه می‌دارد.\n"
+        "• <b>سریع</b> — هرکدام زودتر آماده شد. ترتیب تضمینی نیست.\n\n"
+        "<i>پستی که فقط کپی می‌شود اصلاً دانلود نمی‌شود و حجمش مهم "
+        "نیست. کندی فقط وقتی پیش می‌آید که فایل باید دانلود و دوباره "
+        "آپلود شود: واترمارک، بازنویسی فایل، یا مبدایی که «محافظت از "
+        "محتوا» دارد.</i>",
+        send_menu,
+    ),
     "engage": (
         "📈 <b>فیلتر تعامل</b>\n"
         "فقط پست‌هایی کپی شوند که در کانال مبدا گرفته‌اند.\n\n"
@@ -405,6 +419,36 @@ async def cb_mode(call: CallbackQuery) -> None:
     cfg["mode"] = mode
     await _save_settings(task_id, cfg)
     await call.answer("ذخیره شد")
+    await _render(call, "send", task_id)
+
+
+@router.callback_query(F.data.startswith("order:"))
+async def cb_order(call: CallbackQuery) -> None:
+    """حالت ترتیب انتشار را عوض می‌کند.
+
+    سه حالت: «هوشمند» (پیش‌فرض)، «دقیق» و «سریع». توضیحشان در
+    <code>Copier._worker</code> است.
+    """
+    _, mode, raw_id = call.data.split(":")
+    if mode not in ("strict", "fast", "grace"):
+        await call.answer("این حالت وجود ندارد", show_alert=True)
+        return
+    task_id = int(raw_id)
+    task = await _owned_task(call.from_user.id, task_id)
+    if task is None:
+        await call.answer("دسترسی ندارید", show_alert=True)
+        return
+    cfg = merged_settings(task.settings)
+    cfg["order_mode"] = mode
+    await _save_settings(task_id, cfg)
+    await call.answer(
+        {
+            "grace": "هوشمند: به ترتیب، ولی پشت پستِ کند نمی‌ماند",
+            "strict": "دقیق: همیشه به ترتیب مبدا",
+            "fast": "سریع: هرکدام زودتر آماده شد",
+        }[mode],
+        show_alert=True,
+    )
     await _render(call, "send", task_id)
 
 

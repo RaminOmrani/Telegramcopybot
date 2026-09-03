@@ -37,6 +37,7 @@ from telkap.config import get_settings
 from telkap.db import get_session, log_activity
 from telkap.models import (
     DailyStat,
+    DeliveryTiming,
     Destination,
     MessageMap,
     PendingPost,
@@ -79,6 +80,14 @@ ALBUM_SAFETY_SECONDS = 4.0
 # که خودِ تور هم به هر دلیلی نیامده باشد و صف نباید برای همیشه بایستد.
 SLOT_WAIT_SECONDS = ALBUM_SAFETY_SECONDS + 2.0
 
+# سه حالتِ ترتیب. توضیح کامل بالای _worker.
+ORDER_STRICT = "strict"
+ORDER_FAST = "fast"
+ORDER_GRACE = "grace"
+
+# سخت‌گیرترین حالت برنده است وقتی چند کار روی یک مبدا نظر متفاوت دارند
+ORDER_RANK = {ORDER_FAST: 0, ORDER_GRACE: 1, ORDER_STRICT: 2}
+
 # صف هر مبدا از این بلندتر شود یعنی چیزی گیر کرده — معمولاً یک فایل
 # بزرگ. در لاگ هشدار می‌دهیم ولی چیزی دور ریخته نمی‌شود؛ دور ریختن،
 # همان «پستِ گم‌شده»ای است که کل این کد برای نبودنش نوشته شده.
@@ -90,6 +99,16 @@ SLOW_COPY_SECONDS = 60
 
 # فاصله‌ی تلاش‌های مجدد بر حسب ثانیه (۱ دقیقه، ۵ دقیقه، ۱۵ دقیقه، ۱ ساعت)
 RETRY_BACKOFF = (60, 300, 900, 3600)
+
+# نامِ خواندنیِ هر مسیر. کدِ ذخیره‌شده انگلیسی و پایدار است تا با عوض
+# شدنِ یک کلمه‌ی فارسی، آمارِ ماه‌های قبل بی‌معنا نشود.
+PATH_LABELS = {
+    DeliveryTiming.PATH_DIRECT: "مستقیم (بدون دانلود)",
+    DeliveryTiming.PATH_TEXT: "فقط متن",
+    DeliveryTiming.PATH_WATERMARK: "واترمارک",
+    DeliveryTiming.PATH_REWRITE: "بازنویسی فایل",
+    DeliveryTiming.PATH_REUPLOAD: "دانلود و آپلود مجدد",
+}
 
 
 class Slot:
@@ -415,16 +434,55 @@ class Copier:
             )
         await queue.put(slot)
 
+    async def _order_for(self, user_id: int, chat_id: int) -> tuple[str, float]:
+        """حالت ترتیب برای یک مبدا، و مهلتش.
+
+        <b>چرا از کارها خوانده می‌شود و نه یک تنظیم سراسری.</b> ترتیب،
+        تصمیمِ صاحبِ کانال است: یکی خبر می‌گذارد و ترتیب برایش همه‌چیز
+        است، دیگری کلیپ می‌گذارد و سرعت مهم‌تر است.
+
+        و اگر چند کار روی یک مبدا نظر متفاوت داشتند، سخت‌گیرترین برنده
+        می‌شود — چون بی‌ترتیبی برگشت‌پذیر نیست ولی کندی هست.
+        """
+        mode, grace = ORDER_GRACE, 300.0
+        best = -1
+        for task_id in self.manager.tasks_for_chat(user_id, chat_id):
+            snapshot = await cache.get_task(task_id)
+            if snapshot is None or not snapshot.enabled:
+                continue
+            wanted = str(snapshot.cfg.get("order_mode") or ORDER_GRACE)
+            rank = ORDER_RANK.get(wanted, ORDER_RANK[ORDER_GRACE])
+            if rank > best:
+                best, mode = rank, wanted
+                try:
+                    grace = max(5.0, float(snapshot.cfg.get("order_grace_seconds") or 300))
+                except (TypeError, ValueError):
+                    grace = 300.0
+        return mode, grace
+
     async def _worker(self, key: tuple, queue: asyncio.Queue) -> None:
+        """صفِ یک مبدا، با سه حالتِ ترتیب.
+
+        <b>strict</b> — همیشه به ترتیب مبدا. یک ویدئوی سنگین جلوی
+        همه‌ی پست‌های پشت سرش را می‌گیرد تا تمام شود.
+
+        <b>fast</b> — هرکدام زودتر آماده شد، همان اول. ترتیب تضمینی
+        نیست.
+
+        <b>grace</b> (پیش‌فرض) — به ترتیب، ولی بیش از مهلتِ تعیین‌شده
+        پشت یک پستِ کند نمی‌ایستد: بعد از آن، پستِ کند در پس‌زمینه
+        ادامه می‌دهد و بقیه جلو می‌روند. برای اغلب کانال‌ها یعنی ترتیبِ
+        درست، بدون قفل شدنِ کانال پشت یک فایل بزرگ.
+        """
         user_id, chat_id = key
+        running: set[asyncio.Task] = set()
+
         while True:
             slot = await queue.get()
             try:
                 if not slot.ready.is_set():
                     try:
-                        await asyncio.wait_for(
-                            slot.ready.wait(), SLOT_WAIT_SECONDS
-                        )
+                        await asyncio.wait_for(slot.ready.wait(), SLOT_WAIT_SECONDS)
                     except TimeoutError:
                         # جا هیچ‌وقت پر نشد. صف نباید برای همیشه بایستد؛
                         # با هرچه جمع شده ادامه می‌دهیم.
@@ -432,15 +490,47 @@ class Copier:
                             "جای رزروشده در صف مبدا %s پر نشد؛ با %d پیام ادامه",
                             chat_id, len(slot.messages),
                         )
-                if slot.messages:
-                    slot.messages.sort(key=lambda m: m.id)
+                if not slot.messages:
+                    continue
+
+                slot.messages.sort(key=lambda m: m.id)
+                mode, grace = await self._order_for(user_id, chat_id)
+
+                if mode == ORDER_FAST:
+                    # رها می‌شود و صف بی‌درنگ سراغ بعدی می‌رود
+                    self._spawn(running, user_id, chat_id, slot.messages)
+                    continue
+
+                if mode == ORDER_STRICT:
                     await self._dispatch(user_id, chat_id, slot.messages)
+                    continue
+
+                # grace: تا مهلت منتظر می‌مانیم، بعد رهایش می‌کنیم
+                job = self._spawn(running, user_id, chat_id, slot.messages)
+                try:
+                    await asyncio.wait_for(asyncio.shield(job), grace)
+                except TimeoutError:
+                    log.info(
+                        "پستِ کند در مبدا %s بیش از %ds طول کشید؛ صف جلو رفت",
+                        chat_id, int(grace),
+                    )
             except asyncio.CancelledError:
                 raise
             except Exception:
                 log.exception("کارگر صف مبدا %s با خطا مواجه شد", chat_id)
             finally:
                 queue.task_done()
+
+    def _spawn(self, running: set, user_id: int, chat_id: int, messages: list):
+        """ارسال را در پس‌زمینه شروع می‌کند و مرجعش را نگه می‌دارد.
+
+        بدون نگه داشتنِ مرجع، جمع‌آوریِ زباله می‌تواند تسکِ در حال اجرا
+        را وسط کار از بین ببرد — و پست بی‌صدا گم می‌شود.
+        """
+        job = asyncio.create_task(self._dispatch(user_id, chat_id, messages))
+        running.add(job)
+        job.add_done_callback(running.discard)
+        return job
 
     async def drain(self) -> None:
         """تا وقتی همه‌ی صف‌ها خالی شوند صبر می‌کند. برای تست."""
@@ -955,12 +1045,33 @@ class Copier:
         if seconds < 0:
             return
 
-        path = self._last_path or "مستقیم"
+        path = self._last_path or DeliveryTiming.PATH_DIRECT
+        kind = classify_media(message)
+        size = media_size(message)
+
+        # ردیفِ عددی، برای اینکه بعداً بشود پرسید «میانه‌ی این هفته چقدر
+        # بود» و «کدام مسیر کندترین است». متنِ گزارش فعالیت برای خواندن
+        # آدم است و برای جمع زدن به درد نمی‌خورد.
+        async with get_session() as db:
+            db.add(
+                DeliveryTiming(
+                    task_id=task_id,
+                    user_id=user_id,
+                    source_msg_id=int(getattr(message, "id", 0) or 0),
+                    published_at=posted,
+                    seconds=seconds,
+                    path=path,
+                    media_kind=kind,
+                    size_bytes=size,
+                )
+            )
+            await db.commit()
+
         await log_activity(
             user_id=user_id,
             task_id=task_id,
             event="copy",
-            detail=f"{seconds}s · {path}",
+            detail=f"{seconds}s · {PATH_LABELS.get(path, path)}",
         )
         if seconds >= SLOW_COPY_SECONDS:
             log.warning(
@@ -1006,7 +1117,7 @@ class Copier:
             )
             return [sent.id]
 
-        self._last_path = "مستقیم"
+        self._last_path = DeliveryTiming.PATH_DIRECT
         watermarking = allow_watermark and media_kind == "photo" and watermark_ready(cfg)
         # فایل کانفیگ باید دانلود، بازنویسی و دوباره آپلود شود؛ ارسال
         # مستقیمِ رسانه‌ی مبدا نسخه‌ی دست‌نخورده را می‌فرستد.
@@ -1024,7 +1135,7 @@ class Copier:
                     Path(path).unlink(missing_ok=True)
                 rewriting = False
             else:
-                self._last_path = "بازنویسی فایل"
+                self._last_path = DeliveryTiming.PATH_REWRITE
                 try:
                     sent = await client.send_file(
                         target,
@@ -1041,7 +1152,7 @@ class Copier:
                 return [m.id for m in sent if m]
 
         if watermarking:
-            self._last_path = "واترمارک"
+            self._last_path = DeliveryTiming.PATH_WATERMARK
             files = await self._watermarked_files(client, messages, cfg)
             try:
                 sent = await client.send_file(
@@ -1088,7 +1199,7 @@ class Copier:
                 # را نمی‌دهند، پس هر پستِ رسانه‌ای اینجا می‌افتد: دانلود
                 # کامل و آپلود دوباره. برای یک ویدیو یعنی چند دقیقه —
                 # همان چیزی که کاربر به‌عنوان «تأخیر» می‌بیند.
-                self._last_path = "دانلود و آپلود مجدد"
+                self._last_path = DeliveryTiming.PATH_REUPLOAD
                 log.info("ارسال مستقیم رسانه ناموفق بود؛ دانلود و آپلود مجدد")
                 files = await self._download_all(client, messages)
                 if len(files) == 1:

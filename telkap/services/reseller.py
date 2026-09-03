@@ -81,6 +81,32 @@ async def profile(user_id: int) -> tuple[bool, int]:
         return True, max(0, min(int(user.reseller_discount or 0), MAX_DISCOUNT))
 
 
+async def keeps_customers(user_id: int) -> bool:
+    """آیا مشتری‌های این نماینده به نامش بسته می‌شوند.
+
+    تصمیمِ مدیر است، برای هر نماینده جدا.
+    """
+    async with get_session() as db:
+        user = await db.get(User, user_id)
+    return bool(user is not None and user.is_reseller and user.reseller_keeps)
+
+
+async def set_keeps(user_id: int, value: bool) -> bool | None:
+    async with get_session() as db:
+        user = await db.get(User, user_id)
+        if user is None:
+            return None
+        user.reseller_keeps = bool(value)
+        await db.commit()
+        result = user.reseller_keeps
+    await log_activity(
+        user_id=user_id,
+        event="reseller",
+        detail="حفظ مشتری " + ("روشن شد" if result else "خاموش شد"),
+    )
+    return result
+
+
 async def set_reseller(
     user_id: int, enabled: bool, discount: int | None = None, *, admin_id: int | None = None
 ) -> tuple[bool, int] | None:
@@ -243,6 +269,9 @@ async def claim(reseller_id: int, customer_id: int) -> bool:
     """
     if reseller_id == customer_id:
         return False
+    if not await keeps_customers(reseller_id):
+        # مدیر برای این نماینده چنین توافقی نگذاشته
+        return False
     async with get_session() as db:
         customer = await db.get(User, customer_id)
         if customer is None or customer.owned_by:
@@ -283,6 +312,10 @@ async def pay_commission(customer_id: int, plan_code: str, *, ref_id: int = 0) -
     is_reseller, discount = await profile(owner)
     if not is_reseller or discount <= 0:
         # نمایندگی‌اش برداشته شده — سهمی هم در کار نیست
+        return 0
+    if not await keeps_customers(owner):
+        # مدیر حفظ مشتری را برایش خاموش کرده؛ مشتری سرِ جایش می‌ماند
+        # ولی سهمی پرداخت نمی‌شود
         return 0
 
     plan = get_plan(plan_code)

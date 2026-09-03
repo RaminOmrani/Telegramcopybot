@@ -95,6 +95,12 @@ class User(Base):
     # مشتری به سراغ ما، چیزی از نماینده کم نمی‌کند.
     owned_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
 
+    # آیا مشتری‌های این نماینده به نامش بسته شوند و سهمِ خرید مستقیمشان
+    # را بگیرد. تصمیمِ مدیر است، برای هر نماینده جدا: با بعضی‌ها چنین
+    # توافقی هست و با بعضی نه، و نبودنِ این کلید یعنی یا به همه بدهیم
+    # یا به هیچ‌کس.
+    reseller_keeps: Mapped[bool] = mapped_column(Boolean, default=True)
+
     # سلامت اکانت کاربری متصل: ok | flood | peer_flood | banned | revoked
     account_state: Mapped[str] = mapped_column(String(16), default="ok", index=True)
     account_note: Mapped[str] = mapped_column(String(120), default="")
@@ -794,4 +800,47 @@ class ChurnFeedback(Base):
     sub_id: Mapped[int] = mapped_column(Integer)
     reason: Mapped[str] = mapped_column(String(32), index=True)
     note: Mapped[str] = mapped_column(String(400), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DeliveryTiming(Base):
+    """چقدر طول کشید تا یک پست از مبدا به مقصد برسد.
+
+    <b>چرا جدول جدا و نه همان گزارش فعالیت.</b> گزارش فعالیت برای
+    خواندنِ آدم است: یک متن در یک ستون. برای اینکه بشود پرسید «میانه‌ی
+    تأخیر این هفته چقدر بود» یا «کدام مسیر کندترین است»، عدد باید عدد
+    باشد نه متن. تصمیم گرفتن بر اساس متنی که باید parse شود، همان
+    حدس زدن است با یک مرحله‌ی اضافه.
+
+    <code>seconds</code> از <b>زمان خودِ پست در مبدا</b> حساب می‌شود، نه
+    از زمانی که ما دیدیمش؛ وگرنه دیر رسیدنِ خودِ رویداد — که یکی از
+    مظنون‌هاست — اصلاً در عدد نمی‌افتد.
+    """
+
+    __tablename__ = "delivery_timings"
+    __table_args__ = (
+        Index("ix_timings_task", "task_id", "id"),
+        Index("ix_timings_when", "created_at"),
+    )
+
+    # مسیرهایی که یک پست می‌تواند از آن‌ها برود. سه‌تای آخر یعنی فایل
+    # واقعاً دانلود و دوباره آپلود شده — تنها جایی که حجم پست به تأخیر
+    # ربط پیدا می‌کند.
+    PATH_DIRECT = "direct"          # مرجع رسانه، بدون دانلود — سریع در هر حجمی
+    PATH_TEXT = "text"              # فقط متن
+    PATH_WATERMARK = "watermark"    # دانلود، واترمارک، آپلود
+    PATH_REWRITE = "rewrite"        # دانلود، بازنویسی فایل، آپلود
+    PATH_REUPLOAD = "reupload"      # مبدا محافظت‌شده بود؛ چاره‌ای نبود
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(Integer, index=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    source_msg_id: Mapped[int] = mapped_column(BigInteger, default=0)
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    seconds: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    path: Mapped[str] = mapped_column(String(16), default=PATH_DIRECT, index=True)
+    media_kind: Mapped[str] = mapped_column(String(16), default="")
+    size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

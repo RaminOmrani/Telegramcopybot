@@ -1,4 +1,4 @@
-<title>فورواردبات — کپی خودکار محتوای کانال تلگرام</title>
+<title>فورواردبات (ادمین پست) — کپی خودکار محتوای کانال تلگرام</title>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="محتوای هر کانال تلگرامی را بردارید، تبلیغ و لینکش را پاک کنید و با نام خودتان منتشر کنید — بدون اینکه در کانال مبدا ادمین باشید.">
@@ -370,11 +370,19 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space
   background: var(--dest); color: #fff; font-size: 12px; font-weight: 600;
   padding: 3px 12px; border-radius: 999px; white-space: nowrap; }
 .plan { position: relative; }
+
+/* نامِ محصول «فورواردبات (ادمین پست)» است. پرانتز در یک نشان بد
+   می‌نشیند، پس توضیحش کنارِ نام و ریزتر می‌آید. */
+.brand em {
+  font-style: normal; font-size: 12px; font-weight: 500;
+  color: var(--muted); margin-inline-start: 8px;
+}
+@media (max-width: 720px) { .brand em { display: none; } }
 </style>
 
 <header class="top">
   <div class="wrap">
-    <div class="brand">فوروارد<span>بات</span></div>
+    <div class="brand">فوروارد<span>بات</span><em>ادمین پست</em></div>
     <nav>
       <a href="#how">چطور کار می‌کند</a>
       <a href="#features">امکانات</a>
@@ -700,7 +708,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space
 
 <footer>
   <div class="wrap">
-    <span>فورواردبات — ربات کپی خودکار محتوای تلگرام</span>
+    <span>فورواردبات (ادمین پست) — ربات کپی خودکار محتوای تلگرام</span>
     <span><a href="/app">مینی‌اپ</a> · <a href="/panel">پنل مدیریت</a> · پشتیبانی داخل ربات، هر روز</span>
   </div>
 </footer>

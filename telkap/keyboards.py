@@ -545,6 +545,34 @@ def send_menu(task_id: int, cfg: dict) -> InlineKeyboardMarkup:
             callback_data=f"ask:max_per_hour:{task_id}",
         )
     )
+    # ترتیب انتشار — سه حالت، در یک ردیف
+    order = str(cfg.get("order_mode") or "grace")
+    kb.row(_divider("ترتیب انتشار"))
+    kb.row(
+        InlineKeyboardButton(
+            text=("🔘" if order == "grace" else "⚪️") + " هوشمند",
+            callback_data=f"order:grace:{task_id}",
+        ),
+        InlineKeyboardButton(
+            text=("🔘" if order == "strict" else "⚪️") + " دقیق",
+            callback_data=f"order:strict:{task_id}",
+        ),
+        InlineKeyboardButton(
+            text=("🔘" if order == "fast" else "⚪️") + " سریع",
+            callback_data=f"order:fast:{task_id}",
+        ),
+    )
+    if order == "grace":
+        kb.row(
+            InlineKeyboardButton(
+                text=(
+                    "⏳ حداکثر انتظار برای پستِ کند: "
+                    f"{fa_num(int(cfg.get('order_grace_seconds') or 300) // 60)} دقیقه"
+                ),
+                callback_data=f"ask:order_grace_seconds:{task_id}",
+            )
+        )
+    kb.row(_divider("همگام‌سازی"))
     kb.row(_flag("همگام‌سازی ویرایش‌ها", bool(cfg.get("sync_edits")), f"flag:sync_edits:{task_id}"))
     kb.row(_flag("همگام‌سازی حذف‌ها", bool(cfg.get("sync_deletes")), f"flag:sync_deletes:{task_id}"))
     kb.row(_flag("کپی دکمه‌های شیشه‌ای", bool(cfg.get("copy_buttons")), f"flag:copy_buttons:{task_id}"))

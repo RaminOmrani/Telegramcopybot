@@ -98,6 +98,11 @@ async def prune_reminder_state(days: int = 90) -> int:
 async def run_once() -> None:
     await prune_activity_log()
     await prune_reminder_state()
+    # آمار سرعت انتشار هم کهنه می‌شود؛ بدون این، جدولش بی‌انتها
+    # رشد می‌کند.
+    from telkap.services import timings
+
+    await timings.prune()
 
 
 async def run_forever() -> None:

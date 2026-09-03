@@ -18,18 +18,27 @@ from telkap import i18n
 from telkap.config import get_settings
 from telkap.db import get_session
 from telkap.handlers.common import parse_int
-from telkap.models import PaymentRequest, Subscription, Task, User, utcnow
+from telkap.models import (
+    DeliveryTiming,
+    PaymentRequest,
+    Subscription,
+    Task,
+    User,
+    utcnow,
+)
 from telkap.plans import get_plan, purchasable
 from telkap.services import (
     analytics,
     cardinfo,
     coins,
+    copier,
     crypto,
     moderation,
     payments,
     reseller,
     roles,
     subscription,
+    timings,
     usdtrate,
     zarinpal,
 )
@@ -1159,6 +1168,138 @@ async def task_toggle(request: web.Request) -> web.Response:
 
 
 # ------------------------------------------------------------ نمایندگی
+def _bytes(value: int) -> str:
+    if value <= 0:
+        return "—"
+    for unit, size in (("گیگ", 1 << 30), ("مگ", 1 << 20), ("کیلو", 1 << 10)):
+        if value >= size:
+            return f"{i18n.num(round(value / size, 1), 'fa')} {unit}"
+    return f"{i18n.num(value, 'fa')} بایت"
+
+
+def _seconds(value: int) -> str:
+    if value < 60:
+        return f"{i18n.num(value, 'fa')} ثانیه"
+    minutes, rest = divmod(value, 60)
+    if minutes < 60:
+        return f"{i18n.num(minutes, 'fa')}:{i18n.num(f'{rest:02d}', 'fa')} دقیقه"
+    hours, minutes = divmod(minutes, 60)
+    return f"{i18n.num(hours, 'fa')} ساعت و {i18n.num(minutes, 'fa')} دقیقه"
+
+
+async def timings_page(request: web.Request) -> web.Response:
+    """چقدر طول می‌کشد تا پست از مبدا به مقصد برسد.
+
+    <b>چرا میانه و نه میانگین.</b> یک ویدئوی ده‌دقیقه‌ای میانگین را
+    می‌برد بالا و تصویری می‌سازد که هیچ کاربری تجربه‌اش نکرده. میانه
+    می‌گوید نصفِ پست‌ها زیر چند ثانیه رسیده‌اند، و صدک ۹۰ می‌گوید
+    بدترین حالتِ معمول چقدر است.
+
+    <b>و چرا به تفکیک مسیر.</b> «مستقیم» یعنی فایل اصلاً دانلود نشده و
+    حجم پست هیچ ربطی به سرعتش ندارد. سه مسیر دیگر یعنی دانلود و آپلود
+    دوباره — تنها جایی که حجم واقعاً مهم است. بدون این تفکیک، یک عددِ
+    کلی هر دو را قاطی می‌کند و هیچ تصمیمی از آن درنمی‌آید.
+    """
+    denied = await _deny(request, roles.CAP_REPORTS)
+    if denied is not None:
+        return denied
+
+    days = max(1, min(90, _int_or_zero(request.query.get("days")) or 7))
+    data = await timings.report(days=days)
+    trend = await timings.daily(min(days, 30))
+
+    cards = (
+        "<div class='cards'>"
+        + card("پست بررسی‌شده", i18n.num(data.overall.count, "fa"))
+        + card("میانه", _seconds(data.overall.median), "ok")
+        + card("صدک ۹۰", _seconds(data.overall.p90), "warn")
+        + card("بدترین", _seconds(data.overall.worst), "bad")
+        + card(
+            "بیش از یک دقیقه",
+            f"{i18n.num(data.overall.over_minute_percent, 'fa')}٪",
+            "bad" if data.overall.over_minute_percent > 20 else "",
+        )
+        + "</div>"
+    )
+
+    path_rows = []
+    for bucket in data.by_path:
+        label = copier.PATH_LABELS.get(bucket.label, bucket.label)
+        heavy = bucket.label in (
+            DeliveryTiming.PATH_WATERMARK,
+            DeliveryTiming.PATH_REWRITE,
+            DeliveryTiming.PATH_REUPLOAD,
+        )
+        path_rows.append(
+            f"<tr><td>{esc(label)}"
+            + (
+                "<div class='mini'>فایل دانلود و دوباره آپلود می‌شود</div>"
+                if heavy
+                else "<div class='mini'>بدون دانلود — حجم اثری ندارد</div>"
+            )
+            + "</td>"
+            f"<td class='money'>{esc(i18n.num(bucket.count, 'fa'))}</td>"
+            f"<td class='money'>{esc(_seconds(bucket.median))}</td>"
+            f"<td class='money'>{esc(_seconds(bucket.p90))}</td>"
+            f"<td class='money'>{esc(_seconds(bucket.worst))}</td>"
+            f"<td class='money'>{esc(_bytes(bucket.bytes_median))}</td></tr>"
+        )
+
+    slow_rows = []
+    for row in data.slowest:
+        label = copier.PATH_LABELS.get(row.path, row.path)
+        slow_rows.append(
+            f"<tr><td>{esc(_when(row.created_at))}</td>"
+            f"<td><a href='/tasks?q={row.task_id}'>#{esc(row.task_id)}</a></td>"
+            f"<td class='money'>{esc(_seconds(row.seconds))}</td>"
+            f"<td>{esc(label)}</td>"
+            f"<td>{esc(row.media_kind or '—')}</td>"
+            f"<td class='money'>{esc(_bytes(row.size_bytes))}</td></tr>"
+        )
+
+    picker = " · ".join(
+        f"<a href='/timings?days={span}'>{i18n.num(span, 'fa')} روز</a>"
+        if span != days
+        else f"<b>{i18n.num(span, 'fa')} روز</b>"
+        for span in (1, 7, 30, 90)
+    )
+
+    body = (
+        "<h1>سرعت انتشار</h1>"
+        "<p class='sub'>از لحظه‌ی انتشار در مبدا تا رسیدن به مقصد. "
+        f"{picker}</p>"
+        + cards
+        + panel(
+            "میانه‌ی روزانه",
+            chart(trend, unit="ثانیه"),
+            sub="روند مهم‌تر از یک عدد تنهاست؛ اگر روزی بالا پرید، همان روز اتفاقی افتاده.",
+        )
+        + panel(
+            "به تفکیک مسیر",
+            table(
+                ["مسیر", "تعداد", "میانه", "صدک ۹۰", "بدترین", "حجم میانه"],
+                path_rows,
+                empty="هنوز داده‌ای نیست.",
+                icon="⏱",
+            ),
+            sub=(
+                "«مستقیم» یعنی فایل اصلاً دانلود نشده و حجمش هیچ ربطی به سرعت "
+                "ندارد. بقیه یعنی دانلود و آپلود دوباره — تنها جایی که حجم مهم است."
+            ),
+        )
+        + panel(
+            "کندترین پست‌ها",
+            table(
+                ["زمان", "کار", "تأخیر", "مسیر", "نوع", "حجم"],
+                slow_rows,
+                empty="چیزی کند نبوده.",
+                icon="🐢",
+            ),
+        )
+    )
+    return await _shell(request, "سرعت انتشار", body, active="/timings")
+
+
 async def reseller_page(request: web.Request) -> web.Response:
     """نماینده‌ها: چه کسانی، با چند درصد، و چقدر فروخته‌اند.
 
@@ -1179,10 +1320,14 @@ async def reseller_page(request: web.Request) -> web.Response:
     for user, stats in pairs:
         discount = int(user.reseller_discount or 0)
         badge = pill(f"{i18n.num(discount, 'fa')}٪", "ok" if discount else "bad")
+        keeps = (
+            pill("حفظ مشتری", "ok") if user.reseller_keeps else pill("بدون حفظ مشتری")
+        )
         rows_html.append(
             f"<tr><td><a href='/resellers/{user.id}'>{esc(_who(user))}</a>"
             f"<div class='mini'>{esc(user.id)}</div></td>"
             f"<td>{badge}</td>"
+            f"<td>{keeps}</td>"
             f"<td class='money'>{esc(i18n.num(stats.sales, 'fa'))}</td>"
             f"<td class='money'>{esc(i18n.num(stats.customers, 'fa'))}</td>"
             f"<td class='money'>{esc(money(stats.spent))}</td>"
@@ -1196,6 +1341,14 @@ async def reseller_page(request: web.Request) -> web.Response:
                 f"max='{reseller.MAX_DISCOUNT}' value='{esc(discount)}' "
                 "style='width:5rem'>"
                 "<button class='btn small'>ذخیره</button>",
+            )
+            + form(
+                f"/resellers/{user.id}/keeps",
+                session.csrf,
+                f"<input type='hidden' name='to' value='{0 if user.reseller_keeps else 1}'>"
+                f"<button class='btn small'>"
+                f"{'خاموش کردن حفظ مشتری' if user.reseller_keeps else 'روشن کردن حفظ مشتری'}"
+                "</button>",
             )
             + form(
                 f"/resellers/{user.id}/remove",
@@ -1280,7 +1433,10 @@ async def reseller_page(request: web.Request) -> web.Response:
         + panel(
             "نماینده‌ها",
             table(
-                ["نماینده", "تخفیف", "فروش", "مشتری", "پرداختی", "کیف پول", ""],
+                [
+                    "نماینده", "تخفیف", "مشتری‌ها", "فروش", "مشتری",
+                    "پرداختی", "کیف پول", "",
+                ],
                 rows_html,
                 empty="هنوز نماینده‌ای ندارید.",
                 icon="🤝",
@@ -1423,6 +1579,29 @@ async def reseller_set(request: web.Request) -> web.Response:
             err="این کاربر هنوز ربات را استارت نکرده است؛ اول باید /start بزند.",
         )
     return _back("/resellers", ok=f"نمایندگی با {result[1]}٪ تخفیف ثبت شد.")
+
+
+async def reseller_keeps(request: web.Request) -> web.Response:
+    """حفظ مشتری را برای یک نماینده روشن/خاموش می‌کند.
+
+    <b>چرا انتخابی است و نه همیشه روشن.</b> با بعضی نماینده‌ها چنین
+    توافقی هست و با بعضی نه. یک کلیدِ سراسری یعنی یا به همه بدهیم یا
+    به هیچ‌کس — و هر دو غلط است.
+    """
+    blocked = await _guard_post(request, roles.CAP_MONEY, "/resellers")
+    if blocked is not None:
+        return blocked
+
+    user_id = int(request.match_info["id"])
+    posted = await request.post()
+    wanted = str(posted.get("to", "")) == "1"
+    result = await reseller.set_keeps(user_id, wanted)
+    if result is None:
+        return _back("/resellers", err="این کاربر پیدا نشد.")
+    return _back(
+        "/resellers",
+        ok="حفظ مشتری روشن شد." if result else "حفظ مشتری خاموش شد.",
+    )
 
 
 async def reseller_remove(request: web.Request) -> web.Response:
@@ -2017,8 +2196,10 @@ def build_app(bot) -> web.Application:
             get("/resellers/{id}", reseller_detail),
             post("/resellers/default", reseller_default),
             post("/resellers/set", reseller_set),
+            post("/resellers/{id}/keeps", reseller_keeps),
             post("/resellers/{id}/remove", reseller_remove),
             get("/finance", finance_page),
+            get("/timings", timings_page),
             get("/activity", activity_page),
             get("/account", account_page),
             post("/account/password", account_password),

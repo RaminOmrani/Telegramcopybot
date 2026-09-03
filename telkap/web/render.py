@@ -182,9 +182,16 @@ aside {
   background: var(--bg-soft); border-left: 1px solid var(--line);
   padding: 20px 14px; position: sticky; top: 0; height: 100vh; overflow-y: auto;
 }
+/* نامِ محصول «فورواردبات (ادمین پست)» است. پرانتز داخل یک نشانِ
+   گرافیکی بد می‌نشیند، پس همان دو تکه روی هم چیده می‌شوند: نامِ
+   اصلی درشت و توضیحش زیرش. */
 .brand {
   font-weight: 700; font-size: 16px; padding: 4px 12px 20px;
   display: flex; align-items: center; gap: 9px; letter-spacing: -.2px;
+}
+.brand small {
+  display: block; font-size: 11px; font-weight: 500; color: var(--muted);
+  letter-spacing: 0; margin-top: -2px;
 }
 .brand .mark {
   width: 30px; height: 30px; border-radius: 9px; display: grid; place-items: center;
@@ -435,6 +442,7 @@ NAV = (
     ("مالی و گزارش", (
         ("/finance", "💰", "درآمد", ""),
         ("/resellers", "🤝", "نمایندگی", ""),
+        ("/timings", "⏱", "سرعت انتشار", ""),
         ("/activity", "🧭", "رویدادها", ""),
     )),
     ("تنظیمات", (
@@ -529,9 +537,9 @@ def page(
         f"<title>{esc(title)} — پنل مدیریت</title>"
         f"<style>{CSS}</style></head><body><div class='layout'>"
         "<aside><div class='brand'><span class='mark'>⚡</span>"
-        "<span>فورواردبات</span></div>"
+        "<span>فورواردبات<small>ادمین پست</small></span></div>"
         f"{''.join(groups)}"
-        "<div class='foot'>پنل مدیریت · فورواردبات</div></aside>"
+        "<div class='foot'>فورواردبات (ادمین پست)</div></aside>"
         f"<div class='content'><div class='topbar'>"
         f"<b>{esc(title)}</b>{identity}</div>"
         f"<main>{body}</main></div></div></body></html>"
@@ -584,7 +592,8 @@ def login(*, error: str = "", pending_key: str = "", theme: str = DARK) -> str:
     else:
         body = (
             "<div class='brand' style='justify-content:center;margin-bottom:18px'>"
-            "<span class='mark'>⚡</span><span>فورواردبات</span></div>"
+            "<span class='mark'>⚡</span>"
+            "<span>فورواردبات<small>ادمین پست</small></span></div>"
             "<h1 style='text-align:center'>پنل مدیریت</h1>"
             "<p class='sub' style='text-align:center'>"
             "برای ورود، نام کاربری و رمزتان را بزنید.</p>"

@@ -74,6 +74,16 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "skip_bots": False,        # پیام‌های ربات‌ها کپی نشوند
     "skip_replies": False,     # پیام‌های پاسخ (reply) کپی نشوند
 
+    # --- ترتیب انتشار ---
+    # strict = همیشه به ترتیب مبدا | fast = هرکدام زودتر آماده شد
+    # grace  = به ترتیب، ولی بیش از order_grace_seconds پشت یک پستِ کند
+    #          نایست و بقیه را رها کن جلو بروند
+    #
+    # پیش‌فرض grace است، نه strict: ترتیب برای اغلب پست‌ها حفظ می‌شود و
+    # یک ویدئوی سنگین هم کل کانال را قفل نمی‌کند.
+    "order_mode": "grace",
+    "order_grace_seconds": 300,
+
     # --- همگام‌سازی ---
     "sync_edits": True,
     "sync_deletes": False,
