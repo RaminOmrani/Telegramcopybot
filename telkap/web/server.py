@@ -1,0 +1,2263 @@
+"""وب‌سرور پنل مدیریت.
+
+روی aiohttp که از قبل وابستگیِ پروژه است، و داخل همان حلقه‌ی asyncio ربات.
+پس نه پروسه‌ی تازه‌ای بالا می‌آید، نه نصب تازه‌ای لازم است، نه دو نفر سر
+دیتابیس SQLite به هم می‌خورند.
+"""
+from __future__ import annotations
+
+import logging
+from datetime import UTC, timedelta, timezone
+from pathlib import Path
+from urllib.parse import urlencode
+
+from aiohttp import web
+from sqlalchemy import func, or_, select
+
+from telkap import i18n
+from telkap.config import get_settings
+from telkap.db import get_session
+from telkap.handlers.common import parse_int
+from telkap.models import (
+    DeliveryTiming,
+    PaymentRequest,
+    Subscription,
+    Task,
+    User,
+    utcnow,
+)
+from telkap.plans import get_plan, purchasable
+from telkap.services import (
+    analytics,
+    cardinfo,
+    coins,
+    copier,
+    crypto,
+    moderation,
+    payments,
+    reseller,
+    roles,
+    subscription,
+    timings,
+    usdtrate,
+    zarinpal,
+)
+from telkap.web import auth, miniapp, render
+from telkap.web.render import (
+    card,
+    chart,
+    esc,
+    form,
+    money,
+    page,
+    panel,
+    pill,
+    table,
+)
+from telkap.web.render import url as u
+
+log = logging.getLogger(__name__)
+
+BOT = web.AppKey("bot")
+
+_runner: web.AppRunner | None = None
+
+# رسیدها از تلگرام گرفته و همین‌جا نگه داشته می‌شوند تا هر بار باز کردن
+# صفحه یک رفت‌وبرگشت تازه به تلگرام نباشد. رسید عوض نمی‌شود، پس کهنه
+# شدنش معنا ندارد؛ فقط اندازه‌اش را محدود نگه می‌داریم.
+_receipts: dict[str, tuple[str, bytes]] = {}
+MAX_CACHED_RECEIPTS = 40
+
+
+# ------------------------------------------------------------- کمکی‌ها
+def _local(value):
+    """زمان UTC را به وقت محلیِ تنظیم‌شده می‌برد."""
+    if value is None:
+        return None
+    offset = get_settings().timezone_offset
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    return value.astimezone(timezone(timedelta(hours=offset)))
+
+
+def _when(value) -> str:
+    local = _local(value)
+    return local.strftime("%Y-%m-%d %H:%M") if local else "—"
+
+
+def _who(user: User | None) -> str:
+    if user is None:
+        return "—"
+    name = (user.first_name or "").strip()
+    handle = f"@{user.username}" if user.username else str(user.id)
+    return f"{name} ({handle})" if name else handle
+
+
+def _over_https(request: web.Request) -> bool:
+    """آیا کاربر واقعاً از https آمده؟
+
+    پشت nginx یا IIS، خودِ درخواست به ربات از http می‌رسد؛ آنچه کاربر دیده
+    را فقط سرصفحه‌ی X-Forwarded-Proto می‌گوید.
+    """
+    forwarded = request.headers.get("X-Forwarded-Proto", "").split(",")[0].strip()
+    return request.scheme == "https" or forwarded.lower() == "https"
+
+
+# نامِ کوکیِ تم. انتخاب سمتِ سرور نگه داشته می‌شود تا صفحه از همان اول
+# با تمِ درست رندر شود؛ اگر جاوااسکریپت بعد از بارگذاری عوضش می‌کرد،
+# هر بار یک پرشِ رنگ دیده می‌شد.
+THEME_COOKIE = "panel_theme"
+THEME_MAX_AGE = 365 * 24 * 3600
+
+
+def _theme(request: web.Request) -> str:
+    return render.clean_theme(request.cookies.get(THEME_COOKIE))
+
+
+def _safe_back(raw: str) -> str:
+    """نشانی بازگشت، فقط اگر داخل خودِ پنل باشد.
+
+    بدون این، «?back=https://…» پنل را به یک تغییرمسیرِ آماده برای
+    سایت‌های دیگر تبدیل می‌کرد — لینکی که دامنه‌ی شما را دارد ولی
+    آدم را جای دیگری می‌برد.
+
+    مقدارِ برگشتی بدون پیشوند است؛ پیشوند را `u()` سرِ تغییرمسیر
+    می‌گذارد، مثل هر نشانی دیگری.
+    """
+    if raw.startswith("/") and not raw.startswith("//"):
+        return raw
+    return "/"
+
+
+def _here(request: web.Request) -> str:
+    """نشانی همین درخواست، بدون پیشوندِ پنل.
+
+    منطق برنامه همه‌جا با نشانی‌های بدون پیشوند کار می‌کند؛ آنچه از
+    مرورگر می‌آید پیشوند دارد و باید همین‌جا برداشته شود، وگرنه دکمه‌ی
+    تم به «/panel/panel/users» برمی‌گشت.
+    """
+    raw = str(request.rel_url)
+    if render.PREFIX and raw.startswith(render.PREFIX):
+        return raw[len(render.PREFIX) :] or "/"
+    return raw
+
+
+async def _shell(
+    request: web.Request, title: str, body: str, *, active: str = "", status: int = 200
+) -> web.Response:
+    """صفحه‌ی کامل با شمارِ رسیدهای منتظر روی تب.
+
+    <b>چرا شمارنده در همه‌ی صفحه‌ها.</b> کارِ روزمره‌ی این پنل رسیدهاست.
+    اگر برای دیدنِ اینکه چیزی منتظر است باید تب را باز کرد، گاهی باز
+    نمی‌شود — و رسیدِ دیده‌نشده یعنی مشتریِ منتظر.
+    """
+    session = request.get("session")
+    who = str(session.user_id) if session else ""
+    waiting = 0
+    if session is not None and await roles.can(session.user_id, roles.CAP_MONEY):
+        waiting = await payments.pending_count()
+    return web.Response(
+        text=page(
+            title,
+            body,
+            active=active,
+            who=who,
+            waiting=waiting,
+            theme=_theme(request),
+            path=_here(request),
+        ),
+        content_type="text/html",
+        status=status,
+    )
+
+
+def _flash(request: web.Request) -> str:
+    if request.query.get("ok"):
+        return f"<div class='flash ok'>{esc(request.query['ok'])}</div>"
+    if request.query.get("err"):
+        return f"<div class='flash bad'>{esc(request.query['err'])}</div>"
+    return ""
+
+
+def _back(path: str, *, ok: str = "", err: str = "") -> web.HTTPFound:
+    """هدایت به یک صفحه، همراه پیام.
+
+    <b>چرا خودمان کدگذاری می‌کنیم.</b> پیام‌ها «#» دارند — «رسید #12
+    تأیید شد». در نشانی، «#» شروعِ قطعه است و مرورگر هرچه بعدش بیاید
+    را دور می‌ریزد و به سرور هم نمی‌فرستد. نتیجه‌اش پیامِ بریده‌ی
+    «رسید » بود. همین برای «&» هم صادق است، که پیام را دو تکه می‌کند.
+    """
+    query = urlencode({"ok": ok} if ok else {"err": err})
+    return web.HTTPFound(f"{u(path)}?{query}")
+
+
+async def _deny(request: web.Request, cap: str) -> web.Response | None:
+    """اگر این ادمین دسترسیِ لازم را نداشته باشد، صفحه‌ی رد برمی‌گرداند."""
+    session = request["session"]
+    if await roles.can(session.user_id, cap):
+        return None
+    return web.Response(
+        text=page(
+            "دسترسی نیست",
+            "<h1>دسترسی ندارید</h1>"
+            "<p class='sub'>نقش شما این بخش را شامل نمی‌شود. "
+            "اگر فکر می‌کنید اشتباهی شده، با مالک ربات صحبت کنید.</p>",
+            who=str(session.user_id),
+            theme=_theme(request),
+            path=_here(request),
+        ),
+        content_type="text/html",
+        status=403,
+    )
+
+
+# ------------------------------------------------------------ میدل‌ور
+# مسیرهایی که بدون ورود باز می‌شوند. صریح نوشته شده‌اند و تست می‌سنجدشان،
+# چون مسیری که بی‌صدا به این فهرست اضافه شود، پنل را عمومی می‌کند.
+#
+#   /enter    خودِ ورود است
+#   /healthz  فقط «زنده‌ام» می‌گوید
+#   بازگشت درگاه — مرورگر کاربر به آن هدایت می‌شود و کاربر ادمین نیست،
+#   پس نمی‌تواند پشت ورود بماند. چیزی جز نتیجه‌ی همان پرداخت نشان
+#   نمی‌دهد و به پارامترهای نشانی هم اعتماد نمی‌کند.
+PUBLIC_PATHS = frozenset(
+    u(path)
+    for path in ("/enter", "/healthz", "/login", "/theme", zarinpal.CALLBACK_PATH)
+)
+
+# مینی‌اپ بیرونِ پنل است و ورودِ پنل را ندارد؛ هویتش را خودِ تلگرام با
+# امضای initData می‌دهد و هر مسیرش جداگانه می‌سنجدش. جدا از
+# PUBLIC_PATHS چون یک پیشوند است نه فهرستی از مسیرها، و آن فهرست
+# عمداً مو‌به‌مو سنجیده می‌شود.
+APP_PREFIX = miniapp.API_PREFIX + "/"
+
+# فونت و فایل‌های ثابت. جدا از PUBLIC_PATHS چون یک مسیر نیست بلکه یک
+# پیشوند است، و آن فهرست عمداً مو‌به‌مو سنجیده می‌شود.
+STATIC_PREFIX = u("/static") + "/"
+STATIC_DIR = Path(__file__).parent / "static"
+
+
+@web.middleware
+async def auth_middleware(request: web.Request, handler):
+    if (
+        request.path in PUBLIC_PATHS
+        or request.path.startswith(STATIC_PREFIX)
+        or request.path.startswith(APP_PREFIX)
+    ):
+        return await handler(request)
+
+    session = await auth.get_session_for(request.cookies.get(auth.COOKIE_NAME))
+    if session is None:
+        # به صفحه‌ی ورود می‌رود، نه یک پیام بن‌بست. کسی که نشستش تمام
+        # شده باید بتواند همان‌جا دوباره وارد شود.
+        raise web.HTTPFound(u("/login"))
+
+    # نقش ممکن است بعد از ورود گرفته شده باشد؛ هر درخواست دوباره سنجیده
+    # می‌شود تا کسی با نشستِ باز، بعدِ عزل هم داخل نماند
+    if not await roles.is_staff(session.user_id):
+        await auth.end_all(session.user_id)
+        return web.Response(
+            text=render.gate("دیگر دسترسی مدیریتی ندارید.", bad=True, theme=_theme(request)),
+            content_type="text/html",
+            status=403,
+        )
+
+    request["session"] = session
+    return await handler(request)
+
+
+# -------------------------------------------------------------- ورود
+def _set_cookie(response, request: web.Request, token: str):
+    """کوکی نشست، با پرچم Secure فقط وقتی واقعاً https هست."""
+    secure = get_settings().web_base_url.startswith("https://")
+    if secure and not _over_https(request):
+        # ورود «کار می‌کند» ولی کاربر بی‌درنگ به صفحه‌ی ورود برمی‌گردد و
+        # هیچ خطایی هم نمی‌بیند. بدون این خط، پیدا کردنش ساعت‌ها وقت می‌برد.
+        log.warning(
+            "WEB_BASE_URL روی https است ولی این درخواست از http آمد. "
+            "کوکی ورود فرستاده می‌شود اما مرورگر برش نمی‌گرداند و ورود در "
+            "حلقه می‌افتد. یا پنل را پشت HTTPS بگذارید، یا WEB_BASE_URL را "
+            "به همان آدرسی که واقعاً باز می‌کنید تغییر دهید."
+        )
+    response.set_cookie(
+        auth.COOKIE_NAME,
+        token,
+        httponly=True,
+        samesite="Lax",
+        max_age=auth.SESSION_TTL_SECONDS,
+        secure=secure,
+        # کوکیِ نشست فقط به خودِ پنل فرستاده می‌شود. صفحه‌ی فروش و
+        # مینی‌اپ روی همین دامنه‌اند و هیچ کارشان با آن نیست.
+        path=render.PREFIX or "/",
+    )
+    return response
+
+
+async def login_page(request: web.Request) -> web.Response:
+    """صفحه‌ی ورود — نام کاربری و رمز، بعد کد تلگرام."""
+    if await auth.get_session_for(request.cookies.get(auth.COOKIE_NAME)):
+        raise web.HTTPFound(u("/"))
+
+    error = request.query.get("err", "")
+    key = request.query.get("k", "")
+    return web.Response(
+        text=render.login(error=error, pending_key=key, theme=_theme(request)),
+        content_type="text/html",
+    )
+
+
+async def login_submit(request: web.Request) -> web.Response:
+    """مرحله‌ی یک یا دو، بسته به اینکه کلید موقت آمده باشد یا نه."""
+    posted = await request.post()
+    key = str(posted.get("key", "")).strip()
+
+    if key:
+        token, problem = await auth.finish_login(
+            key,
+            str(posted.get("code", "")),
+            user_agent=request.headers.get("User-Agent", ""),
+        )
+        if problem:
+            return web.HTTPFound(f"{u('/login')}?{urlencode({'k': key, 'err': problem})}")
+        return _set_cookie(web.HTTPFound(u("/")), request, token)
+
+    username = str(posted.get("username", ""))
+    password = str(posted.get("password", ""))
+    key, problem, user_id = await auth.start_login(username, password)
+    if problem:
+        return web.HTTPFound(f"{u('/login')}?{urlencode({'err': problem})}")
+
+    if not await roles.is_staff(user_id):
+        return web.HTTPFound(u("/login") + "?" + urlencode({"err": "دسترسی مدیریتی ندارید."}))
+
+    # کد از راه تلگرام می‌رود، نه ایمیل یا پیامک: همان‌جایی که ربات
+    # قبلاً هست و رایگان است، و صاحب حساب همیشه بازش دارد.
+    bot = request.app[BOT]
+    try:
+        await bot.send_message(
+            user_id,
+            "🔐 <b>کد ورود به پنل وب</b>\n\n"
+            f"<code>{auth.code_for(key)}</code>\n\n"
+            "<i>پنج دقیقه اعتبار دارد. اگر شما وارد نمی‌شوید، این کد را به "
+            "هیچ‌کس ندهید و رمز پنل را عوض کنید.</i>",
+        )
+    except Exception:
+        log.warning("فرستادن کد ورود به %s ناموفق بود", user_id, exc_info=True)
+        return web.HTTPFound(
+            u("/login")
+            + "?"
+            + urlencode(
+                {"err": "کد به تلگرام نرسید. مطمئن شوید ربات را استارت کرده‌اید."}
+            )
+        )
+
+    return web.HTTPFound(f"{u('/login')}?{urlencode({'k': key})}")
+
+
+async def enter(request: web.Request) -> web.Response:
+    user_id = auth.consume_login_token(request.query.get("t", ""))
+    if user_id is None:
+        return web.Response(
+            text=render.gate(
+                "این لینک منقضی شده یا قبلاً استفاده شده است. "
+                "در ربات دوباره «🖥 پنل وب» را بزنید.",
+                bad=True,
+                theme=_theme(request),
+            ),
+            content_type="text/html",
+            status=401,
+        )
+    if not await roles.is_staff(user_id):
+        return web.Response(
+            text=render.gate("دسترسی مدیریتی ندارید.", bad=True, theme=_theme(request)),
+            content_type="text/html",
+            status=403,
+        )
+
+    sid = await auth.start_session(
+        user_id, user_agent=request.headers.get("User-Agent", "")
+    )
+    return _set_cookie(web.HTTPFound(u("/")), request, sid)
+
+
+async def logout(request: web.Request) -> web.Response:
+    await auth.end_session(request.cookies.get(auth.COOKIE_NAME))
+    response = web.Response(
+        text=render.gate("از پنل خارج شدید.", theme=_theme(request)),
+        content_type="text/html",
+    )
+    # مسیر باید همان مسیرِ ست کردن باشد، وگرنه مرورگر کوکی را نگه
+    # می‌دارد و «خروج» فقط ظاهرش را دارد.
+    response.del_cookie(auth.COOKIE_NAME, path=render.PREFIX or "/")
+    return response
+
+
+async def healthz(request: web.Request) -> web.Response:
+    return web.Response(text="ok")
+
+
+async def theme_switch(request: web.Request) -> web.Response:
+    """انتخاب تم را در کوکی می‌گذارد و به همان صفحه برمی‌گردد.
+
+    <b>چرا عمومی است.</b> صفحه‌ی ورود هم دکمه‌ی تم دارد؛ کسی که هنوز
+    وارد نشده باید بتواند صفحه را طوری ببیند که برایش راحت است.
+
+    <b>و چرا CSRF ندارد.</b> این تنها چیزی است که تغییرش هیچ اثری جز
+    رنگِ صفحه‌ی خودِ همان مرورگر ندارد — نه پولی جابه‌جا می‌کند، نه
+    دسترسی‌ای. گذاشتنِ توکن روی آن، دکمه‌ی تم را از صفحه‌ی ورود
+    برمی‌داشت بی‌آنکه چیزی امن‌تر شود.
+    """
+    chosen = render.clean_theme(request.query.get("to"))
+    back = _safe_back(request.query.get("back", "/"))
+    response = web.HTTPFound(u(back))
+    response.set_cookie(
+        THEME_COOKIE,
+        chosen,
+        max_age=THEME_MAX_AGE,
+        samesite="Lax",
+        httponly=False,
+        path=render.PREFIX or "/",
+        secure=get_settings().web_base_url.startswith("https://"),
+    )
+    return response
+
+
+# --------------------------------------------------------- نمای کلی
+async def dashboard(request: web.Request) -> web.Response:
+    """صفحه‌ی اول: اول آنچه باید کاری برایش کرد، بعد آنچه خوب است بدانید.
+
+    <b>ترتیب عمدی است.</b> پنلی که با «درآمد کل» شروع شود خوشایند است
+    ولی کاری از پیش نمی‌برد. چیزی که آدم روزی چند بار برایش برمی‌گردد
+    این است که «الان چه چیزی منتظر من است».
+    """
+    denied = await _deny(request, roles.CAP_REPORTS)
+    if denied is not None:
+        return denied
+
+    data = await analytics.dashboard()
+    waiting = await payments.pending_count()
+
+    async with get_session() as db:
+        users = await db.scalar(select(func.count()).select_from(User)) or 0
+        running = (
+            await db.scalar(
+                select(func.count()).select_from(Task).where(Task.enabled.is_(True))
+            )
+            or 0
+        )
+        stopped = (
+            await db.scalar(
+                select(func.count())
+                .select_from(Task)
+                .where(Task.enabled.is_(False), Task.last_error != "")
+            )
+            or 0
+        )
+        joined_today = (
+            await db.scalar(
+                select(func.count())
+                .select_from(User)
+                .where(User.created_at >= utcnow() - timedelta(days=1))
+            )
+            or 0
+        )
+
+    # ── آنچه کار می‌خواهد ─────────────────────────────────────────
+    todo = []
+    if waiting:
+        todo.append(
+            f"<a href='/payments'>{i18n.num(waiting, 'fa')} رسید منتظر بررسی</a>"
+        )
+    if stopped:
+        todo.append(
+            f"<a href='/tasks?only=off'>{i18n.num(stopped, 'fa')} کار با خطا متوقف شده</a>"
+        )
+    if not await payments.any_method_ready():
+        todo.append("<a href='/settings'>هیچ راه پرداختی تنظیم نشده — کسی نمی‌تواند بخرد</a>")
+
+    attention = (
+        "<div class='panel attention'><h2>⚠️ نیاز به رسیدگی</h2>"
+        + "".join(f"<div style='margin:6px 0'>• {item}</div>" for item in todo)
+        + "</div>"
+        if todo
+        else "<div class='panel attention none'><h2>✅ چیزی معطل نیست</h2>"
+        "<p class='sub' style='margin:0'>همه‌ی رسیدها رسیدگی شده و کارها "
+        "بی‌خطا در حال اجرا هستند.</p></div>"
+    )
+
+    growth = data.growth
+    top = "".join(
+        (
+            card("درآمد این ماه", money(data.this_month.total)),
+            card(
+                "نسبت به ماه قبل",
+                f"{growth:+d}%",
+                "ok" if growth >= 0 else "bad",
+            ),
+            card("اشتراک فعال", i18n.num(data.retention.active_subs, "fa"), "ok"),
+            card("کاربر", i18n.num(users, "fa")),
+            card("کاربر تازه (۲۴ساعت)", i18n.num(int(joined_today), "fa")),
+            card("کار در حال اجرا", i18n.num(running, "fa")),
+        )
+    )
+
+    steps = "".join(
+        f"<tr><td>{esc(title)}</td>"
+        f"<td class='money'>{esc(i18n.num(count, 'fa'))}</td>"
+        f"<td class='money'>{percent}%</td></tr>"
+        for title, count, percent in data.funnel.steps
+    )
+    drop_where, drop_count = data.funnel.biggest_drop
+
+    body = (
+        attention
+        + f"<section><h2>یک نگاه</h2><div class='cards'>{top}</div></section>"
+        + "<section><h2>درآمد روزهای اخیر</h2>"
+        + "<div class='panel'>"
+        + chart(await _revenue_days(14), unit="تومان")
+        + "<div class='legend'>"
+        + f"<span>این ماه: <b>{esc(money(data.this_month.total))}</b></span>"
+        + f"<span>ماه قبل: <b>{esc(money(data.last_month.total))}</b></span>"
+        + f"<span>از ابتدا: <b>{esc(money(data.all_time.total))}</b></span>"
+        + f"<span>میانگین هر خریدار: <b>{esc(money(data.all_time.per_payer))}</b></span>"
+        + "</div></div></section>"
+        + "<div class='split'>"
+        + panel(
+            "قیف تبدیل",
+            table(["پله", "تعداد", "از کل"], [steps] if steps else [])
+            + f"<p class='mini' style='margin-top:10px'>بزرگ‌ترین افت: "
+            f"<b>{esc(drop_where)}</b> — {esc(i18n.num(drop_count, 'fa'))} نفر</p>",
+            sub="از استارت تا خرید",
+        )
+        + panel(
+            "ماندگاری",
+            "<div class='cards'>"
+            + card("یک‌بارخرید", i18n.num(data.retention.once, "fa"))
+            + card("خرید دوباره", i18n.num(data.retention.repeat, "fa"), "ok")
+            + card("نرخ تکرار", f"{data.retention.repeat_rate}%")
+            + card("منقضی‌شده", i18n.num(data.retention.expired_users, "fa"))
+            + "</div>",
+            sub="چند نفر دوباره خریدند",
+        )
+        + "</div>"
+    )
+    return await _shell(request, "نمای کلی", body, active="/")
+
+
+async def _revenue_days(days: int) -> list[tuple[str, int]]:
+    """درآمد هر روز، برای نمودار.
+
+    از خودِ رسیدهای تأییدشده خوانده می‌شود نه از جدول آمار، چون آمار
+    روزانه برای کارهای کپی است نه برای پول.
+    """
+    since = utcnow() - timedelta(days=days)
+    async with get_session() as db:
+        rows = await db.execute(
+            select(PaymentRequest.reviewed_at, PaymentRequest.amount_toman).where(
+                PaymentRequest.status == PaymentRequest.STATUS_APPROVED,
+                PaymentRequest.reviewed_at >= since,
+            )
+        )
+        paid = list(rows.all())
+
+    buckets: dict[str, int] = {}
+    for day in range(days, 0, -1):
+        stamp = _local(utcnow() - timedelta(days=day - 1))
+        buckets[stamp.strftime("%m/%d")] = 0
+    for when, amount in paid:
+        if when is None:
+            continue
+        key = _local(when).strftime("%m/%d")
+        if key in buckets:
+            buckets[key] += int(amount or 0)
+    return [(i18n.num(k, "fa"), v) for k, v in buckets.items()]
+
+
+
+# ----------------------------------------------------------- رسیدها
+async def payment_list(request: web.Request) -> web.Response:
+    denied = await _deny(request, roles.CAP_MONEY)
+    if denied is not None:
+        return denied
+
+    session = request["session"]
+    pending = await payments.pending_requests(limit=100)
+
+    people: dict[int, User] = {}
+    if pending:
+        async with get_session() as db:
+            rows = await db.execute(
+                select(User).where(User.id.in_({r.user_id for r in pending}))
+            )
+            people = {user.id: user for user in rows.scalars()}
+
+    rows_html = []
+    for req in pending:
+        receipt = (
+            f"<a href='/receipt/{req.id}' target='_blank'>"
+            f"<img class='receipt' src='/receipt/{req.id}' alt='رسید'></a>"
+            if req.receipt_kind == "photo"
+            else f"<a href='/receipt/{req.id}' target='_blank'>دانلود فایل</a>"
+            if req.receipt_file_id
+            else "<span class='mini'>متنی</span>"
+        )
+        breakdown = []
+        if req.discount_toman:
+            breakdown.append(f"تخفیف {money(req.discount_toman)}")
+        if req.credit_toman:
+            breakdown.append(f"کسر ارتقا {money(req.credit_toman)}")
+        detail = (
+            f"<span class='mini'>{esc(' · '.join(breakdown))}</span>"
+            if breakdown
+            else ""
+        )
+        note = (
+            f"<div class='mini'>{esc(req.note)}</div>" if req.note else ""
+        )
+        rows_html.append(
+            f"<tr><td>#{req.id}</td>"
+            f"<td>{esc(_who(people.get(req.user_id)))}"
+            f"<div class='mini'>{esc(req.user_id)}</div></td>"
+            f"<td>{esc(payments.describe(req))}{note}</td>"
+            f"<td class='money'>{esc(money(req.amount_toman))}<br>{detail}</td>"
+            f"<td>{receipt}</td>"
+            f"<td>{esc(_when(req.created_at))}</td>"
+            "<td class='actions'>"
+            + form(
+                f"/payments/{req.id}/approve",
+                session.csrf,
+                "<button class='btn ok'>تأیید</button>",
+            )
+            + " "
+            + form(
+                f"/payments/{req.id}/reject",
+                session.csrf,
+                "<button class='btn bad'>رد</button>",
+                confirm=f"رسید #{req.id} رد شود؟ به کاربر خبر داده می‌شود.",
+            )
+            + "</td></tr>"
+        )
+
+    body = (
+        _flash(request)
+        + "<h1>رسیدهای منتظر بررسی</h1>"
+        + "<p class='sub'>تأیید همان کاری را می‌کند که دکمه‌ی داخل ربات — "
+        "اشتراک فعال می‌شود و به کاربر خبر می‌رسد.</p>"
+        + table(
+            ["کد", "کاربر", "خرید", "مبلغ", "رسید", "زمان", ""],
+            rows_html,
+            empty="رسیدی منتظر بررسی نیست — همه‌چیز رسیدگی شده.",
+            icon="✅",
+        )
+    )
+    return await _shell(request, "رسیدها", body, active="/payments")
+
+
+async def _guard_post(
+    request: web.Request, cap: str = roles.CAP_MONEY, back: str = "/payments"
+) -> web.Response | None:
+    """هر POST دو سد دارد و هیچ‌کدام اختیاری نیست.
+
+    <b>دسترسی</b>، چون نقش پشتیبانی نباید رسید تأیید کند. و <b>توکن
+    CSRF</b>، چون بدون آن سایتی دیگر می‌تواند از مرورگرِ ادمینِ
+    واردشده همین درخواست را بفرستد — یک تصویر یا فرم پنهان کافی است
+    تا کاربری مسدود شود یا رسیدی تأیید.
+    """
+    denied = await _deny(request, cap)
+    if denied is not None:
+        return denied
+    form = await request.post()
+    if not auth.check_csrf(request["session"], str(form.get("csrf", ""))):
+        return _back(back, err="درخواست معتبر نبود. دوباره تلاش کنید.")
+    return None
+
+
+async def payment_approve(request: web.Request) -> web.Response:
+    blocked = await _guard_post(request)
+    if blocked is not None:
+        return blocked
+
+    admin_id = request["session"].user_id
+    request_id = int(request.match_info["id"])
+    req, sub = await payments.approve(request_id, admin_id)
+    if req is None:
+        return _back("/payments", err="این درخواست قبلاً بررسی شده بود.")
+
+    bot = request.app[BOT]
+    try:
+        await bot.send_message(req.user_id, await payments.approval_notice(req, sub))
+    except Exception:
+        # تأیید انجام شده و نباید به‌خاطر نرسیدن پیام برگردانده شود؛
+        # فقط ادمین باید بداند که کاربر خبردار نشد
+        log.warning("اطلاع تأیید به کاربر %s نرسید", req.user_id, exc_info=True)
+        return _back(
+            "/payments", ok=f"رسید #{request_id} تأیید شد، ولی پیام به کاربر نرسید."
+        )
+    return _back("/payments", ok=f"رسید #{request_id} تأیید شد.")
+
+
+async def payment_reject(request: web.Request) -> web.Response:
+    blocked = await _guard_post(request)
+    if blocked is not None:
+        return blocked
+
+    admin_id = request["session"].user_id
+    request_id = int(request.match_info["id"])
+    req = await payments.reject(request_id, admin_id)
+    if req is None:
+        return _back("/payments", err="این درخواست قبلاً بررسی شده بود.")
+
+    bot = request.app[BOT]
+    try:
+        await bot.send_message(req.user_id, payments.rejection_notice(req))
+    except Exception:
+        log.warning("اطلاع رد به کاربر %s نرسید", req.user_id, exc_info=True)
+        return _back(
+            "/payments", ok=f"رسید #{request_id} رد شد، ولی پیام به کاربر نرسید."
+        )
+    return _back("/payments", ok=f"رسید #{request_id} رد شد.")
+
+
+async def receipt(request: web.Request) -> web.Response:
+    """تصویر رسید را از تلگرام می‌گیرد و نشان می‌دهد.
+
+    فایل مستقیم از تلگرام سرو نمی‌شود چون آدرسش شامل توکن ربات است؛ هرکس
+    آن آدرس را ببیند توکن را دارد.
+    """
+    denied = await _deny(request, roles.CAP_MONEY)
+    if denied is not None:
+        return denied
+
+    async with get_session() as db:
+        req = await db.get(PaymentRequest, int(request.match_info["id"]))
+    if req is None or not req.receipt_file_id:
+        raise web.HTTPNotFound(text="رسیدی نیست")
+
+    cached = _receipts.get(req.receipt_file_id)
+    if cached is None:
+        bot = request.app[BOT]
+        try:
+            info = await bot.get_file(req.receipt_file_id)
+            buffer = await bot.download_file(info.file_path)
+        except Exception:
+            log.warning("گرفتن رسید %s ناموفق بود", req.id, exc_info=True)
+            raise web.HTTPBadGateway(text="رسید از تلگرام گرفته نشد") from None
+        payload = buffer.read()
+        kind = "image/jpeg" if req.receipt_kind == "photo" else "application/octet-stream"
+        if len(_receipts) >= MAX_CACHED_RECEIPTS:
+            _receipts.pop(next(iter(_receipts)), None)
+        cached = (kind, payload)
+        _receipts[req.receipt_file_id] = cached
+
+    kind, payload = cached
+    return web.Response(body=payload, content_type=kind)
+
+
+# ---------------------------------------------------------- کاربران
+async def user_list(request: web.Request) -> web.Response:
+    denied = await _deny(request, roles.CAP_USERS)
+    if denied is not None:
+        return denied
+
+    query = request.query.get("q", "").strip()
+    async with get_session() as db:
+        statement = select(User).order_by(User.created_at.desc()).limit(100)
+        if query:
+            like = f"%{query}%"
+            terms = [User.first_name.ilike(like), User.username.ilike(like)]
+            if query.lstrip("-").isdigit():
+                terms.append(User.id == int(query))
+            statement = statement.where(or_(*terms))
+        people = list((await db.execute(statement)).scalars())
+
+        subs: dict[int, Subscription] = {}
+        tasks: dict[int, int] = {}
+        if people:
+            ids = [user.id for user in people]
+            # `is_active` متد است نه ستون، پس شرط باید روی تاریخ باشد
+            rows = await db.execute(
+                select(Subscription)
+                .where(
+                    Subscription.user_id.in_(ids),
+                    Subscription.expires_at > utcnow(),
+                )
+                .order_by(Subscription.expires_at.desc())
+            )
+            for sub in rows.scalars():
+                subs.setdefault(sub.user_id, sub)
+            counts = await db.execute(
+                select(Task.user_id, func.count())
+                .where(Task.user_id.in_(ids))
+                .group_by(Task.user_id)
+            )
+            tasks = dict(counts.all())
+
+    rows_html = []
+    for user in people:
+        sub = subs.get(user.id)
+        plan = (
+            pill(f"{sub.plan_code} تا {_when(sub.expires_at)[:10]}", "ok")
+            if sub
+            else pill("ندارد")
+        )
+        state = (
+            pill("مسدود", "bad")
+            if user.is_banned
+            else pill("وصل", "ok")
+            if user.session_enc
+            else pill("بدون اکانت")
+        )
+        rows_html.append(
+            f"<tr><td><a href='/users/{user.id}'>{esc(_who(user))}</a>"
+            f"<div class='mini'>{esc(user.id)}</div></td>"
+            f"<td>{plan}</td><td>{state}</td>"
+            f"<td class='money'>{esc(i18n.num(tasks.get(user.id, 0), 'fa'))}</td>"
+            f"<td class='money'>{esc(money(user.wallet_toman))}</td>"
+            f"<td>{esc(_when(user.created_at))}</td>"
+            f"<td class='actions'><a class='btn small' href='/users/{user.id}'>مدیریت</a></td>"
+            "</tr>"
+        )
+
+    body = (
+        "<h1>کاربران</h1>"
+        "<p class='sub'>۱۰۰ کاربر آخر. برای پیدا کردن کسی، نام یا آیدی عددی‌اش "
+        "را بنویسید.</p>"
+        "<form method='get' style='margin-bottom:16px'>"
+        f"<input type='search' name='q' value='{esc(query)}' "
+        "placeholder='نام، یوزرنیم یا آیدی عددی'> "
+        "<button class='btn'>جستجو</button></form>"
+        + table(
+            ["کاربر", "اشتراک", "وضعیت", "کارها", "کیف پول", "عضویت", ""],
+            rows_html,
+            empty="کاربری پیدا نشد.",
+            icon="🔍",
+        )
+    )
+    return await _shell(request, "کاربران", body, active="/users")
+
+
+async def user_detail(request: web.Request) -> web.Response:
+    """صفحه‌ی یک کاربر — با کارهایی که واقعاً انجام می‌شوند.
+
+    <b>چرا این صفحه اضافه شد.</b> فهرست کاربران فقط نشان می‌داد. برای
+    هر کارِ ساده — دادن اشتراک، مسدود کردن — باید سراغ ربات می‌رفتید،
+    یعنی پنل برای کارِ روزمره بی‌فایده بود.
+    """
+    denied = await _deny(request, roles.CAP_USERS)
+    if denied is not None:
+        return denied
+
+    user_id = int(request.match_info["id"])
+    session = request["session"]
+
+    async with get_session() as db:
+        user = await db.get(User, user_id)
+        if user is None:
+            raise web.HTTPNotFound(text="کاربری با این شناسه نیست")
+        rows = await db.execute(
+            select(Task).where(Task.user_id == user_id).order_by(Task.id.desc())
+        )
+        tasks = list(rows.scalars())
+        paid = await db.scalar(
+            select(func.coalesce(func.sum(PaymentRequest.amount_toman), 0)).where(
+                PaymentRequest.user_id == user_id,
+                PaymentRequest.status == PaymentRequest.STATUS_APPROVED,
+            )
+        )
+
+    sub = await subscription.active_subscription(user_id)
+    days = await subscription.remaining_days(user_id)
+
+    state = (
+        pill("مسدود", "bad")
+        if user.is_banned
+        else pill("اکانت وصل", "ok")
+        if user.session_enc
+        else pill("بدون اکانت")
+    )
+    plan_text = (
+        f"{esc(sub.plan_code)} — {i18n.num(days, 'fa')} روز مانده"
+        if sub
+        else "<span class='mini'>اشتراک فعالی ندارد</span>"
+    )
+
+    # از کجا آمده: نماینده‌ای که آورده‌اش، یا کسی که دعوتش کرده. وقتی
+    # کسی می‌پرسد «چرا سهم این خرید به فلانی رفت»، جواب باید یک‌جا باشد.
+    origin = "<span class='mini'>مستقیم</span>"
+    if user.owned_by:
+        origin = (
+            f"<a href='/resellers/{user.owned_by}'>نماینده "
+            f"<code>{esc(user.owned_by)}</code></a>"
+        )
+    elif user.referred_by:
+        origin = (
+            f"<a href='/users/{user.referred_by}'>دعوت "
+            f"<code>{esc(user.referred_by)}</code></a>"
+        )
+
+    facts = (
+        "<dl class='facts'>"
+        f"<dt>شناسه</dt><dd><code>{esc(user.id)}</code></dd>"
+        f"<dt>وضعیت</dt><dd>{state}</dd>"
+        f"<dt>از کجا</dt><dd>{origin}</dd>"
+        f"<dt>اشتراک</dt><dd>{plan_text}</dd>"
+        f"<dt>کیف پول</dt><dd class='money'>{esc(money(user.wallet_toman))}</dd>"
+        f"<dt>مجموع خرید</dt><dd class='money'>{esc(money(int(paid or 0)))}</dd>"
+        f"<dt>کارها</dt><dd>{esc(i18n.num(len(tasks), 'fa'))}</dd>"
+        f"<dt>عضویت</dt><dd>{esc(_when(user.created_at))}</dd>"
+        "</dl>"
+    )
+
+    options = "".join(
+        f"<option value='{esc(plan.code)}'>{esc(plan.title)} — "
+        f"{esc(i18n.num(plan.days, 'fa'))} روز</option>"
+        for plan in purchasable()
+    )
+    give = form(
+        f"/users/{user_id}/grant",
+        session.csrf,
+        "<label class='field'><span class='cap'>طرح</span>"
+        f"<select name='plan'>{options}</select></label>"
+        "<button class='btn primary'>دادن اشتراک</button>",
+    )
+
+    adjust = form(
+        f"/users/{user_id}/days",
+        session.csrf,
+        "<label class='field'><span class='cap'>روز (منفی یعنی کم کردن)</span>"
+        "<input type='number' name='days' value='7' min='-3650' max='3650'>"
+        "<span class='hint'>فقط وقتی کار می‌کند که اشتراک فعالی داشته باشد.</span>"
+        "</label><button class='btn'>اعمال</button>",
+    )
+
+    ban_label = "آزاد کردن" if user.is_banned else "مسدود کردن"
+    danger = (
+        form(
+            f"/users/{user_id}/ban",
+            session.csrf,
+            f"<button class='btn {'ok' if user.is_banned else 'bad'}'>{ban_label}</button>",
+            confirm=(
+                f"کاربر {user_id} آزاد شود؟"
+                if user.is_banned
+                else f"کاربر {user_id} مسدود شود؟ همه‌ی کارهایش خاموش می‌شود."
+            ),
+        )
+        + " "
+        + form(
+            f"/users/{user_id}/revoke",
+            session.csrf,
+            "<button class='btn bad'>لغو اشتراک</button>",
+            confirm=f"اشتراک کاربر {user_id} همین حالا تمام شود؟",
+        )
+    )
+
+    task_rows = [
+        f"<tr><td>#{task.id}</td>"
+        f"<td>{esc(task.title or task.source_title or task.source_ref)}</td>"
+        f"<td>{esc(task.dest_title or task.dest_ref)}</td>"
+        f"<td>{pill('روشن', 'ok') if task.enabled else pill('خاموش')}</td></tr>"
+        for task in tasks
+    ]
+
+    body = (
+        _flash(request)
+        + f"<h1>{esc(_who(user))}</h1>"
+        + "<p class='sub'><a href='/users'>← بازگشت به فهرست</a></p>"
+        + "<div class='split'>"
+        + panel("خلاصه", facts)
+        + panel("دادن اشتراک", give, sub="از انتهای اشتراک فعلی تمدید می‌شود.")
+        + panel("تغییر روزهای اشتراک", adjust)
+        + panel(
+            "کارهای پرخطر",
+            danger,
+            sub="هر دو همین حالا اثر می‌کنند و به کاربر خبر داده می‌شود.",
+        )
+        + "</div>"
+        + "<section><h2>کارهای کپی</h2>"
+        + table(
+            ["کد", "مبدا", "مقصد", "وضعیت"],
+            task_rows,
+            empty="این کاربر هیچ کاری نساخته.",
+            icon="📋",
+        )
+        + "</section>"
+    )
+    return await _shell(request, _who(user), body, active="/users")
+
+
+async def user_grant(request: web.Request) -> web.Response:
+    back = f"/users/{request.match_info['id']}"
+    blocked = await _guard_post(request, roles.CAP_MONEY, back)
+    if blocked is not None:
+        return blocked
+
+    user_id = int(request.match_info["id"])
+    plan_code = str((await request.post()).get("plan", ""))
+    sub = await subscription.grant(
+        user_id, plan_code, granted_by=request["session"].user_id, note="پنل وب"
+    )
+    if sub is None:
+        return _back(back, err="این طرح وجود ندارد.")
+
+    bot = request.app[BOT]
+    try:
+        await bot.send_message(
+            user_id,
+            f"🎁 اشتراک <b>{plan_code}</b> برای شما فعال شد.\n"
+            f"تا <b>{sub.expires_at:%Y/%m/%d}</b> اعتبار دارد.",
+        )
+    except Exception:
+        log.warning("اطلاع اشتراک به کاربر %s نرسید", user_id, exc_info=True)
+        return _back(back, ok="اشتراک داده شد، ولی پیام به کاربر نرسید.")
+    return _back(back, ok="اشتراک داده شد.")
+
+
+async def user_days(request: web.Request) -> web.Response:
+    back = f"/users/{request.match_info['id']}"
+    blocked = await _guard_post(request, roles.CAP_MONEY, back)
+    if blocked is not None:
+        return blocked
+
+    user_id = int(request.match_info["id"])
+    days = _int_or_zero((await request.post()).get("days"))
+    if not days:
+        return _back(back, err="عدد روز معتبر نیست.")
+
+    row = await subscription.adjust_days(
+        user_id, days, admin_id=request["session"].user_id
+    )
+    if row is None:
+        return _back(back, err="اشتراک فعالی ندارد. اول یک طرح بدهید.")
+    return _back(back, ok=f"اشتراک {days:+d} روز شد.")
+
+
+async def user_ban(request: web.Request) -> web.Response:
+    back = f"/users/{request.match_info['id']}"
+    blocked = await _guard_post(request, roles.CAP_USERS, back)
+    if blocked is not None:
+        return blocked
+
+    user_id = int(request.match_info["id"])
+    banning = not await moderation.is_banned(user_id)
+    if not await moderation.set_ban(
+        user_id, banning, admin_id=request["session"].user_id
+    ):
+        return _back(back, err="کاربر پیدا نشد.")
+    return _back(
+        back, ok="مسدود شد و کارهایش خاموش شد." if banning else "آزاد شد."
+    )
+
+
+async def user_revoke(request: web.Request) -> web.Response:
+    back = f"/users/{request.match_info['id']}"
+    blocked = await _guard_post(request, roles.CAP_MONEY, back)
+    if blocked is not None:
+        return blocked
+
+    user_id = int(request.match_info["id"])
+    count = await subscription.revoke(user_id, admin_id=request["session"].user_id)
+    if not count:
+        return _back(back, err="اشتراک فعالی نداشت.")
+
+    bot = request.app[BOT]
+    try:
+        await bot.send_message(user_id, "⛔️ اشتراک شما توسط مدیریت لغو شد.")
+    except Exception:
+        log.debug("اطلاع لغو اشتراک به کاربر نرسید", exc_info=True)
+    return _back(back, ok="اشتراک لغو شد.")
+
+
+# ------------------------------------------------------------- کارها
+async def task_list(request: web.Request) -> web.Response:
+    """کارهای در حال اجرا، در یک نگاه.
+
+    مفیدترین ستون «آخرین فعالیت» است: کاری که روشن است ولی مدت‌هاست
+    چیزی کپی نکرده، معمولاً یعنی اکانت کاربر از کار افتاده — و آن
+    چیزی است که کاربر با یک تیکت گله‌آمیز خبر می‌دهد، نه زودتر.
+    """
+    denied = await _deny(request, roles.CAP_USERS)
+    if denied is not None:
+        return denied
+
+    only = request.query.get("only", "")
+    async with get_session() as db:
+        statement = select(Task).order_by(Task.id.desc()).limit(150)
+        if only == "on":
+            statement = statement.where(Task.enabled.is_(True))
+        elif only == "off":
+            statement = statement.where(Task.enabled.is_(False))
+        tasks = list((await db.execute(statement)).scalars())
+
+        people: dict[int, User] = {}
+        if tasks:
+            rows = await db.execute(
+                select(User).where(User.id.in_({t.user_id for t in tasks}))
+            )
+            people = {user.id: user for user in rows.scalars()}
+
+        running = await db.scalar(
+            select(func.count()).select_from(Task).where(Task.enabled.is_(True))
+        )
+        total = await db.scalar(select(func.count()).select_from(Task))
+
+    session = request["session"]
+    rows_html = []
+    for task in tasks:
+        kind = "🌐 فید" if task.source_kind == Task.SOURCE_RSS else "📢 کانال"
+        toggle = form(
+            f"/tasks/{task.id}/toggle",
+            session.csrf,
+            f"<button class='btn small {'bad' if task.enabled else 'ok'}'>"
+            f"{'خاموش' if task.enabled else 'روشن'}</button>",
+        )
+        rows_html.append(
+            f"<tr><td>#{task.id}</td>"
+            f"<td><a href='/users/{task.user_id}'>{esc(_who(people.get(task.user_id)))}</a></td>"
+            f"<td>{kind}<div class='mini'>{esc(task.source_title or task.source_ref)}</div></td>"
+            f"<td>{esc(task.dest_title or task.dest_ref)}</td>"
+            f"<td>{pill('روشن', 'ok') if task.enabled else pill('خاموش')}</td>"
+            f"<td class='actions'>{toggle}</td></tr>"
+        )
+
+    tabs = "".join(
+        f"<a class='btn small' href='/tasks{q}'>{label}</a> "
+        for q, label in (("", "همه"), ("?only=on", "روشن"), ("?only=off", "خاموش"))
+    )
+
+    body = (
+        _flash(request)
+        + "<h1>کارهای کپی</h1>"
+        + "<p class='sub'>۱۵۰ کار آخر. خاموش کردن از اینجا همان اثری را دارد "
+        "که خاموش کردن از داخل ربات.</p>"
+        + "<div class='cards'>"
+        + card("کار روشن", i18n.num(int(running or 0), "fa"), "ok")
+        + card("کل کارها", i18n.num(int(total or 0), "fa"))
+        + "</div>"
+        + f"<section><h2>فهرست</h2><div class='row' style='margin-bottom:12px'>{tabs}</div>"
+        + table(
+            ["کد", "کاربر", "مبدا", "مقصد", "وضعیت", ""],
+            rows_html,
+            empty="کاری نیست.",
+            icon="📋",
+        )
+        + "</section>"
+    )
+    return await _shell(request, "کارها", body, active="/tasks")
+
+
+async def task_toggle(request: web.Request) -> web.Response:
+    blocked = await _guard_post(request, roles.CAP_USERS, "/tasks")
+    if blocked is not None:
+        return blocked
+
+    task_id = int(request.match_info["id"])
+    async with get_session() as db:
+        task = await db.get(Task, task_id)
+        if task is None:
+            return _back("/tasks", err="این کار پیدا نشد.")
+        task.enabled = not task.enabled
+        user_id, now_on = task.user_id, task.enabled
+        await db.commit()
+
+    # بدون این، ردیف در پنل عوض می‌شود ولی کپی همچنان ادامه دارد —
+    # بدترین حالت، چون به نظر می‌رسد کار انجام شده.
+    from telkap.services.userbot import manager
+
+    await manager.reload_user(user_id)
+    return _back("/tasks", ok=f"کار #{task_id} {'روشن' if now_on else 'خاموش'} شد.")
+
+
+# ------------------------------------------------------------ نمایندگی
+def _bytes(value: int) -> str:
+    if value <= 0:
+        return "—"
+    for unit, size in (("گیگ", 1 << 30), ("مگ", 1 << 20), ("کیلو", 1 << 10)):
+        if value >= size:
+            return f"{i18n.num(round(value / size, 1), 'fa')} {unit}"
+    return f"{i18n.num(value, 'fa')} بایت"
+
+
+def _seconds(value: int) -> str:
+    if value < 60:
+        return f"{i18n.num(value, 'fa')} ثانیه"
+    minutes, rest = divmod(value, 60)
+    if minutes < 60:
+        return f"{i18n.num(minutes, 'fa')}:{i18n.num(f'{rest:02d}', 'fa')} دقیقه"
+    hours, minutes = divmod(minutes, 60)
+    return f"{i18n.num(hours, 'fa')} ساعت و {i18n.num(minutes, 'fa')} دقیقه"
+
+
+async def timings_page(request: web.Request) -> web.Response:
+    """چقدر طول می‌کشد تا پست از مبدا به مقصد برسد.
+
+    <b>چرا میانه و نه میانگین.</b> یک ویدئوی ده‌دقیقه‌ای میانگین را
+    می‌برد بالا و تصویری می‌سازد که هیچ کاربری تجربه‌اش نکرده. میانه
+    می‌گوید نصفِ پست‌ها زیر چند ثانیه رسیده‌اند، و صدک ۹۰ می‌گوید
+    بدترین حالتِ معمول چقدر است.
+
+    <b>و چرا به تفکیک مسیر.</b> «مستقیم» یعنی فایل اصلاً دانلود نشده و
+    حجم پست هیچ ربطی به سرعتش ندارد. سه مسیر دیگر یعنی دانلود و آپلود
+    دوباره — تنها جایی که حجم واقعاً مهم است. بدون این تفکیک، یک عددِ
+    کلی هر دو را قاطی می‌کند و هیچ تصمیمی از آن درنمی‌آید.
+    """
+    denied = await _deny(request, roles.CAP_REPORTS)
+    if denied is not None:
+        return denied
+
+    days = max(1, min(90, _int_or_zero(request.query.get("days")) or 7))
+    data = await timings.report(days=days)
+    trend = await timings.daily(min(days, 30))
+
+    cards = (
+        "<div class='cards'>"
+        + card("پست بررسی‌شده", i18n.num(data.overall.count, "fa"))
+        + card("میانه", _seconds(data.overall.median), "ok")
+        + card("صدک ۹۰", _seconds(data.overall.p90), "warn")
+        + card("بدترین", _seconds(data.overall.worst), "bad")
+        + card(
+            "بیش از یک دقیقه",
+            f"{i18n.num(data.overall.over_minute_percent, 'fa')}٪",
+            "bad" if data.overall.over_minute_percent > 20 else "",
+        )
+        + "</div>"
+    )
+
+    path_rows = []
+    for bucket in data.by_path:
+        label = copier.PATH_LABELS.get(bucket.label, bucket.label)
+        heavy = bucket.label in (
+            DeliveryTiming.PATH_WATERMARK,
+            DeliveryTiming.PATH_REWRITE,
+            DeliveryTiming.PATH_REUPLOAD,
+        )
+        path_rows.append(
+            f"<tr><td>{esc(label)}"
+            + (
+                "<div class='mini'>فایل دانلود و دوباره آپلود می‌شود</div>"
+                if heavy
+                else "<div class='mini'>بدون دانلود — حجم اثری ندارد</div>"
+            )
+            + "</td>"
+            f"<td class='money'>{esc(i18n.num(bucket.count, 'fa'))}</td>"
+            f"<td class='money'>{esc(_seconds(bucket.median))}</td>"
+            f"<td class='money'>{esc(_seconds(bucket.p90))}</td>"
+            f"<td class='money'>{esc(_seconds(bucket.worst))}</td>"
+            f"<td class='money'>{esc(_bytes(bucket.bytes_median))}</td></tr>"
+        )
+
+    slow_rows = []
+    for row in data.slowest:
+        label = copier.PATH_LABELS.get(row.path, row.path)
+        slow_rows.append(
+            f"<tr><td>{esc(_when(row.created_at))}</td>"
+            f"<td><a href='/tasks?q={row.task_id}'>#{esc(row.task_id)}</a></td>"
+            f"<td class='money'>{esc(_seconds(row.seconds))}</td>"
+            f"<td>{esc(label)}</td>"
+            f"<td>{esc(row.media_kind or '—')}</td>"
+            f"<td class='money'>{esc(_bytes(row.size_bytes))}</td></tr>"
+        )
+
+    picker = " · ".join(
+        f"<a href='/timings?days={span}'>{i18n.num(span, 'fa')} روز</a>"
+        if span != days
+        else f"<b>{i18n.num(span, 'fa')} روز</b>"
+        for span in (1, 7, 30, 90)
+    )
+
+    body = (
+        "<h1>سرعت انتشار</h1>"
+        "<p class='sub'>از لحظه‌ی انتشار در مبدا تا رسیدن به مقصد. "
+        f"{picker}</p>"
+        + cards
+        + panel(
+            "میانه‌ی روزانه",
+            chart(trend, unit="ثانیه"),
+            sub="روند مهم‌تر از یک عدد تنهاست؛ اگر روزی بالا پرید، همان روز اتفاقی افتاده.",
+        )
+        + panel(
+            "به تفکیک مسیر",
+            table(
+                ["مسیر", "تعداد", "میانه", "صدک ۹۰", "بدترین", "حجم میانه"],
+                path_rows,
+                empty="هنوز داده‌ای نیست.",
+                icon="⏱",
+            ),
+            sub=(
+                "«مستقیم» یعنی فایل اصلاً دانلود نشده و حجمش هیچ ربطی به سرعت "
+                "ندارد. بقیه یعنی دانلود و آپلود دوباره — تنها جایی که حجم مهم است."
+            ),
+        )
+        + panel(
+            "کندترین پست‌ها",
+            table(
+                ["زمان", "کار", "تأخیر", "مسیر", "نوع", "حجم"],
+                slow_rows,
+                empty="چیزی کند نبوده.",
+                icon="🐢",
+            ),
+        )
+    )
+    return await _shell(request, "سرعت انتشار", body, active="/timings")
+
+
+async def reseller_page(request: web.Request) -> web.Response:
+    """نماینده‌ها: چه کسانی، با چند درصد، و چقدر فروخته‌اند.
+
+    <b>چرا در پنل و نه فقط در ربات.</b> دادنِ نمایندگی در ربات یک
+    گفتگوی چند مرحله‌ای است و بعدش هیچ‌جا نمی‌شود دید چه کسی نماینده
+    است. نمایندگی رابطه‌ای ادامه‌دار است — درصدش عوض می‌شود، فروشش
+    باید دیده شود — و رابطه‌ی ادامه‌دار جای فهرست دارد نه گفتگو.
+    """
+    denied = await _deny(request, roles.CAP_MONEY)
+    if denied is not None:
+        return denied
+
+    session = request["session"]
+    pairs = await reseller.everyone()
+    fallback = await reseller.default_discount()
+
+    rows_html = []
+    for user, stats in pairs:
+        discount = int(user.reseller_discount or 0)
+        badge = pill(f"{i18n.num(discount, 'fa')}٪", "ok" if discount else "bad")
+        keeps = (
+            pill("حفظ مشتری", "ok") if user.reseller_keeps else pill("بدون حفظ مشتری")
+        )
+        rows_html.append(
+            f"<tr><td><a href='/resellers/{user.id}'>{esc(_who(user))}</a>"
+            f"<div class='mini'>{esc(user.id)}</div></td>"
+            f"<td>{badge}</td>"
+            f"<td>{keeps}</td>"
+            f"<td class='money'>{esc(i18n.num(stats.sales, 'fa'))}</td>"
+            f"<td class='money'>{esc(i18n.num(stats.customers, 'fa'))}</td>"
+            f"<td class='money'>{esc(money(stats.spent))}</td>"
+            f"<td class='money'>{esc(money(user.wallet_toman))}</td>"
+            "<td class='actions'>"
+            + form(
+                "/resellers/set",
+                session.csrf,
+                f"<input type='hidden' name='user' value='{esc(user.id)}'>"
+                f"<input type='number' name='discount' min='0' "
+                f"max='{reseller.MAX_DISCOUNT}' value='{esc(discount)}' "
+                "style='width:5rem'>"
+                "<button class='btn small'>ذخیره</button>",
+            )
+            + form(
+                f"/resellers/{user.id}/keeps",
+                session.csrf,
+                f"<input type='hidden' name='to' value='{0 if user.reseller_keeps else 1}'>"
+                f"<button class='btn small'>"
+                f"{'خاموش کردن حفظ مشتری' if user.reseller_keeps else 'روشن کردن حفظ مشتری'}"
+                "</button>",
+            )
+            + form(
+                f"/resellers/{user.id}/remove",
+                session.csrf,
+                "<button class='btn small bad'>حذف نمایندگی</button>",
+                confirm=f"نمایندگی «{_who(user)}» برداشته شود؟",
+            )
+            + "</td></tr>"
+        )
+
+    sales = await reseller.recent_sales()
+    names: dict[int, User] = {}
+    if sales:
+        async with get_session() as db:
+            people = await db.execute(
+                select(User).where(
+                    User.id.in_(
+                        {sale.reseller_id for sale in sales}
+                        | {sale.customer_id for sale in sales}
+                    )
+                )
+            )
+            names = {person.id: person for person in people.scalars()}
+
+    sale_rows = []
+    for sale in sales:
+        seller = names.get(sale.reseller_id)
+        buyer = names.get(sale.customer_id)
+        # کدِ طرح برای ما معنا دارد، برای کسی که فهرست را می‌خواند نه؛
+        # اگر طرحی بعداً حذف شود، همان کد بهتر از خالی بودن است.
+        plan = get_plan(sale.plan_code)
+        sale_rows.append(
+            f"<tr><td>{esc(_when(sale.created_at))}</td>"
+            f"<td><a href='/users/{sale.reseller_id}'>"
+            f"{esc(_who(seller) if seller else sale.reseller_id)}</a></td>"
+            f"<td><a href='/users/{sale.customer_id}'>"
+            f"{esc(_who(buyer) if buyer else sale.customer_id)}</a></td>"
+            f"<td>{esc(plan.title if plan else sale.plan_code)}</td>"
+            f"<td class='money'>{esc(money(sale.paid_toman))}</td>"
+            f"<td class='money'>{esc(money(sale.list_toman))}</td></tr>"
+        )
+
+    total_spent = sum(stats.spent for _user, stats in pairs)
+    total_sales = sum(stats.sales for _user, stats in pairs)
+    cards = (
+        "<div class='cards'>"
+        + card("نماینده‌ها", i18n.num(len(pairs), "fa"))
+        + card("فروش نمایندگی", i18n.num(total_sales, "fa"))
+        + card("گردش نمایندگی", money(total_spent), "ok")
+        + card("تخفیف پیش‌فرض", f"{i18n.num(fallback, 'fa')}٪")
+        + "</div>"
+    )
+
+    add_form = form(
+        "/resellers/set",
+        session.csrf,
+        "<input type='text' name='user' placeholder='آیدی عددی کاربر' inputmode='numeric'> "
+        f"<input type='number' name='discount' min='0' max='{reseller.MAX_DISCOUNT}' "
+        f"value='{esc(fallback)}' style='width:6rem' placeholder='درصد'> "
+        "<button class='btn'>نماینده کن</button>",
+    )
+    default_form = form(
+        "/resellers/default",
+        session.csrf,
+        f"<input type='number' name='discount' min='0' max='{reseller.MAX_DISCOUNT}' "
+        f"value='{esc(fallback)}' style='width:6rem'> "
+        "<button class='btn'>ذخیره</button>",
+    )
+
+    body = (
+        "<h1>نمایندگی</h1>"
+        "<p class='sub'>نماینده کیف پولش را شارژ می‌کند و بعد هر وقت خواست، "
+        "اشتراک را با درصد تخفیف خودش مستقیم برای مشتری‌اش فعال می‌کند — "
+        "بدون رسید و بدون انتظار تأیید.</p>"
+        + _flash(request)
+        + cards
+        + panel(
+            "نماینده‌ی تازه",
+            add_form,
+            sub="کاربر باید یک‌بار ربات را استارت کرده باشد تا آیدی‌اش شناخته شود.",
+        )
+        + panel(
+            "نماینده‌ها",
+            table(
+                [
+                    "نماینده", "تخفیف", "مشتری‌ها", "فروش", "مشتری",
+                    "پرداختی", "کیف پول", "",
+                ],
+                rows_html,
+                empty="هنوز نماینده‌ای ندارید.",
+                icon="🤝",
+            ),
+        )
+        + panel(
+            "آخرین فروش‌ها",
+            table(
+                ["زمان", "نماینده", "مشتری", "طرح", "پرداختی", "قیمت فهرست"],
+                sale_rows,
+                empty="هنوز فروشی ثبت نشده.",
+                icon="🧾",
+            ),
+        )
+        + panel(
+            "تخفیف پیش‌فرض",
+            default_form,
+            sub="درصدی که به نماینده‌ی تازه داده می‌شود، اگر جداگانه چیزی نگذارید.",
+        )
+    )
+    return await _shell(request, "نمایندگی", body, active="/resellers")
+
+
+async def reseller_detail(request: web.Request) -> web.Response:
+    """یک نماینده: مشتری‌هایش، فروش‌هایش، و آنچه باید پیگیری شود."""
+    denied = await _deny(request, roles.CAP_MONEY)
+    if denied is not None:
+        return denied
+
+    user_id = int(request.match_info["id"])
+    async with get_session() as db:
+        person = await db.get(User, user_id)
+    if person is None:
+        raise web.HTTPNotFound(text="کاربری با این شناسه نیست")
+
+    is_reseller, discount = await reseller.profile(user_id)
+    stats = await reseller.stats(user_id)
+    people = await reseller.customers(user_id)
+    sales = await reseller.sales(user_id, limit=30)
+
+    customer_rows = []
+    for customer in people:
+        if customer.expired:
+            state = pill("بدون اشتراک", "bad")
+        elif customer.expiring:
+            state = pill(f"{i18n.num(customer.days_left, 'fa')} روز مانده", "warn")
+        else:
+            state = pill(f"{i18n.num(customer.days_left, 'fa')} روز مانده", "ok")
+        plan = get_plan(customer.plan_code)
+        customer_rows.append(
+            f"<tr><td><a href='/users/{customer.user_id}'>{esc(customer.name)}</a>"
+            f"<div class='mini'>{esc(customer.user_id)}</div></td>"
+            f"<td>{esc(plan.title if plan else customer.plan_code or '—')}</td>"
+            f"<td>{state}</td>"
+            f"<td>{esc(_when(customer.expires_at) if customer.expires_at else '—')}</td>"
+            "</tr>"
+        )
+
+    sale_rows = []
+    for sale in sales:
+        plan = get_plan(sale.plan_code)
+        sale_rows.append(
+            f"<tr><td>{esc(_when(sale.created_at))}</td>"
+            f"<td><a href='/users/{sale.customer_id}'>{esc(sale.customer_id)}</a></td>"
+            f"<td>{esc(plan.title if plan else sale.plan_code)}</td>"
+            f"<td class='money'>{esc(money(sale.paid_toman))}</td>"
+            f"<td class='money'>{esc(money(sale.list_toman))}</td>"
+            f"<td>{esc(i18n.num(sale.discount_percent, 'fa'))}٪</td></tr>"
+        )
+
+    waiting = sum(1 for customer in people if customer.expiring or customer.expired)
+    cards = (
+        "<div class='cards'>"
+        + card("تخفیف", f"{i18n.num(discount, 'fa')}٪", "ok" if is_reseller else "bad")
+        + card("مشتری‌ها", i18n.num(len(people), "fa"))
+        + card("نیاز به پیگیری", i18n.num(waiting, "fa"), "warn" if waiting else "")
+        + card("پرداختی", money(stats.spent))
+        + card("سهم خرید مستقیم", money(stats.commission), "ok")
+        + card("کیف پول", money(person.wallet_toman))
+        + "</div>"
+    )
+
+    body = (
+        f"<h1>{esc(_who(person))}</h1>"
+        f"<p class='sub'>نماینده · <a href='/users/{user_id}'>صفحه‌ی کاربر</a></p>"
+        + _flash(request)
+        + ("" if is_reseller else "<div class='note warn'>نمایندگی این کاربر "
+           "برداشته شده. مشتری‌هایش سرِ جایشان می‌مانند ولی سهمی از خرید "
+           "مستقیمشان نمی‌گیرد.</div>")
+        + cards
+        + panel(
+            "مشتری‌ها",
+            table(
+                ["مشتری", "طرح", "وضعیت", "پایان"],
+                customer_rows,
+                empty="هنوز مشتری‌ای ندارد.",
+                icon="👥",
+            ),
+            sub=(
+                "هر خریدی که خودِ این مشتری‌ها مستقیم انجام بدهند هم سهم نماینده "
+                "را به کیف پولش می‌ریزد."
+            ),
+        )
+        + panel(
+            "فروش‌ها",
+            table(
+                ["زمان", "مشتری", "طرح", "پرداختی", "قیمت فهرست", "تخفیف"],
+                sale_rows,
+                empty="هنوز فروشی ثبت نشده.",
+                icon="🧾",
+            ),
+        )
+    )
+    return await _shell(request, "نماینده", body, active="/resellers")
+
+
+async def reseller_set(request: web.Request) -> web.Response:
+    """کاربر را نماینده می‌کند یا درصد نماینده‌ی موجود را عوض می‌کند."""
+    blocked = await _guard_post(request, roles.CAP_MONEY, "/resellers")
+    if blocked is not None:
+        return blocked
+
+    posted = await request.post()
+    user_id = parse_int(str(posted.get("user", "")))
+    if user_id is None:
+        return _back("/resellers", err="آیدی عددی کاربر را درست بنویسید.")
+
+    discount = parse_int(str(posted.get("discount", "")))
+    if discount is None or not 0 <= discount <= reseller.MAX_DISCOUNT:
+        return _back(
+            "/resellers", err=f"درصد تخفیف باید بین ۰ تا {reseller.MAX_DISCOUNT} باشد."
+        )
+
+    result = await reseller.set_reseller(
+        user_id, True, discount, admin_id=request["session"].user_id
+    )
+    if result is None:
+        return _back(
+            "/resellers",
+            err="این کاربر هنوز ربات را استارت نکرده است؛ اول باید /start بزند.",
+        )
+    return _back("/resellers", ok=f"نمایندگی با {result[1]}٪ تخفیف ثبت شد.")
+
+
+async def reseller_keeps(request: web.Request) -> web.Response:
+    """حفظ مشتری را برای یک نماینده روشن/خاموش می‌کند.
+
+    <b>چرا انتخابی است و نه همیشه روشن.</b> با بعضی نماینده‌ها چنین
+    توافقی هست و با بعضی نه. یک کلیدِ سراسری یعنی یا به همه بدهیم یا
+    به هیچ‌کس — و هر دو غلط است.
+    """
+    blocked = await _guard_post(request, roles.CAP_MONEY, "/resellers")
+    if blocked is not None:
+        return blocked
+
+    user_id = int(request.match_info["id"])
+    posted = await request.post()
+    wanted = str(posted.get("to", "")) == "1"
+    result = await reseller.set_keeps(user_id, wanted)
+    if result is None:
+        return _back("/resellers", err="این کاربر پیدا نشد.")
+    return _back(
+        "/resellers",
+        ok="حفظ مشتری روشن شد." if result else "حفظ مشتری خاموش شد.",
+    )
+
+
+async def reseller_remove(request: web.Request) -> web.Response:
+    blocked = await _guard_post(request, roles.CAP_MONEY, "/resellers")
+    if blocked is not None:
+        return blocked
+
+    user_id = int(request.match_info["id"])
+    if await reseller.set_reseller(
+        user_id, False, admin_id=request["session"].user_id
+    ) is None:
+        return _back("/resellers", err="این کاربر پیدا نشد.")
+    return _back("/resellers", ok="نمایندگی برداشته شد.")
+
+
+async def reseller_default(request: web.Request) -> web.Response:
+    blocked = await _guard_post(request, roles.CAP_MONEY, "/resellers")
+    if blocked is not None:
+        return blocked
+
+    posted = await request.post()
+    discount = parse_int(str(posted.get("discount", "")))
+    if discount is None or not 0 <= discount <= reseller.MAX_DISCOUNT:
+        return _back(
+            "/resellers", err=f"درصد تخفیف باید بین ۰ تا {reseller.MAX_DISCOUNT} باشد."
+        )
+    saved = await reseller.set_default_discount(
+        discount, admin_id=request["session"].user_id
+    )
+    return _back("/resellers", ok=f"تخفیف پیش‌فرض روی {saved}٪ تنظیم شد.")
+
+
+# --------------------------------------------------------- تنظیم پرداخت
+async def settings_page(request: web.Request) -> web.Response:
+    """همان تنظیماتی که در ربات هست، روی صفحه‌ی بزرگ‌تر.
+
+    <b>چرا تکرارِ ربات نیست.</b> در ربات هر مقدار یک دکمه و یک گفتگوی
+    جداست؛ اینجا همه با هم دیده می‌شوند و همان‌جا عوض می‌شوند. برای
+    راه‌اندازی اولیه — که همه‌ی این‌ها باید یک‌بار پر شوند — تفاوتش
+    زیاد است.
+    """
+    denied = await _deny(request, roles.CAP_MONEY)
+    if denied is not None:
+        return denied
+
+    session = request["session"]
+    number = await cardinfo.number()
+    holder = await cardinfo.holder()
+    wallet = await crypto.address()
+    auto = await usdtrate.is_auto()
+    merchant = await zarinpal.merchant()
+    gateway = await zarinpal.configured()
+
+    card_form = form(
+        "/settings/card",
+        session.csrf,
+        "<label class='field'><span class='cap'>شماره کارت (۱۶ رقم)</span>"
+        f"<input type='text' name='number' value='{esc(number)}' inputmode='numeric'>"
+        "</label>"
+        "<label class='field'><span class='cap'>نام صاحب حساب</span>"
+        f"<input type='text' name='holder' value='{esc(holder)}'></label>"
+        "<button class='btn primary'>ذخیره</button>",
+    )
+
+    coin_rows = []
+    for code in coins.all_codes():
+        spec = coins.get(code)
+        rate = await crypto.rate(code)
+        percent = await usdtrate.margin(code)
+        coin_rows.append(
+            "<label class='field'>"
+            f"<span class='cap'>{esc(spec.label)} — تومان به ازای هر واحد</span>"
+            f"<input type='number' name='rate_{esc(code)}' value='{rate}' min='0'>"
+            f"<span class='hint'>حاشیه‌ی فعلی: {esc(i18n.num(percent, 'fa'))}٪</span>"
+            "</label>"
+        )
+
+    crypto_form = form(
+        "/settings/crypto",
+        session.csrf,
+        "<label class='field'><span class='cap'>نشانی ولت ترون (تتر و ترون هر دو)</span>"
+        f"<input type='text' name='wallet' value='{esc(wallet)}' dir='ltr'></label>"
+        + "".join(coin_rows)
+        + "<button class='btn primary'>ذخیره</button>",
+    )
+
+    auto_form = form(
+        "/settings/autorate",
+        session.csrf,
+        f"<button class='btn {'bad' if auto else 'ok'}'>"
+        f"{'خاموش کردن نرخ خودکار' if auto else 'روشن کردن نرخ خودکار'}</button>",
+    ) + " " + form(
+        "/settings/ratenow", session.csrf, "<button class='btn'>گرفتن نرخ‌ها الان</button>"
+    )
+
+    base = (get_settings().web_base_url or "").rstrip("/")
+    gate_form = form(
+        "/settings/zarinpal",
+        session.csrf,
+        "<label class='field'><span class='cap'>کد پذیرنده</span>"
+        f"<input type='text' name='merchant' value='{esc(merchant)}' dir='ltr'>"
+        "<span class='hint'>در پنل زرین‌پال، نشانی بازگشت را هم ثبت کنید:<br>"
+        f"<code>{esc(base + zarinpal.CALLBACK_PATH)}</code></span></label>"
+        "<button class='btn primary'>ذخیره</button>",
+    )
+
+    ready = bool(number) or bool(await crypto.ready_coins()) or gateway
+    warning = (
+        "<div class='note warn'>🚨 <b>هیچ راه پرداختی تنظیم نشده</b> — یعنی "
+        "کسی نمی‌تواند بخرد. مشتری به‌جای صفحه‌ی پرداخت به پشتیبانی ارجاع "
+        "داده می‌شود.</div>"
+        if not ready
+        else ""
+    )
+
+    body = (
+        _flash(request)
+        + "<h1>راه‌های پرداخت</h1>"
+        + "<p class='sub'>همان تنظیماتی که در ربات هست — اینجا همه با هم.</p>"
+        + warning
+        + "<div class='split'>"
+        + panel("کارت‌به‌کارت", card_form)
+        + panel(
+            "ارز دیجیتال",
+            crypto_form,
+            sub="نشانی ولت بین تتر و ترون مشترک است؛ فقط نرخ جداست.",
+        )
+        + panel(
+            f"نرخ خودکار — {'روشن' if auto else 'خاموش'}",
+            auto_form,
+            sub="هر ربع ساعت از نوبیتکس، کمی زیر بازار تا در فروش ضرر نکنید.",
+        )
+        + panel(
+            f"درگاه زرین‌پال — {'فعال' if gateway else 'غیرفعال'}",
+            gate_form,
+        )
+        + "</div>"
+    )
+    return await _shell(request, "پرداخت", body, active="/settings")
+
+
+async def settings_card(request: web.Request) -> web.Response:
+    blocked = await _guard_post(request, roles.CAP_MONEY, "/settings")
+    if blocked is not None:
+        return blocked
+
+    posted = await request.post()
+    admin_id = request["session"].user_id
+    problems = []
+    if await cardinfo.set_number(str(posted.get("number", "")), admin_id=admin_id) is None:
+        problems.append("شماره کارت باید ۱۶ رقم باشد")
+    if await cardinfo.set_holder(str(posted.get("holder", "")), admin_id=admin_id) is None:
+        problems.append("نام صاحب حساب خالی است")
+    if problems:
+        return _back("/settings", err=" · ".join(problems))
+    return _back("/settings", ok="اطلاعات کارت ذخیره شد.")
+
+
+async def settings_crypto(request: web.Request) -> web.Response:
+    blocked = await _guard_post(request, roles.CAP_MONEY, "/settings")
+    if blocked is not None:
+        return blocked
+
+    posted = await request.post()
+    admin_id = request["session"].user_id
+    problems = []
+
+    wallet = str(posted.get("wallet", "")).strip()
+    if wallet and await crypto.set_address(wallet, admin_id=admin_id) is None:
+        problems.append("نشانی ولت معتبر نیست")
+
+    for code in coins.all_codes():
+        raw = str(posted.get(f"rate_{code}", "")).strip()
+        if not raw or raw == "0":
+            continue
+        if await crypto.set_rate(raw, coin=code, admin_id=admin_id) is None:
+            problems.append(f"نرخ {coins.get(code).symbol} پذیرفته نشد")
+
+    if problems:
+        return _back("/settings", err=" · ".join(problems))
+    return _back("/settings", ok="تنظیمات ارز ذخیره شد.")
+
+
+async def settings_autorate(request: web.Request) -> web.Response:
+    blocked = await _guard_post(request, roles.CAP_MONEY, "/settings")
+    if blocked is not None:
+        return blocked
+
+    now_on = not await usdtrate.is_auto()
+    await usdtrate.set_auto(now_on, admin_id=request["session"].user_id)
+    if now_on:
+        await usdtrate.refresh_all(force=True)
+    return _back("/settings", ok=f"نرخ خودکار {'روشن' if now_on else 'خاموش'} شد.")
+
+
+async def settings_ratenow(request: web.Request) -> web.Response:
+    """گرفتن فوریِ نرخ‌ها — و گفتنِ اینکه اگر نشد، چرا نشد."""
+    blocked = await _guard_post(request, roles.CAP_MONEY, "/settings")
+    if blocked is not None:
+        return blocked
+
+    results = await usdtrate.refresh_all(force=True)
+    good, bad = [], []
+    for code, outcome in results.items():
+        spec = coins.get(code)
+        name = spec.symbol if spec else code
+        if outcome.changed:
+            good.append(f"{name} {outcome.rate:,}")
+        elif outcome.error:
+            bad.append(f"{name}: {outcome.error}")
+
+    if bad:
+        return _back("/settings", err=" · ".join(bad))
+    if good:
+        return _back("/settings", ok=" · ".join(good))
+    return _back("/settings", ok="نرخ‌ها همین حالا هم به‌روز بودند.")
+
+
+async def settings_zarinpal(request: web.Request) -> web.Response:
+    blocked = await _guard_post(request, roles.CAP_MONEY, "/settings")
+    if blocked is not None:
+        return blocked
+
+    posted = await request.post()
+    saved = await zarinpal.set_merchant(
+        str(posted.get("merchant", "")), admin_id=request["session"].user_id
+    )
+    if saved is None:
+        return _back("/settings", err="کد پذیرنده باید شکل UUID داشته باشد.")
+    return _back("/settings", ok="کد پذیرنده ذخیره شد.")
+
+
+# ------------------------------------------------------------ درآمد
+async def finance_page(request: web.Request) -> web.Response:
+    """درآمد: از کجا آمده، و چه کسانی بیشترین سهم را دارند.
+
+    <b>چرا جدا از نمای کلی.</b> نمای کلی برای «الان چه خبر است» است.
+    این صفحه برای وقتی است که می‌خواهید بنشینید و بفهمید کسب‌وکار
+    چطور پیش می‌رود — دو سؤال متفاوت، دو صفحه.
+    """
+    denied = await _deny(request, roles.CAP_REPORTS)
+    if denied is not None:
+        return denied
+
+    data = await analytics.dashboard()
+    month = data.this_month
+
+    async with get_session() as db:
+        rows = await db.execute(
+            select(
+                PaymentRequest.user_id,
+                func.sum(PaymentRequest.amount_toman),
+                func.count(),
+            )
+            .where(PaymentRequest.status == PaymentRequest.STATUS_APPROVED)
+            .group_by(PaymentRequest.user_id)
+            .order_by(func.sum(PaymentRequest.amount_toman).desc())
+            .limit(15)
+        )
+        top = list(rows.all())
+        people: dict[int, User] = {}
+        if top:
+            found = await db.execute(
+                select(User).where(User.id.in_([uid for uid, _s, _c in top]))
+            )
+            people = {user.id: user for user in found.scalars()}
+
+        by_method = await db.execute(
+            select(PaymentRequest.pay_method, func.count(), func.sum(PaymentRequest.amount_toman))
+            .where(PaymentRequest.status == PaymentRequest.STATUS_APPROVED)
+            .group_by(PaymentRequest.pay_method)
+        )
+        methods = list(by_method.all())
+
+    buyers = [
+        f"<tr><td><a href='/users/{uid}'>{esc(_who(people.get(uid)))}</a></td>"
+        f"<td class='money'>{esc(money(int(total or 0)))}</td>"
+        f"<td class='money'>{esc(i18n.num(int(count), 'fa'))}</td></tr>"
+        for uid, total, count in top
+    ]
+
+    method_rows = [
+        f"<tr><td>{esc(payments.METHOD_LABELS.get(name, name or '—'))}</td>"
+        f"<td class='money'>{esc(i18n.num(int(count), 'fa'))}</td>"
+        f"<td class='money'>{esc(money(int(total or 0)))}</td></tr>"
+        for name, count, total in sorted(methods, key=lambda r: -(r[2] or 0))
+    ]
+
+    body = (
+        "<section><h2>این ماه</h2><div class='cards'>"
+        + card("مجموع", money(month.total), "ok")
+        + card("اشتراک", money(month.plans))
+        + card("اعتبار", money(month.credits))
+        + card("نمایندگی", money(month.reseller))
+        + card("خریدار", i18n.num(month.payers, "fa"))
+        + card("میانگین هر خریدار", money(month.per_payer))
+        + "</div></section>"
+        + "<section><h2>سی روز اخیر</h2><div class='panel'>"
+        + chart(await _revenue_days(30), unit="تومان")
+        + "</div></section>"
+        + "<div class='split'>"
+        + panel(
+            "بهترین مشتری‌ها",
+            table(
+                ["مشتری", "مجموع خرید", "تعداد"],
+                buyers,
+                empty="هنوز خریدی ثبت نشده.",
+                icon="💰",
+            ),
+            sub="بر اساس مجموع پرداخت تأییدشده",
+        )
+        + panel(
+            "راه‌های پرداخت",
+            table(
+                ["راه", "تعداد", "مجموع"],
+                method_rows,
+                empty="هنوز پرداختی نبوده.",
+                icon="💳",
+            ),
+            sub="مشتری‌ها بیشتر از کدام راه می‌پردازند",
+        )
+        + "</div>"
+    )
+    return await _shell(request, "درآمد", body, active="/finance")
+
+
+# --------------------------------------------------------- رویدادها
+async def activity_page(request: web.Request) -> web.Response:
+    """آخرین رویدادهای سیستم.
+
+    <b>چرا لازم است.</b> وقتی چیزی غیرمنتظره اتفاق می‌افتد، اولین
+    سؤال «کِی و به دست چه کسی» است. تا امروز جوابش فقط در لاگ سرور
+    بود — یعنی عملاً در دسترس نبود.
+    """
+    denied = await _deny(request, roles.CAP_REPORTS)
+    if denied is not None:
+        return denied
+
+    from telkap.models import ActivityLog
+
+    kind = request.query.get("kind", "")
+    async with get_session() as db:
+        statement = (
+            select(ActivityLog).order_by(ActivityLog.created_at.desc()).limit(120)
+        )
+        if kind:
+            statement = statement.where(ActivityLog.event == kind)
+        entries = list((await db.execute(statement)).scalars())
+
+        kinds = list(
+            (
+                await db.execute(
+                    select(ActivityLog.event, func.count())
+                    .group_by(ActivityLog.event)
+                    .order_by(func.count().desc())
+                    .limit(14)
+                )
+            ).all()
+        )
+
+    tone = {
+        "error": "bad",
+        "pause": "bad",
+        "payment_approved": "ok",
+        "payment_auto": "ok",
+        "skip": "",
+    }
+    rows = [
+        f"<tr><td>{esc(_when(item.created_at))}</td>"
+        f"<td>{pill(item.event, tone.get(item.event, ''))}</td>"
+        f"<td>{esc(item.detail or '—')}</td>"
+        f"<td>"
+        + (
+            f"<a href='/users/{item.user_id}'>{esc(item.user_id)}</a>"
+            if item.user_id
+            else "—"
+        )
+        + "</td></tr>"
+        for item in entries
+    ]
+
+    chips = ["<a class='btn small' href='/activity'>همه</a>"]
+    chips += [
+        f"<a class='btn small' href='/activity?kind={esc(name)}'>"
+        f"{esc(name)} ({esc(i18n.num(int(count), 'fa'))})</a>"
+        for name, count in kinds
+    ]
+
+    body = (
+        "<p class='sub'>۱۲۰ رویداد آخر. برای دیدن یک نوع خاص، رویش بزنید.</p>"
+        + f"<div class='row' style='margin-bottom:16px'>{''.join(chips)}</div>"
+        + table(
+            ["زمان", "رویداد", "توضیح", "کاربر"],
+            rows,
+            empty="رویدادی ثبت نشده.",
+            icon="🧭",
+        )
+    )
+    return await _shell(request, "رویدادها", body, active="/activity")
+
+
+# ------------------------------------------------------------ حساب من
+async def account_page(request: web.Request) -> web.Response:
+    """حساب ورود: رمز و نشست‌های باز."""
+    session = request["session"]
+    account = await auth.account_of(session.user_id)
+    open_sessions = await auth.sessions_of(session.user_id)
+
+    rows = [
+        f"<tr><td>{esc(_when(item.created_at))}</td>"
+        f"<td>{esc(item.user_agent or '—')}</td>"
+        f"<td>{esc(_when(item.expires_at))}</td></tr>"
+        for item in open_sessions
+    ]
+
+    change = form(
+        "/account/password",
+        session.csrf,
+        "<label class='field'><span class='cap'>رمز تازه</span>"
+        "<input type='password' name='password' autocomplete='new-password' dir='ltr'>"
+        f"<span class='hint'>دست‌کم {i18n.num(auth.MIN_PASSWORD, 'fa')} نویسه، "
+        "نه فقط عدد.</span></label>"
+        "<button class='btn primary'>تغییر رمز</button>",
+    )
+
+    body = (
+        _flash(request)
+        + "<div class='split'>"
+        + panel(
+            "مشخصات",
+            "<dl class='facts'>"
+            f"<dt>نام کاربری</dt><dd><code>{esc(account.username if account else '—')}</code></dd>"
+            f"<dt>شناسه تلگرام</dt><dd><code>{esc(session.user_id)}</code></dd>"
+            f"<dt>آخرین ورود</dt><dd>{esc(_when(account.last_login_at) if account else '—')}</dd>"
+            "</dl>",
+        )
+        + panel(
+            "تغییر رمز",
+            change,
+            sub="با تغییر رمز، همه‌ی نشست‌های باز بسته می‌شوند.",
+        )
+        + "</div>"
+        + "<section><h2>دستگاه‌های واردشده</h2>"
+        + table(
+            ["ورود", "مرورگر", "انقضا"],
+            rows,
+            empty="نشست بازی نیست.",
+            icon="🔐",
+        )
+        + "<div style='margin-top:14px'>"
+        + form(
+            "/account/logout-all",
+            session.csrf,
+            "<button class='btn bad'>خروج از همه‌ی دستگاه‌ها</button>",
+            confirm="از همه‌ی دستگاه‌ها خارج شوید؟ خودتان هم باید دوباره وارد شوید.",
+        )
+        + "</div></section>"
+    )
+    return await _shell(request, "حساب من", body, active="/account")
+
+
+async def account_password(request: web.Request) -> web.Response:
+    blocked = await _guard_post(request, roles.CAP_REPORTS, "/account")
+    if blocked is not None:
+        return blocked
+
+    posted = await request.post()
+    problem = await auth.set_password(
+        request["session"].user_id, str(posted.get("password", ""))
+    )
+    if problem:
+        return _back("/account", err=problem)
+    # رمز که عوض شد نشست‌ها بسته شده‌اند، پس این کوکی هم دیگر معتبر
+    # نیست؛ کاربر به صفحه‌ی ورود می‌رود، که همان انتظار درست است.
+    return web.HTTPFound("/login")
+
+
+async def account_logout_all(request: web.Request) -> web.Response:
+    blocked = await _guard_post(request, roles.CAP_REPORTS, "/account")
+    if blocked is not None:
+        return blocked
+    await auth.end_all(request["session"].user_id)
+    return web.HTTPFound("/login")
+
+
+# --------------------------------------------- بازگشت از درگاه زرین‌پال
+async def zarinpal_return(request: web.Request) -> web.Response:
+    """کاربر از درگاه برگشته است.
+
+    <b>به هیچ‌کدام از پارامترهای این نشانی اعتماد نمی‌شود.</b> مرورگر
+    کاربر `Status=OK` را می‌آورد و هرکسی می‌تواند همین نشانی را دستی
+    باز کند. تنها چیزی که پرداخت را ثابت می‌کند، تماس سمت سرور با
+    زرین‌پال است — و مبلغی که به آن تماس می‌دهیم از دیتابیس خودمان
+    می‌آید، نه از این نشانی.
+    """
+    def done(message: str, *, bad: bool = False) -> web.Response:
+        return web.Response(
+            text=render.gate(message, bad=bad, theme=_theme(request)),
+            content_type="text/html",
+        )
+
+    request_id = _int_or_zero(request.query.get("rid"))
+    authority = (request.query.get("Authority") or "").strip()
+    status = (request.query.get("Status") or "").strip().upper()
+
+    payment = await payments.get_request(request_id) if request_id else None
+    if payment is None:
+        return done("این پرداخت پیدا نشد.", bad=True)
+
+    if payment.status == PaymentRequest.STATUS_APPROVED:
+        # کاربر صفحه را دوباره باز کرده؛ نباید دوباره اشتراک بدهیم
+        return done("این پرداخت قبلاً تأیید شده و اشتراکتان فعال است.")
+
+    if status != "OK" or not authority:
+        return done("پرداخت انجام نشد یا لغو شد. می‌توانید دوباره تلاش کنید.")
+
+    receipt_data = await zarinpal.verify(authority, payment.amount_toman)
+    if receipt_data is None:
+        return done(
+            "تأیید پرداخت ناموفق بود. اگر مبلغ از حسابتان کم شده، با "
+            "پشتیبانی تماس بگیرید و کد پیگیری را بدهید: " + str(payment.id),
+            bad=True,
+        )
+
+    await payments.attach_reference(payment.id, receipt_data["ref_id"])
+    approved, sub = await payments.approve(payment.id, admin_id=0)
+    if approved is None:
+        return done("فعال‌سازی ناموفق بود. با پشتیبانی تماس بگیرید.", bad=True)
+
+    bot = request.app[BOT]
+    try:
+        await bot.send_message(
+            approved.user_id, await payments.approval_notice(approved, sub)
+        )
+    except Exception:
+        log.warning("اطلاع فعال‌سازی به کاربر %s نرسید", approved.user_id, exc_info=True)
+
+    return done(
+        f"پرداخت تأیید شد و اشتراکتان فعال است.\n"
+        f"شماره پیگیری: {receipt_data['ref_id']}\n"
+        "می‌توانید به تلگرام برگردید."
+    )
+
+
+def _int_or_zero(raw) -> int:
+    try:
+        return int(raw)
+    except (TypeError, ValueError):
+        return 0
+
+
+# ------------------------------------------------------- بالا آوردن
+def build_app(bot) -> web.Application:
+    app = web.Application(middlewares=[auth_middleware])
+    app[BOT] = bot
+    # مسیرها بدون پیشوند نوشته می‌شوند و اینجا یک‌جا پیشوند می‌خورند —
+    # همان‌جایی که HTML و تغییرمسیرها هم پیشوند می‌گیرند. اگر هر مسیر
+    # پیشوندش را خودش می‌نوشت، یکی‌شان جا می‌ماند و ۴۰۴ می‌شد.
+    def get(path, handler):
+        return web.get(u(path), handler)
+
+    def post(path, handler):
+        return web.post(u(path), handler)
+
+    app.add_routes(miniapp.routes())
+    app.add_routes(
+        [
+            get("/healthz", healthz),
+            # فایل‌های ثابت (فونت). عمومی است و باید باشد: مرورگر
+            # پیش از ورود هم صفحه‌ی لاگین را با همین فونت می‌کشد.
+            web.static(u("/static"), STATIC_DIR, show_index=False),
+            get(zarinpal.CALLBACK_PATH, zarinpal_return),
+            get("/enter", enter),
+            get("/theme", theme_switch),
+            get("/login", login_page),
+            post("/login", login_submit),
+            get("/logout", logout),
+            get("/", dashboard),
+            get("/payments", payment_list),
+            post("/payments/{id}/approve", payment_approve),
+            post("/payments/{id}/reject", payment_reject),
+            get("/receipt/{id}", receipt),
+            get("/users", user_list),
+            get("/users/{id}", user_detail),
+            post("/users/{id}/grant", user_grant),
+            post("/users/{id}/days", user_days),
+            post("/users/{id}/ban", user_ban),
+            post("/users/{id}/revoke", user_revoke),
+            get("/tasks", task_list),
+            post("/tasks/{id}/toggle", task_toggle),
+            get("/resellers", reseller_page),
+            get("/resellers/{id}", reseller_detail),
+            post("/resellers/default", reseller_default),
+            post("/resellers/set", reseller_set),
+            post("/resellers/{id}/keeps", reseller_keeps),
+            post("/resellers/{id}/remove", reseller_remove),
+            get("/finance", finance_page),
+            get("/timings", timings_page),
+            get("/activity", activity_page),
+            get("/account", account_page),
+            post("/account/password", account_password),
+            post("/account/logout-all", account_logout_all),
+            get("/settings", settings_page),
+            post("/settings/card", settings_card),
+            post("/settings/crypto", settings_crypto),
+            post("/settings/autorate", settings_autorate),
+            post("/settings/ratenow", settings_ratenow),
+            post("/settings/zarinpal", settings_zarinpal),
+        ]
+    )
+    return app
+
+
+async def start_panel(bot) -> None:
+    """اگر در .env روشن شده باشد، پنل را بالا می‌آورد."""
+    global _runner
+    cfg = get_settings()
+    if not cfg.web_enabled:
+        return
+    if _runner is not None:
+        return
+
+    _runner = web.AppRunner(build_app(bot), access_log=None)
+    await _runner.setup()
+    site = web.TCPSite(_runner, cfg.web_host, cfg.web_port)
+    await site.start()
+    log.info(
+        "پنل وب روی http://%s:%s%s بالا آمد",
+        cfg.web_host,
+        cfg.web_port,
+        render.PREFIX,
+    )
+    if not cfg.web_base_url:
+        log.warning(
+            "WEB_BASE_URL خالی است؛ لینک ورود ساخته نمی‌شود. "
+            "آدرس عمومی پنل را در .env بگذارید."
+        )
+    elif render.PREFIX and not cfg.web_base_url.rstrip("/").endswith(render.PREFIX):
+        # <b>این خطا بی‌صداست و پیدا کردنش سخت.</b> پنل بالا می‌آید و
+        # کار می‌کند، ولی لینکِ ورودی که ربات می‌فرستد و نشانی بازگشتِ
+        # زرین‌پال هر دو یک پله بالاتر می‌افتند — یعنی روی صفحه‌ی فروش،
+        # که ۴۰۴ می‌دهد یا صفحه‌ی اشتباه نشان می‌دهد.
+        log.warning(
+            "WEB_BASE_URL «%s» است ولی پنل زیر «%s» نشسته. لینک ورود و "
+            "بازگشت زرین‌پال به جای درست نمی‌روند. WEB_BASE_URL را به "
+            "«…%s» ختم کنید.",
+            cfg.web_base_url,
+            render.PREFIX,
+            render.PREFIX,
+        )
+
+
+async def stop_panel() -> None:
+    global _runner
+    if _runner is None:
+        return
+    await _runner.cleanup()
+    _runner = None
+    log.info("پنل وب خاموش شد")

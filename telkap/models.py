@@ -1,17 +1,17 @@
 """مدل‌های دیتابیس."""
 from __future__ import annotations
 
-from datetime import datetime, timezone
+from datetime import UTC, datetime
 from typing import Any
 
 from sqlalchemy import (
+    JSON,
     BigInteger,
     Boolean,
     DateTime,
     ForeignKey,
     Index,
     Integer,
-    JSON,
     String,
     Text,
     UniqueConstraint,
@@ -20,7 +20,7 @@ from sqlalchemy.orm import DeclarativeBase, Mapped, mapped_column, relationship
 
 
 def utcnow() -> datetime:
-    return datetime.now(timezone.utc)
+    return datetime.now(UTC)
 
 
 class Base(DeclarativeBase):
@@ -41,15 +41,84 @@ class User(Base):
     session_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
     account_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     account_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+    # ارسال ایموجی پریمیوم فقط با اکانت پریمیوم ممکن است. این را هنگام
+    # ورود می‌گیریم تا بشود پیش از کپی به کاربر گفت، نه بعد از اینکه
+    # پست‌هایش ساده منتشر شدند.
+    account_premium: Mapped[bool] = mapped_column(Boolean, default=False)
 
     # احراز هویت دو مرحله‌ای در سطح ربات (پین عددی)
     pin_hash: Mapped[str | None] = mapped_column(String(128), nullable=True)
 
+    # پذیرش شرایط استفاده. صفر یعنی هنوز نپذیرفته. نسخه ذخیره می‌شود نه
+    # یک بله/خیر، چون پذیرشِ متنِ قدیمی پذیرشِ متن تازه نیست — و زمانش
+    # هم می‌ماند، وگرنه پذیرش قابل استناد نیست.
+    terms_version: Mapped[int] = mapped_column(Integer, default=0)
+    terms_accepted_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
     is_banned: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
-    tasks: Mapped[list["Task"]] = relationship(back_populates="user", cascade="all, delete-orphan")
-    subscriptions: Mapped[list["Subscription"]] = relationship(
+    # اعتبارهای خریداری‌شده‌ی جدا از اشتراک (هر واحد = یک تصویر یا یک پیام)
+    watermark_credits: Mapped[int] = mapped_column(Integer, default=0)
+    history_credits: Mapped[int] = mapped_column(Integer, default=0)
+    ai_credits: Mapped[int] = mapped_column(Integer, default=0)
+
+    # سقف‌ها و قابلیت‌های اختصاصی این کاربر که ادمین دستی تعیین کرده و
+    # روی طرحش سوار می‌شود. کلید نبود یعنی «همان مقدار طرح».
+    limits: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+
+    # موجودی کیف پول به تومان. مرجعِ حقیقت همین ستون است و جدول
+    # wallet_entries دفترِ توضیح آن؛ هر تغییر باید هر دو را بنویسد.
+    wallet_toman: Mapped[int] = mapped_column(Integer, default=0)
+
+    # چه کسی این کاربر را دعوت کرده. فقط یک بار در اولین /start بسته
+    # می‌شود و هرگز بازنویسی نمی‌گردد، وگرنه پاداش قابل دزدیدن است.
+    referred_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+
+    # تمدید خودکار از موجودی کیف پول. عمداً پیش‌فرض خاموش است: برداشت
+    # خودکار پول باید انتخاب صریح کاربر باشد، نه چیزی که سرش بیاید.
+    auto_renew: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    # نمایندگی: اشتراک را با تخفیف از کیف پولش می‌خرد و برای مشتری خودش
+    # فعال می‌کند. درصد تخفیف برای هر نماینده جدا تعیین می‌شود.
+    is_reseller: Mapped[bool] = mapped_column(Boolean, default=False, index=True)
+    reseller_discount: Mapped[int] = mapped_column(Integer, default=0)
+
+    # کدام نماینده این مشتری را آورده. مثل referred_by فقط یک بار بسته
+    # می‌شود و هرگز بازنویسی نمی‌شود.
+    #
+    # <b>چرا اصلاً هست.</b> بزرگ‌ترین نگرانی نماینده این است که مشتری‌اش
+    # مستقیم بیاید و دفعه‌ی بعد از او نخرد. با این ستون، خریدِ مستقیمِ
+    # آن مشتری هم سهم نماینده را به کیف پولش می‌ریزد — یعنی رفتنِ
+    # مشتری به سراغ ما، چیزی از نماینده کم نمی‌کند.
+    owned_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+
+    # آیا مشتری‌های این نماینده به نامش بسته شوند و سهمِ خرید مستقیمشان
+    # را بگیرد. تصمیمِ مدیر است، برای هر نماینده جدا: با بعضی‌ها چنین
+    # توافقی هست و با بعضی نه، و نبودنِ این کلید یعنی یا به همه بدهیم
+    # یا به هیچ‌کس.
+    reseller_keeps: Mapped[bool] = mapped_column(Boolean, default=True)
+
+    # سلامت اکانت کاربری متصل: ok | flood | peer_flood | banned | revoked
+    account_state: Mapped[str] = mapped_column(String(16), default="ok", index=True)
+    account_note: Mapped[str] = mapped_column(String(120), default="")
+    account_checked_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+
+    # زبان رابط کاربری: fa | en | ar
+    language: Mapped[str] = mapped_column(String(4), default="fa")
+    # سطح نمایش منوها: simple | pro
+    # با ده‌ها گزینه، منوی کامل کاربر تازه را می‌ترساند. حالت ساده فقط
+    # چیزهایی را نشان می‌دهد که واقعاً لازم‌اند و بقیه یک کلیک دورترند.
+    display_level: Mapped[str] = mapped_column(String(8), default="simple")
+    # خلاصه‌ی روزانه‌ی کارها
+    daily_digest: Mapped[bool] = mapped_column(Boolean, default=False)
+
+    tasks: Mapped[list[Task]] = relationship(back_populates="user", cascade="all, delete-orphan")
+    subscriptions: Mapped[list[Subscription]] = relationship(
         back_populates="user", cascade="all, delete-orphan"
     )
 
@@ -75,7 +144,7 @@ class Subscription(Base):
         now = now or utcnow()
         expires = self.expires_at
         if expires.tzinfo is None:
-            expires = expires.replace(tzinfo=timezone.utc)
+            expires = expires.replace(tzinfo=UTC)
         return expires > now
 
 
@@ -90,8 +159,18 @@ class Task(Base):
 
     title: Mapped[str] = mapped_column(String(128), default="")
 
+    # مبدا همیشه کانال تلگرام نیست. "rss" یعنی source_ref آدرس یک فید
+    # است و source_id معنایی ندارد. بقیه‌ی کار — مقصدها، قواعد،
+    # فیلترها، امضا — دقیقاً همان است، پس یک ستون کافی است و لازم
+    # نبود جدول تازه‌ای ساخته شود.
+    SOURCE_TELEGRAM = "telegram"
+    SOURCE_RSS = "rss"
+
+    source_kind: Mapped[str] = mapped_column(String(16), default=SOURCE_TELEGRAM)
     source_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
-    source_ref: Mapped[str] = mapped_column(String(128))
+    # ۴۰۰ نویسه چون آدرس فید می‌تواند بلند باشد؛ آیدی کانال کوتاه است.
+    # SQLite طول را اعمال نمی‌کند، پس دیتابیس‌های موجود دست نمی‌خورند.
+    source_ref: Mapped[str] = mapped_column(String(400))
     source_title: Mapped[str] = mapped_column(String(160), default="")
 
     dest_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
@@ -108,10 +187,10 @@ class Task(Base):
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     user: Mapped[User] = relationship(back_populates="tasks")
-    rules: Mapped[list["Rule"]] = relationship(
+    rules: Mapped[list[Rule]] = relationship(
         back_populates="task", cascade="all, delete-orphan", lazy="selectin"
     )
-    destinations: Mapped[list["Destination"]] = relationship(
+    destinations: Mapped[list[Destination]] = relationship(
         back_populates="task", cascade="all, delete-orphan", lazy="selectin"
     )
 
@@ -167,6 +246,9 @@ class Destination(Base):
     ref: Mapped[str] = mapped_column(String(128))
     title: Mapped[str] = mapped_column(String(160), default="")
     enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # تنظیمات اختصاصی این مقصد که روی تنظیمات کار سوار می‌شود؛
+    # مثلاً امضا یا فوتر متفاوت برای هر کانال
+    overrides: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     task: Mapped[Task] = relationship(back_populates="destinations")
@@ -181,6 +263,10 @@ class MessageMap(Base):
     __tablename__ = "message_map"
     __table_args__ = (
         UniqueConstraint("task_id", "src_msg_id", "dest_chat", name="uq_message_map_task_src_dest"),
+        # تشخیص تکراری بودن به ازای هر پست اجرا می‌شود؛ بدون ایندکس، جدول پیمایش می‌شد
+        Index("ix_message_map_dedupe", "task_id", "content_hash"),
+        # همان پرسش ولی بین چند مبدا: آیا این محتوا قبلاً به این کانال رفته؟
+        Index("ix_message_map_dest_dedupe", "dest_chat", "content_hash"),
     )
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
@@ -189,6 +275,11 @@ class MessageMap(Base):
     dst_msg_id: Mapped[int] = mapped_column(BigInteger)
     dest_chat: Mapped[str] = mapped_column(String(64), default="")
     content_hash: Mapped[str | None] = mapped_column(String(64), nullable=True)
+    # اثر انگشت هم‌ارز: بدون امضا، ایموجی و لینک — همان‌هایی که بین دو
+    # نسخه‌ی یک خبر فرق می‌کنند
+    norm_hash: Mapped[str | None] = mapped_column(String(64), nullable=True, index=True)
+    # اثر انگشت شباهت؛ با تغییر کوچکِ متن کمی تغییر می‌کند
+    simhash: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
@@ -217,8 +308,71 @@ class RetryItem(Base):
         return [int(part) for part in self.src_msg_ids.split(",") if part.strip()]
 
 
+class PendingPost(Base):
+    """پستی که هنوز منتشر نشده — یا منتظر تأیید کاربر است یا منتظر ساعتش.
+
+    مثل صف تلاش مجدد، خود پیام ذخیره نمی‌شود؛ فقط نشانی‌اش. هنگام
+    انتشار دوباره از مبدا خوانده می‌شود، پس اگر پست در این فاصله ویرایش
+    یا حذف شده باشد، نسخه‌ی درست منتشر می‌گردد یا اصلاً نمی‌رود.
+
+    یک جدول برای هر دو حالت است چون سازوکارشان یکی است و فقط شرط آزاد
+    شدنشان فرق می‌کند: یکی کلیک کاربر، دیگری رسیدن زمان.
+    """
+
+    __tablename__ = "pending_posts"
+    __table_args__ = (
+        UniqueConstraint("task_id", "src_msg_ids", name="uq_pending_once"),
+    )
+
+    REASON_APPROVAL = "approval"   # منتظر تأیید کاربر
+    REASON_SCHEDULE = "schedule"   # منتظر رسیدن ساعت انتشار
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    src_chat_id: Mapped[int] = mapped_column(BigInteger)
+    src_msg_ids: Mapped[str] = mapped_column(String(400))  # آیدی‌ها با کاما
+    reason: Mapped[str] = mapped_column(String(16), default=REASON_APPROVAL, index=True)
+    # چند کلمه از خود پست، تا کاربر در فهرست بفهمد کدام است
+    preview: Mapped[str] = mapped_column(String(200), default="")
+    media_kind: Mapped[str] = mapped_column(String(16), default="text")
+    # برای حالت زمان‌بندی؛ در حالت تأیید خالی است
+    release_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True, index=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    @property
+    def message_ids(self) -> list[int]:
+        return [int(part) for part in self.src_msg_ids.split(",") if part.strip()]
+
+
+class ForceJoinChannel(Base):
+    """کانالی که کاربر پیش از استفاده از ربات باید عضو آن باشد.
+
+    ادمین از داخل پنل هر تعداد کانال اضافه می‌کند؛ ربات باید در همه‌ی
+    آن‌ها ادمین باشد تا بتواند عضویت را بررسی کند.
+    """
+
+    __tablename__ = "force_join_channels"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ref: Mapped[str] = mapped_column(String(128), unique=True)   # username یا -100…
+    title: Mapped[str] = mapped_column(String(160), default="")
+    invite_link: Mapped[str] = mapped_column(String(256), default="")
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    added_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    @property
+    def url(self) -> str:
+        if self.invite_link:
+            return self.invite_link
+        return f"https://t.me/{self.ref.lstrip('@')}"
+
+
 class PaymentRequest(Base):
-    """درخواست خرید اشتراک با رسید کارت‌به‌کارت."""
+    """درخواست خرید اشتراک یا بسته‌ی اعتبار، با رسید کارت‌به‌کارت."""
 
     __tablename__ = "payment_requests"
 
@@ -226,9 +380,37 @@ class PaymentRequest(Base):
     STATUS_APPROVED = "approved"
     STATUS_REJECTED = "rejected"
 
+    KIND_PLAN = "plan"
+    KIND_CREDIT = "credit"
+    # شارژ کیف پول با مبلغ دلخواه. جدا از دو تای بالا، چون نه طرحی
+    # فعال می‌کند نه سهمیه‌ای — فقط موجودی را بالا می‌برد تا بعداً
+    # هرچه خواست بخرد.
+    KIND_TOPUP = "topup"
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    # برای خرید اشتراک کد پلن، و برای اعتبار کد بسته (wm / hist)
     plan_code: Mapped[str] = mapped_column(String(32))
+    kind: Mapped[str] = mapped_column(String(16), default=KIND_PLAN)
+    quantity: Mapped[int] = mapped_column(Integer, default=0)
+    amount_toman: Mapped[int] = mapped_column(Integer, default=0)
+    # کد تخفیف اعمال‌شده و اثرش؛ برای صورتحساب و حسابرسی نگه داشته می‌شوند
+    coupon_code: Mapped[str] = mapped_column(String(32), default="")
+    discount_toman: Mapped[int] = mapped_column(Integer, default=0)
+    # ارزش باقی‌مانده‌ی اشتراک قبلی که هنگام ارتقا کسر شده است
+    credit_toman: Mapped[int] = mapped_column(Integer, default=0)
+    # قیمت فهرست پیش از هر کسری
+    list_toman: Mapped[int] = mapped_column(Integer, default=0)
+
+    # با کدام راه پرداخت شد. کارت رسید تصویری دارد و تتر هش تراکنش،
+    # ولی هر دو به همان تأیید ادمین می‌رسند.
+    pay_method: Mapped[str] = mapped_column(String(8), default="card")   # card | usdt
+    # مبلغ تتری و نرخ روزِ ساخت درخواست. نرخ ذخیره می‌شود چون فردا عوض
+    # می‌شود و صورتحساب باید بگوید آن روز چند بوده.
+    usdt_amount: Mapped[str] = mapped_column(String(24), default="")
+    usdt_rate: Mapped[int] = mapped_column(Integer, default=0)
+    tx_hash: Mapped[str] = mapped_column(String(70), default="")
+
     receipt_file_id: Mapped[str | None] = mapped_column(String(256), nullable=True)
     receipt_kind: Mapped[str] = mapped_column(String(16), default="photo")  # photo | document | text
     note: Mapped[str] = mapped_column(String(400), default="")
@@ -253,6 +435,30 @@ class DailyStat(Base):
     failed: Mapped[int] = mapped_column(Integer, default=0)
 
 
+class PeriodUsage(Base):
+    """مصرف سهمیه‌های یک اشتراک، در کل دوره‌ی آن.
+
+    سهمیه‌ها روزانه نیستند: «۲۰۰۰ پیام» یعنی ۲۰۰۰ پیام در کل ۳۰ روز. پس
+    شمارنده به اشتراک گره خورده، نه به روز. با تمدید یا خرید طرح تازه یک
+    اشتراک تازه ساخته می‌شود و شمارنده‌ها از صفر شروع می‌کنند.
+
+    در دیتابیس نگه داشته می‌شود نه در حافظه، تا با ری‌استارت ربات سهمیه‌ی
+    کسی صفر نشود.
+    """
+
+    __tablename__ = "period_usage"
+    __table_args__ = (
+        UniqueConstraint("subscription_id", "kind", name="uq_period_usage"),
+    )
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    subscription_id: Mapped[int] = mapped_column(
+        ForeignKey("subscriptions.id", ondelete="CASCADE"), index=True
+    )
+    kind: Mapped[str] = mapped_column(String(16))  # messages | watermark | history
+    used: Mapped[int] = mapped_column(Integer, default=0)
+
+
 class ReminderState(Base):
     """جلوگیری از ارسال تکراری یادآوری انقضای اشتراک."""
 
@@ -266,6 +472,227 @@ class ReminderState(Base):
     sent_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
 
+class SupportTicket(Base):
+    """گفتگوی پشتیبانی یک کاربر.
+
+    کاربر هرگز آیدی ادمین را نمی‌بیند؛ پیام‌ها از طریق خود ربات رد و بدل
+    می‌شوند و پاسخ‌ها با عنوان «پشتیبانی» به او می‌رسد.
+    """
+
+    __tablename__ = "support_tickets"
+
+    STATUS_OPEN = "open"
+    STATUS_CLOSED = "closed"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(
+        ForeignKey("users.id", ondelete="CASCADE"), index=True
+    )
+    subject: Mapped[str] = mapped_column(String(120), default="")
+    status: Mapped[str] = mapped_column(String(16), default=STATUS_OPEN, index=True)
+    # آیا آخرین پیام از سمت کاربر است و هنوز جواب نگرفته؟
+    awaiting_reply: Mapped[bool] = mapped_column(Boolean, default=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+    last_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    messages: Mapped[list[SupportMessage]] = relationship(
+        back_populates="ticket", cascade="all, delete-orphan", lazy="selectin"
+    )
+
+
+class SupportMessage(Base):
+    """یک پیام درون گفتگوی پشتیبانی."""
+
+    __tablename__ = "support_messages"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    ticket_id: Mapped[int] = mapped_column(
+        ForeignKey("support_tickets.id", ondelete="CASCADE"), index=True
+    )
+    from_admin: Mapped[bool] = mapped_column(Boolean, default=False)
+    # فقط برای گزارش داخلی؛ هرگز به کاربر نشان داده نمی‌شود
+    admin_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    text: Mapped[str] = mapped_column(Text, default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    ticket: Mapped[SupportTicket] = relationship(back_populates="messages")
+
+
+class WalletEntry(Base):
+    """دفتر تراکنش کیف پول: هر واریز و برداشت با علت و مرجع.
+
+    بدون این دفتر، وقتی کاربر می‌گوید «موجودی‌ام کم شده» هیچ راهی برای
+    اثبات نیست. `amount_toman` علامت‌دار است: مثبت واریز، منفی برداشت.
+    `balance_after` هم ذخیره می‌شود تا بازسازی تاریخچه به جمع‌زدن کل
+    جدول نیاز نداشته باشد.
+    """
+
+    __tablename__ = "wallet_entries"
+    __table_args__ = (Index("ix_wallet_user_time", "user_id", "id"),)
+
+    REASON_REFERRAL = "referral"     # پاداش دعوت
+    REASON_TOPUP = "topup"           # شارژ توسط کاربر
+    REASON_PURCHASE = "purchase"     # خرید از موجودی
+    REASON_REFUND = "refund"         # اصلاح برداشتی که چیزی نخرید
+    REASON_ADMIN = "admin"           # تنظیم دستی ادمین
+    REASON_COMMISSION = "commission"  # سهم نماینده از خرید مستقیم مشتری‌اش
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(ForeignKey("users.id", ondelete="CASCADE"), index=True)
+    amount_toman: Mapped[int] = mapped_column(Integer)      # علامت‌دار
+    balance_after: Mapped[int] = mapped_column(Integer, default=0)
+    reason: Mapped[str] = mapped_column(String(16), default=REASON_ADMIN)
+    note: Mapped[str] = mapped_column(String(255), default="")
+    # شناسه‌ی چیزی که این تراکنش به آن مربوط است (رسید، پاداش و…)
+    ref_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    admin_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ReferralReward(Base):
+    """پاداش دعوت، از لحظه‌ی تعلق تا لحظه‌ی پرداخت.
+
+    پاداش هنگام ثبت‌نام ساخته نمی‌شود؛ فقط وقتی خریدِ کاربرِ دعوت‌شده
+    تأیید شود. قید یکتا جلوی پرداخت دوباره برای یک رسید را می‌گیرد.
+    """
+
+    __tablename__ = "referral_rewards"
+    __table_args__ = (
+        UniqueConstraint("payment_id", name="uq_referral_payment"),
+        Index("ix_referral_referrer", "referrer_id", "id"),
+    )
+
+    STATUS_PAID = "paid"
+    STATUS_VOID = "void"          # رد شده: زیر حداقل خرید، سقف پر، یا خاموش
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    referrer_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    referred_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    payment_id: Mapped[int] = mapped_column(Integer)
+    # مبلغ خریدی که پاداش از آن حساب شده، برای حسابرسی بعدی
+    basis_toman: Mapped[int] = mapped_column(Integer, default=0)
+    amount_toman: Mapped[int] = mapped_column(Integer, default=0)
+    status: Mapped[str] = mapped_column(String(16), default=STATUS_PAID, index=True)
+    note: Mapped[str] = mapped_column(String(255), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class Coupon(Base):
+    """کد تخفیف. یک کد، چند قانون: چه کسی، چند بار، روی کدام طرح، تا کی."""
+
+    __tablename__ = "coupons"
+
+    KIND_PERCENT = "percent"
+    KIND_FIXED = "fixed"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    kind: Mapped[str] = mapped_column(String(16), default=KIND_PERCENT)
+    value: Mapped[int] = mapped_column(Integer, default=0)       # درصد یا تومان
+
+    max_uses: Mapped[int] = mapped_column(Integer, default=0)    # ۰ = بی‌نهایت
+    used_count: Mapped[int] = mapped_column(Integer, default=0)
+    per_user_limit: Mapped[int] = mapped_column(Integer, default=1)
+
+    # فقط روی این طرح‌ها؛ خالی یعنی همه
+    plan_codes: Mapped[list] = mapped_column(JSON, default=list)
+    min_toman: Mapped[int] = mapped_column(Integer, default=0)
+
+    expires_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    note: Mapped[str] = mapped_column(String(160), default="")
+    created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class CouponUse(Base):
+    """هر بار استفاده از یک کد؛ برای سقف «هر کاربر چند بار» و گزارش کمپین."""
+
+    __tablename__ = "coupon_uses"
+    __table_args__ = (Index("ix_coupon_use_pair", "coupon_id", "user_id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    coupon_id: Mapped[int] = mapped_column(
+        ForeignKey("coupons.id", ondelete="CASCADE"), index=True
+    )
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    payment_id: Mapped[int | None] = mapped_column(Integer, nullable=True)
+    discount_toman: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class GiftCode(Base):
+    """کد هدیه یا پیش‌فروش: یک بار مصرف، یک طرح مشخص.
+
+    برخلاف کد تخفیف که روی قیمت اثر می‌گذارد، این کد خودش اشتراک است —
+    کاربر واردش می‌کند و طرح بدون پرداخت فعال می‌شود.
+    """
+
+    __tablename__ = "gift_codes"
+    __table_args__ = (Index("ix_gift_batch", "batch"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    code: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    plan_code: Mapped[str] = mapped_column(String(32))
+    batch: Mapped[str] = mapped_column(String(32), default="")
+    note: Mapped[str] = mapped_column(String(160), default="")
+
+    used_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True, index=True)
+    used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ResellerSale(Base):
+    """یک فروش نمایندگی: نماینده از کیف پولش خرید و برای مشتری فعال کرد.
+
+    قیمت فهرست هم ذخیره می‌شود تا بعداً معلوم باشد تخفیف در لحظه‌ی فروش
+    چقدر بوده، حتی اگر قیمت‌ها یا درصد تخفیف بعداً عوض شوند.
+    """
+
+    __tablename__ = "reseller_sales"
+    __table_args__ = (Index("ix_reseller_sales_seller", "reseller_id", "id"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    reseller_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    customer_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    plan_code: Mapped[str] = mapped_column(String(32))
+    paid_toman: Mapped[int] = mapped_column(Integer, default=0)       # آنچه نماینده داد
+    list_toman: Mapped[int] = mapped_column(Integer, default=0)       # قیمت فهرست
+    discount_percent: Mapped[int] = mapped_column(Integer, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class PlanOverride(Base):
+    """تغییرهای ادمین روی یک طرح.
+
+    مقادیر پیش‌فرض در `plans.py` می‌مانند و اینجا فقط تفاوت‌ها ذخیره
+    می‌شوند؛ پس پاک کردن یک ردیف، طرح را به حالت کارخانه برمی‌گرداند.
+    """
+
+    __tablename__ = "plan_overrides"
+
+    code: Mapped[str] = mapped_column(String(32), primary_key=True)
+    data: Mapped[dict[str, Any]] = mapped_column(JSON, default=dict)
+    updated_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class AppSetting(Base):
+    """تنظیم عمومیِ قابل ویرایش از پنل ادمین (قیمت اعتبار، سقف‌ها و…)."""
+
+    __tablename__ = "app_settings"
+
+    key: Mapped[str] = mapped_column(String(64), primary_key=True)
+    value: Mapped[Any] = mapped_column(JSON, default=None)
+    updated_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    updated_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
 class ActivityLog(Base):
     __tablename__ = "activity_log"
 
@@ -275,4 +702,145 @@ class ActivityLog(Base):
     level: Mapped[str] = mapped_column(String(16), default="info")
     event: Mapped[str] = mapped_column(String(64))
     detail: Mapped[str] = mapped_column(String(600), default="")
+    # چه کسی این کار را کرد. برای کارهای ادمین با user_id (که هدفِ کار است)
+    # فرق دارد؛ بدون این ستون، لاگ حسابرسی قابل اتکا نیست.
+    actor_id: Mapped[int | None] = mapped_column(BigInteger, index=True, nullable=True)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow, index=True)
+
+
+class AdminRole(Base):
+    """نقش هر ادمین. ادمین‌های داخل .env همیشه دسترسی کامل دارند.
+
+    وقتی کسی را برای پشتیبانی می‌آورید، نباید بتواند قیمت‌ها را عوض کند.
+    """
+
+    __tablename__ = "admin_roles"
+
+    ROLE_OWNER = "owner"        # همه‌چیز
+    ROLE_FINANCE = "finance"    # پرداخت، طرح‌ها، کدهای تخفیف، گزارش درآمد
+    ROLE_SUPPORT = "support"    # تیکت‌ها، کاربران، پیام همگانی
+
+    user_id: Mapped[int] = mapped_column(BigInteger, primary_key=True, autoincrement=False)
+    role: Mapped[str] = mapped_column(String(16), default=ROLE_SUPPORT)
+    note: Mapped[str] = mapped_column(String(120), default="")
+    added_by: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WebAccount(Base):
+    """حساب ورود به پنل وب.
+
+    <b>چرا جدا از AdminRole.</b> نقش می‌گوید این آدم <b>چه کاری</b>
+    می‌تواند بکند؛ این جدول می‌گوید <b>چطور</b> وارد می‌شود. جدا نگه
+    داشتنشان یعنی گرفتن نقش کسی، حسابش را پاک نمی‌کند و برعکس — و
+    هیچ‌کدام به‌خاطر دیگری از دست نمی‌رود.
+
+    <b>رمز هرگز خام ذخیره نمی‌شود.</b> فقط هش PBKDF2 با نمکِ مخصوص
+    همان حساب. اگر روزی کل دیتابیس بیرون برود، رمزها هنوز قابل
+    استفاده نیستند.
+    """
+
+    __tablename__ = "web_accounts"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    username: Mapped[str] = mapped_column(String(32), unique=True, index=True)
+    password_hash: Mapped[str] = mapped_column(String(200))
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)   # آیدی تلگرام
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True)
+    # ورودهای ناموفق پشت سر هم. حساب پس از چند تلاش قفل می‌شود تا
+    # حدس زدن رمز از «کند» به «بی‌فایده» برسد.
+    failed_logins: Mapped[int] = mapped_column(Integer, default=0)
+    locked_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_login_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class WebSession(Base):
+    """نشست بازِ پنل وب.
+
+    <b>چرا در دیتابیس و نه در حافظه.</b> نشست‌های حافظه‌ای با هر
+    ری‌استارت ربات می‌مردند — و ربات برای هر به‌روزرسانی ری‌استارت
+    می‌شود. کسی که می‌خواهد پنل را باز نگه دارد و سر بزند، نباید هر
+    بار دوباره وارد شود.
+
+    فقط <b>هشِ</b> شناسه‌ی نشست ذخیره می‌شود، نه خودش: دیتابیسِ
+    لو‌رفته نباید کلیدِ ورودِ آماده بدهد.
+    """
+
+    __tablename__ = "web_sessions"
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    token_hash: Mapped[str] = mapped_column(String(64), unique=True, index=True)
+    account_id: Mapped[int] = mapped_column(Integer, index=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    csrf: Mapped[str] = mapped_column(String(64))
+    # کوتاه نگه داشتنشان امنیت بیشتری نمی‌دهد وقتی کد دومرحله‌ای هست،
+    # ولی آزاردهنده است. سی روز، با امکان خروج دستی از هرجا.
+    expires_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), index=True)
+    user_agent: Mapped[str] = mapped_column(String(200), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ChurnFeedback(Base):
+    """چرا کاربر تمدید نکرد.
+
+    ارزشمندترین داده‌ای که می‌شود جمع کرد و ارزان‌ترین راه گرفتنش: یک
+    سؤال تک‌دکمه‌ای در همان پیام انقضا.
+    """
+
+    __tablename__ = "churn_feedback"
+    __table_args__ = (UniqueConstraint("user_id", "sub_id", name="uq_churn_once"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    sub_id: Mapped[int] = mapped_column(Integer)
+    reason: Mapped[str] = mapped_column(String(32), index=True)
+    note: Mapped[str] = mapped_column(String(400), default="")
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class DeliveryTiming(Base):
+    """چقدر طول کشید تا یک پست از مبدا به مقصد برسد.
+
+    <b>چرا جدول جدا و نه همان گزارش فعالیت.</b> گزارش فعالیت برای
+    خواندنِ آدم است: یک متن در یک ستون. برای اینکه بشود پرسید «میانه‌ی
+    تأخیر این هفته چقدر بود» یا «کدام مسیر کندترین است»، عدد باید عدد
+    باشد نه متن. تصمیم گرفتن بر اساس متنی که باید parse شود، همان
+    حدس زدن است با یک مرحله‌ی اضافه.
+
+    <code>seconds</code> از <b>زمان خودِ پست در مبدا</b> حساب می‌شود، نه
+    از زمانی که ما دیدیمش؛ وگرنه دیر رسیدنِ خودِ رویداد — که یکی از
+    مظنون‌هاست — اصلاً در عدد نمی‌افتد.
+    """
+
+    __tablename__ = "delivery_timings"
+    __table_args__ = (
+        Index("ix_timings_task", "task_id", "id"),
+        Index("ix_timings_when", "created_at"),
+    )
+
+    # مسیرهایی که یک پست می‌تواند از آن‌ها برود. سه‌تای آخر یعنی فایل
+    # واقعاً دانلود و دوباره آپلود شده — تنها جایی که حجم پست به تأخیر
+    # ربط پیدا می‌کند.
+    PATH_DIRECT = "direct"          # مرجع رسانه، بدون دانلود — سریع در هر حجمی
+    PATH_TEXT = "text"              # فقط متن
+    PATH_WATERMARK = "watermark"    # دانلود، واترمارک، آپلود
+    PATH_REWRITE = "rewrite"        # دانلود، بازنویسی فایل، آپلود
+    PATH_REUPLOAD = "reupload"      # مبدا محافظت‌شده بود؛ چاره‌ای نبود
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(Integer, index=True)
+    user_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    source_msg_id: Mapped[int] = mapped_column(BigInteger, default=0)
+    published_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    seconds: Mapped[int] = mapped_column(Integer, default=0, index=True)
+    path: Mapped[str] = mapped_column(String(16), default=PATH_DIRECT, index=True)
+    media_kind: Mapped[str] = mapped_column(String(16), default="")
+    size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

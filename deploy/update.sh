@@ -1,0 +1,200 @@
+#!/usr/bin/env bash
+#
+# بالا آوردن نسخه‌ی تازه روی سرور — با یک دستور.
+#
+#   sudo bash /opt/telkap/deploy/update.sh
+#
+# چهار کاری که این اسکریپت می‌کند و دستیِ آن‌ها فراموش می‌شود:
+#
+#   ۱. پیش از هر چیز از دیتابیس نسخه‌ی پشتیبان می‌گیرد. سشن‌های ورودِ
+#      کاربران آنجاست؛ اگر برود، همه باید دوباره وارد شوند.
+#   ۲. کامیت فعلی را یادداشت می‌کند و اگر نسخه‌ی تازه بالا نیامد،
+#      خودش برمی‌گردد به همان و ربات را دوباره روشن می‌کند. یعنی
+#      بدترین حالتِ یک به‌روزرسانی خراب، چند ثانیه قطعی است نه یک
+#      شب بیداری.
+#   ۳. کلیدهای تازه‌ی .env را گزارش می‌دهد.
+#   ۴. مطمئن می‌شود سرویس واقعاً بالا آمده — نه اینکه فقط دستور
+#      start خطا نداده باشد.
+#
+# .env هرگز دست نمی‌خورد. FERNET_KEY داخل آن است و بدون آن، سشن
+# همه‌ی کاربران غیرقابل رمزگشایی می‌شود.
+
+set -euo pipefail
+
+# ── اجرا از روی یک نسخه‌ی موقت ───────────────────────────────────────
+#
+# <b>این اسکریپت خودش را هم به‌روز می‌کند.</b> وقتی git pull اجرا
+# می‌شود، همین فایل بازنویسی می‌گردد — در حالی که bash هنوز از آن
+# می‌خواند و موقعیتِ خواندنش را نگه داشته است. نتیجه‌اش می‌تواند اجرای
+# نیمه‌ی یک دستور با نیمه‌ی دستور دیگری باشد، آن هم درست وسط توقف و
+# راه‌اندازی ربات. تا امروز فقط چون فایل کوچک بوده شانس آورده‌ایم.
+#
+# راه‌حل: یک کپی موقت ساخته و از روی آن اجرا می‌شود. از آن پس git با
+# فایل اصلی هر کاری بکند، چیزی که در حال اجراست دست‌نخورده می‌ماند.
+if [ "${TELKAP_SELF_COPY:-}" != "1" ]; then
+    _copy="$(mktemp "${TMPDIR:-/tmp}/telkap-update.XXXXXX")"
+    cat "$0" > "$_copy"
+    TELKAP_SELF_COPY=1 exec bash "$_copy" "$@"
+fi
+# همین حالا پاک می‌شود تا در /tmp انباشته نشود. روی لینوکس بی‌خطر
+# است: تا وقتی bash فایل را باز نگه داشته، محتوایش زنده می‌ماند.
+rm -f "$0" 2>/dev/null || true
+
+APP_DIR="${APP_DIR:-/opt/telkap}"
+APP_USER="${APP_USER:-telkap}"
+SERVICE="${SERVICE:-telkap}"
+BRANCH="${BRANCH:-main}"
+KEEP_BACKUPS="${KEEP_BACKUPS:-10}"
+
+# رنگ فقط وقتی خروجی به یک ترمینال واقعی می‌رود. اجرای از راه دور
+# مثل «ssh bot "bash ..."» ترمینال ندارد، و cmd ویندوز کدهای رنگ را
+# نمی‌فهمد — پس خام چاپشان می‌کند و خروجی پر از «[32m» می‌شود.
+if [ -t 1 ]; then
+    C_B=$'\033[1m'; C_G=$'\033[32m'; C_Y=$'\033[33m'; C_R=$'\033[31m'; C_0=$'\033[0m'
+else
+    C_B=''; C_G=''; C_Y=''; C_R=''; C_0=''
+fi
+
+say()  { printf '\n%s▸ %s%s\n' "$C_B" "$*" "$C_0"; }
+ok()   { printf '  %s✓%s %s\n' "$C_G" "$C_0" "$*"; }
+warn() { printf '  %s!%s %s\n' "$C_Y" "$C_0" "$*"; }
+die()  { printf '\n%s✗ %s%s\n' "$C_R" "$*" "$C_0" >&2; exit 1; }
+
+_mark_deployed() {
+    # کامیتی که ربات واقعاً با آن بالا آمد. مالکیت telkap است چون بقیه‌ی
+    # data/ هم همین‌طور است و سرویس آنجا اجازه‌ی نوشتن دارد.
+    printf '%s\n' "$1" > "$APP_DIR/data/.deployed"
+    chown "$APP_USER:$APP_USER" "$APP_DIR/data/.deployed" 2>/dev/null || true
+}
+
+_backup_db() {
+    # <b>بعد از توقف ربات صدا زده می‌شود، نه قبلش.</b> کپی گرفتن از
+    # دیتابیسی که در حال نوشته شدن است می‌تواند نسخه‌ی نیمه‌کاره بدهد —
+    # و پشتیبانِ خرابْ بدتر از نداشتنش است، چون به آن اعتماد می‌کنید.
+    # با ربات خاموش، دیتابیس آرام است و یک cp ساده کامل و درست است؛
+    # پس sqlite3 هم لازم نیست نصب باشد.
+    local stamp dir
+    stamp="$(date +%Y%m%d-%H%M%S)"
+    dir="$APP_DIR/data/backups"
+    install -d -o "$APP_USER" -g "$APP_USER" "$dir"
+
+    if [ ! -f "$APP_DIR/data/telkap.db" ]; then
+        warn "هنوز دیتابیسی ساخته نشده — چیزی برای پشتیبان‌گیری نیست"
+        return 0
+    fi
+
+    # فایل‌های -wal و -shm بعد از خاموشی تمیز معمولاً نیستند، ولی اگر
+    # ربات ناگهانی مرده باشد می‌مانند و بخشی از داده داخلشان است.
+    for suffix in "" "-wal" "-shm"; do
+        [ -f "$APP_DIR/data/telkap.db$suffix" ] || continue
+        sudo -u "$APP_USER" cp "$APP_DIR/data/telkap.db$suffix" \
+            "$dir/telkap-$stamp.db$suffix"
+    done
+    ok "data/backups/telkap-$stamp.db"
+
+    # فقط چند نسخه‌ی آخر بماند، وگرنه دیسک سرور پر می‌شود
+    ls -1t "$dir"/telkap-*.db 2>/dev/null \
+        | tail -n +$((KEEP_BACKUPS + 1)) | xargs -r rm -f || true
+}
+
+[ "$(id -u)" -eq 0 ] || die "با sudo اجرا کنید: sudo bash $0"
+cd "$APP_DIR" || die "پوشه‌ی $APP_DIR پیدا نشد"
+
+# ── ۱) گرفتن نسخه‌ی تازه ────────────────────────────────────────────
+OLD_COMMIT="$(sudo -u "$APP_USER" git rev-parse HEAD)"
+
+say "گرفتن نسخه‌ی تازه از $BRANCH"
+if ! sudo -u "$APP_USER" git diff --quiet; then
+    die "روی سرور تغییر ذخیره‌نشده هست. اول تکلیفش را روشن کنید:
+     git -C $APP_DIR status"
+fi
+
+sudo -u "$APP_USER" git fetch origin "$BRANCH"
+NEW_COMMIT="$(sudo -u "$APP_USER" git rev-parse "origin/$BRANCH")"
+
+# «کدِ روی دیسک» و «کدی که ربات دارد اجرا می‌کند» دو چیز متفاوت‌اند.
+# اگر کسی دستی git pull بزند، این دو از هم جدا می‌شوند: فایل‌ها تازه‌اند
+# ولی ربات هنوز نسخه‌ی قبلی را در حافظه دارد. بدون این نشانه، اسکریپت
+# می‌گفت «آخرین نسخه است» و ری‌استارت نمی‌کرد — یعنی شما فکر می‌کردید
+# آپدیت شده در حالی که نشده بود.
+DEPLOYED_FILE="$APP_DIR/data/.deployed"
+DEPLOYED="$(cat "$DEPLOYED_FILE" 2>/dev/null || true)"
+
+if [ "$OLD_COMMIT" = "$NEW_COMMIT" ] && [ "$DEPLOYED" = "$NEW_COMMIT" ]; then
+    ok "همین حالا آخرین نسخه است — کاری لازم نیست"
+    systemctl is-active --quiet "$SERVICE" && ok "ربات در حال اجراست" \
+        || warn "ربات خاموش است: systemctl start $SERVICE"
+    exit 0
+fi
+
+if [ "$OLD_COMMIT" = "$NEW_COMMIT" ]; then
+    warn "کد تازه است ولی ربات هنوز نسخه‌ی قبلی را اجرا می‌کند — ری‌استارت لازم است"
+else
+    printf '\n'
+    sudo -u "$APP_USER" git log --oneline "$OLD_COMMIT..$NEW_COMMIT" | sed 's/^/  /'
+fi
+
+say "توقف ربات"
+systemctl stop "$SERVICE"
+ok "متوقف شد"
+
+# ── ۲) پشتیبان، حالا که دیتابیس آرام است ────────────────────────────
+say "پشتیبان‌گیری از دیتابیس"
+_backup_db
+
+if [ "$OLD_COMMIT" != "$NEW_COMMIT" ]; then
+    sudo -u "$APP_USER" git merge --ff-only "origin/$BRANCH"
+    ok "کد به‌روز شد → $(sudo -u "$APP_USER" git rev-parse --short HEAD)"
+fi
+
+say "نصب کتابخانه‌های تازه"
+sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install -q -r requirements.txt
+ok "انجام شد"
+
+# ── ۳) کلیدهای تازه‌ی .env ──────────────────────────────────────────
+say "بررسی .env"
+sudo -u "$APP_USER" "$APP_DIR/.venv/bin/python" tools/envsync.py || true
+
+# ── ۴) روشن کردن و مطمئن شدن ────────────────────────────────────────
+say "روشن کردن ربات"
+# شمارنده‌ی راه‌اندازی مجدد صفر شود، وگرنه خرابیِ دفعه‌ی قبل به حساب
+# این نسخه نوشته می‌شود
+systemctl reset-failed "$SERVICE" || true
+systemctl start "$SERVICE"
+
+# سرویس ممکن است start شود و چند ثانیه بعد بیفتد. Restart=always هم
+# آن را بارها بالا می‌آورد، پس «فعال بودن» در لحظه‌ی اول چیزی را ثابت
+# نمی‌کند. این حلقه صبر می‌کند تا واقعاً روی پا بایستد.
+for _ in $(seq 12); do
+    sleep 1
+    systemctl is-active --quiet "$SERVICE" || continue
+    [ "$(systemctl show -p NRestarts --value "$SERVICE")" = "0" ] && break
+done
+
+if systemctl is-active --quiet "$SERVICE" \
+   && [ "$(systemctl show -p NRestarts --value "$SERVICE")" = "0" ]; then
+    _mark_deployed "$NEW_COMMIT"
+    printf '\n%s✓ نسخه‌ی تازه بالا آمد.%s\n' "$C_G" "$C_0"
+    printf '  لاگ زنده:  journalctl -u %s -f\n' "$SERVICE"
+    exit 0
+fi
+
+# ── برگشت ───────────────────────────────────────────────────────────
+printf '\n%s✗ ربات با نسخه‌ی تازه بالا نیامد. برمی‌گردم به نسخه‌ی قبلی.%s\n' "$C_R" "$C_0"
+journalctl -u "$SERVICE" -n 25 --no-pager | sed 's/^/  /'
+
+systemctl stop "$SERVICE" || true
+sudo -u "$APP_USER" git reset --hard "$OLD_COMMIT"
+sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install -q -r requirements.txt
+systemctl start "$SERVICE"
+sleep 3
+
+if systemctl is-active --quiet "$SERVICE"; then
+    _mark_deployed "$OLD_COMMIT"
+    printf '\n%s! به نسخه‌ی قبلی برگشت و ربات دوباره بالا آمد.%s\n' "$C_Y" "$C_0"
+    printf '  لاگ بالا را برای من بفرستید تا علت را پیدا کنم.\n'
+else
+    printf '\n%s✗ نسخه‌ی قبلی هم بالا نیامد — یعنی مشکل از کد نیست.%s\n' "$C_R" "$C_0"
+    printf '  احتمالاً شبکه یا .env: journalctl -u %s -n 50\n' "$SERVICE"
+fi
+exit 1

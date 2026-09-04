@@ -11,25 +11,29 @@ from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import func, select
 
 from telkap.db import get_session, log_activity
+from telkap.handlers import history as history_handlers
+from telkap.handlers.chatpicker import picker_button
+from telkap.handlers.common import Flow, get_or_create_user
 from telkap.keyboards import (
-    BTN_NEW_TASK,
-    BTN_TASKS,
     confirm,
     main_menu,
+    menu_texts,
     task_menu,
     tasks_list,
 )
-from telkap.models import DailyStat, Task, User
-from telkap.handlers.common import Flow, get_or_create_user
+from telkap.models import DailyStat, Destination, PendingPost, Task, User
 from telkap.plans import FEAT_PRIVATE
+from telkap.services import cache, diagnose, feeds, pending
 from telkap.services.copier import today_key
 from telkap.services.defaults import merged_settings
+from telkap.services.feeds import FeedError
 from telkap.services.subscription import active_plan_for
-from telkap.services.userbot import manager
+from telkap.services.userbot import LoginError, manager
 from telkap.texts import (
     ASK_DEST,
     ASK_SOURCE,
     ASK_TITLE,
+    NO_LOGIN,
     NO_SUBSCRIPTION,
     fa_num,
     on_off,
@@ -37,15 +41,6 @@ from telkap.texts import (
 
 log = logging.getLogger(__name__)
 router = Router(name="tasks")
-
-# توسط main.py مقداردهی می‌شود تا وضعیت backfill در منو نمایش داده شود
-history_copier = None
-
-
-def bind_history(copier) -> None:
-    global history_copier
-    history_copier = copier
-
 
 async def _load_tasks(user_id: int) -> list[Task]:
     async with get_session() as db:
@@ -60,7 +55,8 @@ async def task_detail_text(task: Task) -> str:
     lines = [
         f"📋 <b>{task.title or 'کار بدون نام'}</b>\n",
         f"وضعیت: {'🟢 فعال' if task.enabled else '🔴 متوقف'}",
-        f"مبدا: <code>{task.source_ref}</code>",
+        f"{'📡 فید' if task.source_kind == Task.SOURCE_RSS else 'مبدا'}: "
+        f"<code>{task.source_ref}</code>",
         f"مقصد: <code>{task.dest_ref}</code>",
         f"شیوه: {'فوروارد' if cfg.get('mode') == 'forward' else 'کپی بدون برچسب'}",
         "",
@@ -84,9 +80,18 @@ async def show_task(target: Message, task_id: int, *, edit: bool = False) -> Non
     if task is None:
         await target.answer("این کار دیگر وجود ندارد.")
         return
-    running = bool(history_copier and history_copier.is_running(task.user_id))
+    copier = history_handlers.history_copier
+    running = bool(copier and copier.is_running(task.user_id))
     text = await task_detail_text(task)
-    markup = task_menu(task, backfill_running=running)
+    waiting = await pending.waiting_count(
+        task.user_id, reason=PendingPost.REASON_APPROVAL, task_id=task.id
+    )
+    async with get_session() as db:
+        owner = await db.get(User, task.user_id)
+    pro = bool(owner and owner.display_level == "pro")
+    markup = task_menu(
+        task, backfill_running=running, waiting=waiting, pro=pro
+    )
     if edit:
         try:
             await target.edit_text(text, reply_markup=markup)
@@ -96,9 +101,33 @@ async def show_task(target: Message, task_id: int, *, edit: bool = False) -> Non
     await target.answer(text, reply_markup=markup)
 
 
+async def _dest_counts(tasks) -> dict[int, int]:
+    """تعداد کل مقصدهای فعال هر کار (مقصد اصلی + مقصدهای اضافی)."""
+    if not tasks:
+        return {}
+    ids = [task.id for task in tasks]
+    async with get_session() as db:
+        rows = await db.execute(
+            select(Destination.task_id, func.count(Destination.id))
+            .where(Destination.task_id.in_(ids), Destination.enabled.is_(True))
+            .group_by(Destination.task_id)
+        )
+        extra = dict(rows.all())
+    return {task_id: 1 + extra.get(task_id, 0) for task_id in ids}
+
+
+async def _tasks_header(user_id: int, tasks) -> str:
+    plan = await active_plan_for(user_id)
+    head = f"📋 <b>کارهای کپی شما</b> — {fa_num(len(tasks))}"
+    if plan:
+        head += f" از {fa_num(plan.max_tasks)}"
+        head += f"\n<i>طرح {plan.title} · تا {fa_num(plan.max_destinations)} مقصد برای هر کار</i>"
+    return head
+
+
 # ------------------------------------------------------------------- لیست
 @router.message(Command("tasks"))
-@router.message(F.text == BTN_TASKS)
+@router.message(F.text.in_(menu_texts("menu.tasks")))
 async def cmd_tasks(message: Message) -> None:
     tasks = await _load_tasks(message.from_user.id)
     if not tasks:
@@ -108,7 +137,8 @@ async def cmd_tasks(message: Message) -> None:
         )
         return
     await message.answer(
-        f"📋 <b>کارهای کپی شما</b> ({fa_num(len(tasks))})", reply_markup=tasks_list(tasks)
+        await _tasks_header(message.from_user.id, tasks),
+        reply_markup=tasks_list(tasks, dest_counts=await _dest_counts(tasks)),
     )
 
 
@@ -120,7 +150,8 @@ async def cb_list(call: CallbackQuery) -> None:
         await call.message.edit_text("هنوز کاری نساخته‌اید.", reply_markup=tasks_list([]))
         return
     await call.message.edit_text(
-        f"📋 <b>کارهای کپی شما</b> ({fa_num(len(tasks))})", reply_markup=tasks_list(tasks)
+        await _tasks_header(call.from_user.id, tasks),
+        reply_markup=tasks_list(tasks, dest_counts=await _dest_counts(tasks)),
     )
 
 
@@ -129,6 +160,143 @@ async def cb_open(call: CallbackQuery) -> None:
     task_id = int(call.data.split(":")[2])
     await call.answer()
     await show_task(call.message, task_id, edit=True)
+
+
+@router.callback_query(F.data.startswith("task:relisten:"))
+async def cb_relisten(call: CallbackQuery) -> None:
+    """هندلرهای کاربر را از نو می‌سازد.
+
+    <b>چرا دکمه‌اش لازم است.</b> اگر کانالی از فهرست گوش دادن بیفتد —
+    قطعیِ اتصال، خطای موقتِ تلگرام هنگام شناسایی کانال — پست‌هایش به
+    هیچ کاری نمی‌رسند و <b>هیچ ردی هم نمی‌گذارند</b>. تا امروز تنها
+    راهِ برگرداندنش خاموش و روشن کردن کار یا ری‌استارت ربات بود.
+    """
+    task_id = int(call.data.split(":")[2])
+    async with get_session() as db:
+        task = await db.get(Task, task_id)
+        if task is None or task.user_id != call.from_user.id:
+            await call.answer("دسترسی ندارید", show_alert=True)
+            return
+
+    await call.answer("در حال راه‌اندازی دوباره…")
+    try:
+        count = await manager.reload_user(call.from_user.id)
+    except Exception as exc:                     # noqa: BLE001
+        log.warning("راه‌اندازی دوباره ناموفق بود", exc_info=True)
+        await call.message.answer(f"⚠️ راه‌اندازی دوباره ممکن نشد: {exc}")
+        return
+
+    listening = manager.is_listening(call.from_user.id, task.source_id)
+    if listening:
+        await call.message.answer(
+            f"✅ دوباره راه افتاد — {fa_num(count)} کار فعال، و روی مبدای "
+            "این کار گوش می‌دهیم.\n\n"
+            "<i>پست‌های تازه از این پس می‌آیند. برای پست‌های جامانده از "
+            "«🕓 کپی پیام‌های گذشته» استفاده کنید.</i>"
+        )
+    else:
+        await call.message.answer(
+            "⚠️ هنوز روی کانال مبدا گوش نمی‌دهیم.\n\n"
+            "<i>محتمل‌ترین علت: اکانت متصل عضو آن کانال نیست. تلگرام "
+            "پست‌های کانال را فقط به اعضایش می‌فرستد — با همان اکانتی که "
+            "به ربات وصل کرده‌اید در کانال عضو شوید.</i>"
+        )
+
+
+@router.callback_query(F.data.startswith("task:why:"))
+async def cb_why(call: CallbackQuery) -> None:
+    """چرا این کار پست‌ها را نمی‌زند.
+
+    <b>چرا این صفحه لازم بود.</b> دلیلِ رد شدن هر پست از قبل ثبت
+    می‌شد، ولی هیچ‌جا دیده نمی‌شد. کاربر فقط می‌دید «نزد» — و برای
+    محصولی که وعده‌اش «چیزی را از دست نمی‌دهید» است، پستِ نرسیده‌ی
+    بی‌توضیح یعنی اعتمادِ رفته، حتی وقتی رد شدنش خواسته‌ی خودش بوده.
+    """
+    task_id = int(call.data.split(":")[2])
+    async with get_session() as db:
+        task = await db.get(Task, task_id)
+        if task is None or task.user_id != call.from_user.id:
+            await call.answer("دسترسی ندارید", show_alert=True)
+            return
+
+    await call.answer()
+    report = await diagnose.task_report(task_id)
+    if report is None:
+        await call.message.answer("این کار پیدا نشد.")
+        return
+
+    lines = [f"🔍 <b>وضعیت «{report.title}»</b>", ""]
+
+    if report.problems:
+        lines.append("⚠️ <b>چیزهایی که جلوی کار را گرفته‌اند:</b>")
+        lines += [f"• {item}" for item in report.problems]
+        lines.append("")
+    elif report.enabled:
+        lines += ["✅ <b>همه‌چیز سالم است.</b>", ""]
+
+    lines += [
+        f"امروز: <b>{fa_num(report.sent)}</b> کپی، "
+        f"<b>{fa_num(report.skipped)}</b> رد",
+        f"از ابتدا: <b>{fa_num(report.total_copied)}</b> پست",
+    ]
+    if report.quota_left is not None:
+        lines.append(f"سهمیه‌ی باقی‌مانده: <b>{fa_num(report.quota_left)}</b> پیام")
+    if report.subscription_days:
+        lines.append(f"اشتراک: <b>{fa_num(report.subscription_days)}</b> روز مانده")
+
+    # وضعیت اتصال، از خودِ تلگرام پرسیده شده نه حدس زده
+    def mark(value) -> str:
+        return "…" if value is None else ("✅" if value else "❌")
+
+    lines += [
+        "",
+        f"اتصال اکانت: {'✅' if report.connected else '❌'}",
+        f"گوش دادن روی مبدا: {'✅' if report.listening else '❌'}",
+        f"عضویت در کانال مبدا: {mark(report.source_member)}",
+        f"اجازه‌ی ارسال در مقصد: {mark(report.can_post)}",
+    ]
+    if report.median_seconds or report.slowest_seconds:
+        lines.append(
+            f"تأخیر انتشار: معمولاً <b>{fa_num(report.median_seconds)}</b> ثانیه، "
+            f"بدترین <b>{fa_num(report.slowest_seconds)}</b> ثانیه"
+        )
+        for name, count in sorted(
+            report.paths.items(), key=lambda item: -item[1]
+        ):
+            lines.append(f"  <i>{name}: {fa_num(count)} پست</i>")
+    if report.source_last_id:
+        lines.append(
+            f"تازه‌ترین پست مبدا: <code>{report.source_last_id}</code> · "
+            f"آخرین پستی که دیدیم: <code>{report.our_last_id or '—'}</code>"
+        )
+
+    if report.reasons:
+        lines += ["", f"<b>چرا پست‌ها رد شدند</b> — {fa_num(24)} ساعت گذشته:"]
+        for reason in report.reasons:
+            lines.append(f"• {reason.detail} — <b>{fa_num(reason.count)}</b> بار")
+            if reason.advice:
+                lines.append(f"  <i>{reason.advice}</i>")
+    elif not report.problems:
+        lines += [
+            "",
+            "<i>در ۲۴ ساعت گذشته هیچ پستی رد نشده و هیچ پستی هم از مبدا "
+            "نرسیده. اتصال و گوش دادن هر دو سالم‌اند، پس یعنی مبدا در این "
+            "مدت چیزی منتشر نکرده.</i>",
+        ]
+
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        InlineKeyboardButton(
+            text="🔄 راه‌اندازی دوباره", callback_data=f"task:relisten:{task_id}"
+        )
+    )
+    kb.row(InlineKeyboardButton(text="📈 آمار روزانه", callback_data=f"task:stats:{task_id}"))
+    kb.row(InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"task:open:{task_id}"))
+    text = "\n".join(lines)
+    try:
+        await call.message.edit_text(text, reply_markup=kb.as_markup())
+    except Exception:
+        await call.message.answer(text, reply_markup=kb.as_markup())
 
 
 @router.callback_query(F.data.startswith("task:stats:"))
@@ -174,7 +342,7 @@ async def cb_stats(call: CallbackQuery) -> None:
 
 # ------------------------------------------------------------- ساخت کار
 @router.message(Command("newtask"))
-@router.message(F.text == BTN_NEW_TASK)
+@router.message(F.text.in_(menu_texts("menu.new_task")))
 async def cmd_new_task(message: Message, state: FSMContext) -> None:
     await _start_new_task(message, state, message.from_user.id)
 
@@ -189,8 +357,6 @@ async def _start_new_task(message: Message, state: FSMContext, user_id: int) -> 
     async with get_session() as db:
         user = await db.get(User, user_id)
     if user is None or not user.is_logged_in:
-        from telkap.texts import NO_LOGIN
-
         await message.answer(NO_LOGIN)
         return
 
@@ -209,36 +375,44 @@ async def _start_new_task(message: Message, state: FSMContext, user_id: int) -> 
         return
 
     await state.set_state(Flow.task_source)
-    await message.answer(ASK_SOURCE)
+    await message.answer(ASK_SOURCE, reply_markup=picker_button("source").as_markup())
 
 
-@router.message(Flow.task_source)
-async def got_source(message: Message, state: FSMContext) -> None:
-    ref = (message.text or "").strip()
-    if not ref:
-        await message.answer("⚠️ آیدی یا لینک کانال را بفرستید.")
-        return
+async def _lookup(target: Message, user_id: int, ref: str, busy: str):
+    """چت را پیدا می‌کند. خروجی (entity، پیام وضعیت) یا (None، پیام وضعیت).
 
-    client = await manager.ensure_client(message.from_user.id)
+    خطای «باید اول عضو شوید» را می‌گیرد تا به‌جای پیام عمومی خطا،
+    دلیل واقعی به کاربر نشان داده شود.
+    """
+    client = await manager.ensure_client(user_id)
     if client is None:
-        await state.clear()
-        from telkap.texts import NO_LOGIN
+        await target.answer(NO_LOGIN)
+        return None, None
 
-        await message.answer(NO_LOGIN)
-        return
+    notice = await target.answer(busy)
+    try:
+        entity = await manager.resolve_entity(client, ref)
+    except LoginError as exc:
+        await notice.edit_text(f"⚠️ {exc}")
+        return None, notice
+    return entity, notice
 
-    notice = await message.answer("⏳ در حال بررسی کانال مبدا…")
-    entity = await manager.resolve_entity(client, ref)
+
+async def accept_source(target: Message, state: FSMContext, user_id: int, ref: str) -> None:
+    """مبدا را بررسی و ثبت می‌کند — چه دستی وارد شده باشد چه از لیست."""
+    entity, notice = await _lookup(target, user_id, ref, "⏳ در حال بررسی مبدا…")
     if entity is None:
-        await notice.edit_text(
-            "⚠️ این کانال پیدا نشد یا اکانت شما به آن دسترسی ندارد.\n"
-            "اگر کانال خصوصی است، ابتدا با اکانت خود عضو شوید و دوباره تلاش کنید."
-        )
+        if notice is not None and "⚠️" not in (notice.text or ""):
+            await notice.edit_text(
+                "⚠️ این کانال یا گروه پیدا نشد یا اکانت شما به آن دسترسی ندارد.\n\n"
+                "اگر <b>خصوصی</b> است، با همان شماره‌ای که در ربات وارد شده‌اید عضو آن شوید، "
+                "سپس دکمه‌ی «📋 انتخاب از لیست چت‌های من» را بزنید."
+            )
         return
 
     is_private = not getattr(entity, "username", None)
     if is_private:
-        plan = await active_plan_for(message.from_user.id)
+        plan = await active_plan_for(user_id)
         if plan and not plan.has(FEAT_PRIVATE):
             await notice.edit_text(
                 "⚠️ کپی از کانال‌های خصوصی در پلن فعلی شما فعال نیست.\n"
@@ -247,36 +421,95 @@ async def got_source(message: Message, state: FSMContext) -> None:
             return
 
     title = getattr(entity, "title", None) or ref
+    lock = "🔒 خصوصی" if is_private else "🌐 عمومی"
     await state.update_data(source_ref=ref, source_title=title)
-    await notice.edit_text(f"✅ کانال مبدا: <b>{title}</b>")
+    await notice.edit_text(f"✅ مبدا: <b>{title}</b> ({lock})")
     await state.set_state(Flow.task_dest)
-    await message.answer(ASK_DEST)
+    await target.answer(ASK_DEST, reply_markup=picker_button("dest").as_markup())
+
+
+async def accept_dest(target: Message, state: FSMContext, user_id: int, ref: str) -> None:
+    entity, notice = await _lookup(target, user_id, ref, "⏳ در حال بررسی مقصد…")
+    if entity is None:
+        if notice is not None and "⚠️" not in (notice.text or ""):
+            await notice.edit_text(
+                "⚠️ مقصد پیدا نشد. مطمئن شوید اکانت شما عضو آن است و اجازه‌ی ارسال دارد."
+            )
+        return
+
+    title = getattr(entity, "title", None) or ref
+    await state.update_data(dest_ref=ref, dest_title=title)
+    await notice.edit_text(f"✅ مقصد: <b>{title}</b>")
+    await state.set_state(Flow.task_title)
+    await target.answer(ASK_TITLE)
+
+
+_TELEGRAM_HOSTS = ("t.me/", "telegram.me/", "telegram.dog/")
+
+
+def looks_like_feed(ref: str) -> bool:
+    """آیا این ورودی آدرس یک فید است، نه کانال تلگرام.
+
+    لینک تلگرام هم URL است، پس صرفِ «http دارد» کافی نیست. قاعده
+    ساده و قابل پیش‌بینی نگه داشته شده: هر آدرس http(s) که تلگرام
+    نباشد، فید حساب می‌شود.
+    """
+    lowered = ref.strip().lower()
+    if not lowered.startswith(("http://", "https://")):
+        return False
+    return not any(host in lowered for host in _TELEGRAM_HOSTS)
+
+
+@router.message(Flow.task_source)
+async def got_source(message: Message, state: FSMContext) -> None:
+    ref = (message.text or "").strip()
+    if not ref:
+        await message.answer("⚠️ آیدی یا لینک کانال یا آدرس فید را بفرستید.")
+        return
+    if looks_like_feed(ref):
+        await accept_feed_source(message, state, ref)
+        return
+    await accept_source(message, state, message.from_user.id, ref)
+
+
+async def accept_feed_source(target: Message, state: FSMContext, ref: str) -> None:
+    """مبدا یک فید RSS است.
+
+    فید همان‌جا خوانده می‌شود نه بعداً: اگر آدرس اشتباه باشد، کاربر
+    باید همین حالا بفهمد — نه ساعت‌ها بعد وقتی می‌بیند هیچ پستی
+    نیامده و نمی‌داند چرا.
+    """
+    notice = await target.answer("⏳ در حال بررسی فید…")
+    try:
+        items = await feeds.fetch(ref)
+    except FeedError as exc:
+        await notice.edit_text(
+            f"⚠️ {exc}\n\n"
+            "آدرس <b>فید</b> لازم است نه آدرس خودِ سایت. معمولاً چیزی شبیه "
+            "<code>/rss</code> یا <code>/feed</code> ته آدرس است."
+        )
+        return
+
+    title = feeds.clean_html(items[0].title)[:60]
+    await state.update_data(
+        source_ref=ref, source_title=title, source_kind=Task.SOURCE_RSS
+    )
+    await notice.edit_text(
+        f"✅ فید خوانده شد — {fa_num(len(items))} مطلب دارد.\n"
+        f"<b>تازه‌ترین:</b> {title}\n\n"
+        "<i>مطالب فعلی منتشر نمی‌شوند؛ فقط مطلب‌های تازه از این پس.</i>"
+    )
+    await state.set_state(Flow.task_dest)
+    await target.answer(ASK_DEST, reply_markup=picker_button("dest").as_markup())
 
 
 @router.message(Flow.task_dest)
 async def got_dest(message: Message, state: FSMContext) -> None:
     ref = (message.text or "").strip()
-    client = await manager.ensure_client(message.from_user.id)
-    if client is None:
-        await state.clear()
-        from telkap.texts import NO_LOGIN
-
-        await message.answer(NO_LOGIN)
+    if not ref:
+        await message.answer("⚠️ آیدی یا لینک کانال را بفرستید.")
         return
-
-    notice = await message.answer("⏳ در حال بررسی کانال مقصد…")
-    entity = await manager.resolve_entity(client, ref)
-    if entity is None:
-        await notice.edit_text(
-            "⚠️ کانال مقصد پیدا نشد. مطمئن شوید اکانت شما عضو آن است و آیدی درست است."
-        )
-        return
-
-    title = getattr(entity, "title", None) or ref
-    await state.update_data(dest_ref=ref, dest_title=title)
-    await notice.edit_text(f"✅ کانال مقصد: <b>{title}</b>")
-    await state.set_state(Flow.task_title)
-    await message.answer(ASK_TITLE)
+    await accept_dest(message, state, message.from_user.id, ref)
 
 
 @router.message(Flow.task_title)
@@ -289,6 +522,7 @@ async def got_title(message: Message, state: FSMContext) -> None:
         task = Task(
             user_id=message.from_user.id,
             title=title,
+            source_kind=data.get("source_kind", Task.SOURCE_TELEGRAM),
             source_ref=data["source_ref"],
             source_title=data.get("source_title", "")[:160],
             dest_ref=data["dest_ref"],
@@ -327,6 +561,19 @@ async def got_title(message: Message, state: FSMContext) -> None:
 
 
 # ------------------------------------------------------------ فعال/غیرفعال
+@router.callback_query(F.data.startswith("task:pro:"))
+async def cb_go_pro(call: CallbackQuery) -> None:
+    """کاربر گزینه‌های پیشرفته را خواست؛ از این پس همه‌ی منوها کامل‌اند."""
+    task_id = int(call.data.split(":")[2])
+    async with get_session() as db:
+        user = await db.get(User, call.from_user.id)
+        if user is not None:
+            user.display_level = "pro"
+            await db.commit()
+    await call.answer("حالت پیشرفته روشن شد")
+    await show_task(call.message, task_id, edit=True)
+
+
 @router.callback_query(F.data.startswith("task:toggle:"))
 async def cb_toggle(call: CallbackQuery) -> None:
     task_id = int(call.data.split(":")[2])
@@ -340,6 +587,7 @@ async def cb_toggle(call: CallbackQuery) -> None:
             task.last_error = None
         enabled = task.enabled
         await db.commit()
+    cache.invalidate_task(task_id)
     await manager.reload_user(call.from_user.id)
     await call.answer("فعال شد" if enabled else "متوقف شد")
     await show_task(call.message, task_id, edit=True)
@@ -383,6 +631,7 @@ async def delete_task_confirmed(
         title = task.title
         await db.delete(task)
         await db.commit()
+    cache.invalidate_task(task_id)
     await manager.reload_user(user_id)
     await log_activity(user_id=user_id, event="task_delete", detail=title)
     await message.answer(f"🗑 کار «{title}» حذف شد.", reply_markup=main_menu())

@@ -25,10 +25,12 @@ from telethon.sessions import StringSession
 from telethon.tl.functions.messages import CheckChatInviteRequest
 from telethon.utils import get_peer_id
 
+from telkap import proxy
 from telkap.config import get_settings
 from telkap.crypto import decrypt, encrypt
 from telkap.db import get_session, log_activity
 from telkap.models import Task, User
+from telkap.services import health
 
 log = logging.getLogger(__name__)
 
@@ -60,21 +62,38 @@ class UserbotManager:
         self._pending: dict[int, PendingLogin] = {}
         self._locks: dict[int, asyncio.Lock] = {}
         self._copier = None  # به‌صورت تنبل ست می‌شود تا وابستگی حلقوی نشود
+        self._notifier = None
 
     def bind_copier(self, copier) -> None:
         self._copier = copier
 
+    def bind_notifier(self, notifier) -> None:
+        """تابعی که پیام به کاربر می‌فرستد، برای هشدارهای سلامت اکانت."""
+        self._notifier = notifier
+
     # ------------------------------------------------------------------ ورود
     def _new_client(self, session: str = "") -> TelegramClient:
         cfg = get_settings()
-        return TelegramClient(
+        client = TelegramClient(
             StringSession(session),
             cfg.api_id,
             cfg.api_hash,
-            device_model="Copy Bot",
-            system_version="1.0",
-            app_version="1.0",
+            # اثر انگشت باید شبیه یک کلاینت معمولی باشد. نام قبلی
+            # («Copy Bot») عملاً خودِ اکانت را به‌عنوان ابزار خودکار معرفی
+            # می‌کرد — هم در فهرست دستگاه‌های کاربر، هم برای تلگرام.
+            device_model=cfg.device_model,
+            system_version=cfg.system_version,
+            app_version=cfg.app_version,
+            lang_code="fa",
+            system_lang_code="fa",
+            proxy=proxy.for_telethon(cfg.proxy_url),
+            connection_retries=5,
+            retry_delay=2,
         )
+        # فرمت‌ها را خودمان با entity می‌فرستیم؛ اگر Telethon متن را دوباره
+        # به‌عنوان markdown تفسیر کند، نویسه‌هایی مثل * و _ متن را خراب می‌کنند
+        client.parse_mode = None
+        return client
 
     async def start_login(self, user_id: int, phone: str) -> None:
         """کد ورود را به شماره‌ی کاربر ارسال می‌کند."""
@@ -138,6 +157,7 @@ class UserbotManager:
             user.phone = pending.phone
             user.account_id = me.id
             user.account_name = " ".join(filter(None, [me.first_name, me.last_name])) or me.username
+            user.account_premium = bool(getattr(me, "premium", False))
             await db.commit()
         self._pending.pop(user_id, None)
         # همان کلاینت متصل را به‌عنوان رانتایم نگه می‌داریم
@@ -185,14 +205,21 @@ class UserbotManager:
                 await client.connect()
                 if not await client.is_user_authorized():
                     raise AuthKeyUnregisteredError(request=None)
-            except (AuthKeyUnregisteredError, SessionRevokedError):
+            except (AuthKeyUnregisteredError, SessionRevokedError) as exc:
+                # تا امروز اینجا بی‌صدا خروج انجام می‌شد و کاربر فقط
+                # می‌دید ربات کار نمی‌کند؛ حالا دلیلش را می‌گوییم
                 log.warning("سشن کاربر %s باطل شده است", user_id)
+                await health.record(user_id, health.classify(exc), notifier=self._notifier)
                 await self.logout(user_id, revoked=True)
                 return None
-            except Exception:
+            except Exception as exc:
                 log.exception("اتصال کلاینت کاربر %s ناموفق بود", user_id)
+                diagnosis = health.classify(exc)
+                if diagnosis.state != health.STATE_OK:
+                    await health.record(user_id, diagnosis, notifier=self._notifier)
                 return None
 
+            await health.clear(user_id)          # اتصال موفق یعنی دوباره سالم است
             self._runtimes[user_id] = UserRuntime(client=client)
             return client
 
@@ -233,6 +260,10 @@ class UserbotManager:
             await runtime.client.disconnect()
         except Exception:
             log.debug("قطع کلاینت ناموفق بود", exc_info=True)
+        # صف‌های ترتیب هم بسته می‌شوند؛ بدون این، هر وصل و قطع یک
+        # کارگرِ بیکار جا می‌گذارد که تا پایان عمر پروسه می‌ماند.
+        if self._copier is not None:
+            self._copier.stop_user(user_id)
 
     # ------------------------------------------------------------- هندلرها
     async def reload_user(self, user_id: int) -> int:
@@ -297,6 +328,27 @@ class UserbotManager:
         if not runtime:
             return []
         return runtime.source_map.get(chat_id, [])
+
+    def is_listening(self, user_id: int, chat_id: int | None) -> bool:
+        """آیا همین حالا روی این کانال گوش می‌دهیم.
+
+        <b>چرا این لازم شد.</b> اگر کانالی در source_map نباشد، پیام‌هایش
+        به هیچ کاری نمی‌رسند و <b>هیچ ردی هم نمی‌گذارند</b> — نه کپی، نه
+        رد، نه خطا. از بیرون دقیقاً شبیه «مبدا چیزی منتشر نکرده» است، و
+        تشخیصشان از هم بدون این تابع ممکن نبود.
+        """
+        if chat_id is None:
+            return False
+        runtime = self._runtimes.get(user_id)
+        return bool(runtime and chat_id in runtime.source_map)
+
+    def is_connected(self, user_id: int) -> bool:
+        runtime = self._runtimes.get(user_id)
+        return bool(runtime and runtime.client.is_connected())
+
+    def listening_chats(self, user_id: int) -> list[int]:
+        runtime = self._runtimes.get(user_id)
+        return list(runtime.source_map) if runtime else []
 
     # ------------------------------------------------------------- کمکی‌ها
     @staticmethod

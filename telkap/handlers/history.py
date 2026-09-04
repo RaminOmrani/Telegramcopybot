@@ -7,11 +7,18 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
 from telkap.db import get_session
-from telkap.keyboards import main_menu
-from telkap.models import Task
 from telkap.handlers.common import Flow, parse_int
-from telkap.plans import FEAT_HISTORY
-from telkap.services.subscription import active_plan_for
+from telkap.keyboards import credit_offer_menu, main_menu
+from telkap.models import Task
+from telkap.plans import (
+    CREDIT_HISTORY,
+    FEAT_HISTORY,
+    UNLIMITED,
+    credit_unit,
+    toman,
+)
+from telkap.services import credits, entitlement
+from telkap.services.subscription import active_entitlement
 from telkap.texts import ASK_HISTORY_COUNT, INVALID_NUMBER, fa_num
 
 router = Router(name="history")
@@ -34,10 +41,28 @@ async def cb_start(call: CallbackQuery, state: FSMContext) -> None:
         await call.answer("دسترسی ندارید", show_alert=True)
         return
 
-    plan = await active_plan_for(call.from_user.id)
-    if plan is None or not plan.has(FEAT_HISTORY):
-        await call.answer(
-            "کپی پیام‌های گذشته فقط در پلن ۳۰ روزه فعال است.", show_alert=True
+    ent = await active_entitlement(call.from_user.id)
+    plan, sub_id = ent
+    if plan is None:
+        await call.answer("اشتراک فعالی ندارید.", show_alert=True)
+        return
+
+    quota = await entitlement.quota_left(sub_id, FEAT_HISTORY, plan)
+    available = await credits.balance(call.from_user.id, CREDIT_HISTORY)
+    if quota + available <= 0:
+        await call.answer()
+        await call.message.answer(
+            "🕓 <b>کپی پیام‌های گذشته</b>\n\n"
+            + (
+                f"سهمیه‌ی طرح «{plan.title}» شما تمام شده است.\n"
+                "با تمدید یا خرید طرح تازه، سهمیه از نو پر می‌شود.\n\n"
+                if plan.history_quota > 0
+                else f"این قابلیت در طرح «{plan.title}» شما نیست.\n\n"
+            )
+            + "دو راه دارید:\n"
+            "۱) طرح بالاتری بگیرید\n"
+            f"۲) اعتبار بخرید — هر پیام {toman(credit_unit(CREDIT_HISTORY))}، بدون انقضا.",
+            reply_markup=credit_offer_menu(CREDIT_HISTORY),
         )
         return
 
@@ -48,7 +73,12 @@ async def cb_start(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
     await state.set_state(Flow.history_count)
     await state.update_data(task_id=task_id)
-    await call.message.answer(ASK_HISTORY_COUNT)
+    budget = (
+        "نامحدود"
+        if plan.history_quota == UNLIMITED
+        else f"{fa_num(quota)} از سهمیه‌ی طرح + {fa_num(available)} اعتبار"
+    )
+    await call.message.answer(f"{ASK_HISTORY_COUNT}\n\n🎫 در دسترس شما: <b>{budget}</b>")
 
 
 @router.message(Flow.history_count)
@@ -75,15 +105,46 @@ async def got_count(message: Message, state: FSMContext) -> None:
         await message.answer("⚠️ این قابلیت در حال حاضر در دسترس نیست.")
         return
 
+    # اول از سهمیه‌ی طرح، بعد از اعتبار خریداری‌شده
+    plan, sub_id = await active_entitlement(message.from_user.id)
+    if plan is None:
+        await message.answer("اشتراک فعالی ندارید.")
+        return
+
+    grant = await entitlement.reserve(
+        message.from_user.id, FEAT_HISTORY, count, plan, sub_id
+    )
+    if grant is None:
+        quota = await entitlement.quota_left(sub_id, FEAT_HISTORY, plan)
+        available = await credits.balance(message.from_user.id, CREDIT_HISTORY)
+        await message.answer(
+            f"⚠️ برای {fa_num(count)} پیام کافی نیست.\n\n"
+            f"سهمیه‌ی طرح: {fa_num(quota)} پیام\n"
+            f"اعتبار شما: {fa_num(available)} پیام\n"
+            f"مجموع در دسترس: <b>{fa_num(quota + available)}</b>\n\n"
+            f"یا عدد کمتری بفرستید، یا اعتبار بخرید (هر پیام "
+            f"{toman(credit_unit(CREDIT_HISTORY))}).",
+            reply_markup=credit_offer_menu(CREDIT_HISTORY),
+        )
+        return
+
     try:
         await history_copier.start(message.from_user.id, task_id, count)
     except RuntimeError as exc:
+        # کار شروع نشد، پس سهمیه و اعتبار برمی‌گردند
+        await entitlement.release(message.from_user.id, grant, sub_id)
         await message.answer(f"⚠️ {exc}")
         return
 
+    note = ""
+    if not grant.unlimited:
+        note = f"\n\n🎫 برداشت: {fa_num(grant.note)}"
+        if grant.from_credits:
+            left = await credits.balance(message.from_user.id, CREDIT_HISTORY)
+            note += f"\nمانده‌ی اعتبار: {fa_num(left)} پیام"
     await message.answer(
         f"🕓 شروع شد: {fa_num(count)} پیام آخر «{task.source_title or task.source_ref}» "
-        f"با تنظیمات همین کار در کانال مقصد کپی می‌شود.\n\n"
+        f"با تنظیمات همین کار در کانال مقصد کپی می‌شود.{note}\n\n"
         "پیشرفت کار را با /progress ببینید. برای توقف، از منوی همان کار «⏹ توقف کپی گذشته» را بزنید.",
         reply_markup=main_menu(),
     )

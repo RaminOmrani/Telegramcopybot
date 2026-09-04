@@ -1,0 +1,44 @@
+name: تست‌ها
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        # ۳٫۱۱ کمینه‌ی پشتیبانی‌شده است و ۳٫۱۳ همان چیزی که روی سرور اجرا
+        # می‌شود. هر دو باید سبز بمانند، وگرنه یکی‌شان بی‌صدا می‌شکند.
+        python-version: ["3.11", "3.13"]
+    name: تست روی پایتون ${{ matrix.python-version }}
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+          cache: pip
+
+      - name: نصب وابستگی‌ها
+        run: pip install -r requirements-dev.txt
+
+      - name: بررسی کد
+        run: |
+          python -m pyflakes telkap/ tests/ tools/
+          python -m ruff check telkap/ tests/ tools/
+
+      - name: اجرای تست‌ها
+        env:
+          # مقادیر ساختگی؛ تست‌ها به تلگرام وصل نمی‌شوند
+          BOT_TOKEN: "123456:TEST"
+          API_ID: "1234567"
+          API_HASH: "0123456789abcdef0123456789abcdef"
+          ADMIN_IDS: "1"
+        run: |
+          export FERNET_KEY=$(python -c "from cryptography.fernet import Fernet; print(Fernet.generate_key().decode())")
+          python -m pytest -q

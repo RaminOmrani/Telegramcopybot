@@ -16,6 +16,11 @@ def _int_list(raw: str) -> list[int]:
     return [int(part) for part in raw.replace(" ", "").split(",") if part]
 
 
+def _flag(raw: str) -> bool:
+    """مقدار بله/خیر در .env؛ هرچه جز این‌ها باشد خاموش حساب می‌شود."""
+    return raw.strip().lower() in {"1", "true", "yes", "on"}
+
+
 @dataclass(frozen=True)
 class Settings:
     bot_token: str
@@ -36,6 +41,60 @@ class Settings:
     card_number: str = ""
     card_holder: str = ""
     backup_hours: int = 12
+    # چند روز لاگ فعالیت نگه داشته شود (۰ = برای همیشه)
+    log_retention_days: int = 14
+    # پروکسی برای شبکه‌هایی که تلگرام مسدود است، مثل socks5://127.0.0.1:10808
+    proxy_url: str = ""
+
+    # اثر انگشتی که اکانت کاربری به تلگرام معرفی می‌کند. این مقدار هم در
+    # «دستگاه‌های متصل» خود کاربر دیده می‌شود و هم تلگرام آن را می‌بیند؛
+    # نامی که خودش را «ربات» معرفی کند، ریسک محدود شدن را بالا می‌برد.
+    device_model: str = "Desktop"
+    system_version: str = "Windows 10"
+    app_version: str = "4.16.8"
+
+    # پشتیبان‌گیری بیرون از سرور: شناسه‌ی کانال خصوصی که ربات در آن ادمین
+    # است. خالی یعنی فقط نسخه‌ی محلی گرفته می‌شود.
+    backup_chat_id: str = ""
+
+    # ── پنل وب ────────────────────────────────────────────────────────
+    # پنل داخل همان پروسه‌ی ربات بالا می‌آید، پس چیز تازه‌ای نصب نمی‌شود.
+    # پیش‌فرض خاموش است: تا خودتان روشنش نکنید هیچ پورتی باز نمی‌شود.
+    web_enabled: bool = False
+    # روی 127.0.0.1 یعنی فقط از خود سرور در دسترس است و باید یک وب‌سرور
+    # جلویش بگذارید. برای دسترسی مستقیم از بیرون 0.0.0.0 بگذارید — ولی
+    # آن‌وقت بدون HTTPS، کوکی ورود روی شبکه لخت می‌رود.
+    web_host: str = "127.0.0.1"
+    web_port: int = 8080
+    # آدرسی که کاربر در مرورگر می‌بیند، مثل https://botpanel.softmiliac.com
+    # لینک ورود از روی همین ساخته می‌شود.
+    web_base_url: str = ""
+
+    # ── هوش مصنوعی ────────────────────────────────────────────────────
+    # هر سرویسی که رابط OpenAI را بفهمد. کلید که خالی باشد، هیچ‌کدام از
+    # قابلیت‌های هوش مصنوعی در منوها ظاهر نمی‌شوند.
+    ai_base_url: str = "https://api.avalai.ir/v1"
+    ai_api_key: str = ""
+    # نقش‌ها جدا هستند چون هزینه‌شان ده‌ها برابر فرق می‌کند: دسته‌بندی با
+    # مدل کوچک همان نتیجه را می‌دهد، بازنویسی فارسی نه.
+    # این چهار نام از فهرست زنده‌ی API انتخاب شده‌اند نه از صفحه‌ی وب —
+    # و معیار اصلی سقف نرخ بود نه قیمت. جزئیات: docs/AI-MODELS.md
+    ai_model_small: str = "gpt-5-nano"
+    ai_model_main: str = "qwen3.5-flash"
+    ai_model_vision: str = "qwen3.5-flash"
+    ai_model_embed: str = "text-embedding-3-small"
+
+    # ── درگاه زرین‌پال ────────────────────────────────────────────────
+    # کد پذیرنده از پنل زرین‌پال. خالی که باشد، درگاه در منوی پرداخت
+    # ظاهر نمی‌شود و فقط کارت و تتر می‌مانند.
+    # نشانی بازگشت از WEB_BASE_URL ساخته می‌شود، پس پنل وب باید روی یک
+    # دامنه‌ی عمومی با HTTPS بالا باشد.
+    zarinpal_merchant: str = ""
+
+    # کلید TronGrid برای تأیید خودکار پرداخت‌های تتر. خالی هم کار
+    # می‌کند — فقط سقف نرخِ سخت‌گیرانه‌تری دارد که برای چند پرداخت در
+    # روز کافی است. رایگان از trongrid.io گرفته می‌شود.
+    tron_api_key: str = ""
 
     def is_admin(self, user_id: int) -> bool:
         return user_id in self.admin_ids
@@ -71,6 +130,24 @@ def load_settings() -> Settings:
         card_number=os.getenv("CARD_NUMBER", "").strip(),
         card_holder=os.getenv("CARD_HOLDER", "").strip(),
         backup_hours=int(os.getenv("BACKUP_HOURS", "12")),
+        log_retention_days=int(os.getenv("LOG_RETENTION_DAYS", "14")),
+        proxy_url=os.getenv("PROXY_URL", "").strip(),
+        device_model=os.getenv("DEVICE_MODEL", "Desktop").strip() or "Desktop",
+        system_version=os.getenv("SYSTEM_VERSION", "Windows 10").strip() or "Windows 10",
+        app_version=os.getenv("APP_VERSION", "4.16.8").strip() or "4.16.8",
+        backup_chat_id=os.getenv("BACKUP_CHAT_ID", "").strip(),
+        web_enabled=_flag(os.getenv("WEB_ENABLED", "")),
+        web_host=os.getenv("WEB_HOST", "127.0.0.1").strip() or "127.0.0.1",
+        web_port=int(os.getenv("WEB_PORT", "8080")),
+        web_base_url=os.getenv("WEB_BASE_URL", "").strip().rstrip("/"),
+        ai_base_url=os.getenv("AI_BASE_URL", "https://api.avalai.ir/v1").strip(),
+        ai_api_key=os.getenv("AI_API_KEY", "").strip(),
+        ai_model_small=os.getenv("AI_MODEL_SMALL", "gpt-5-nano").strip(),
+        ai_model_main=os.getenv("AI_MODEL_MAIN", "qwen3.5-flash").strip(),
+        ai_model_vision=os.getenv("AI_MODEL_VISION", "qwen3.5-flash").strip(),
+        ai_model_embed=os.getenv("AI_MODEL_EMBED", "text-embedding-3-small").strip(),
+        zarinpal_merchant=os.getenv("ZARINPAL_MERCHANT", "").strip(),
+        tron_api_key=os.getenv("TRON_API_KEY", "").strip(),
     )
 
 
