@@ -253,6 +253,31 @@ server {
     # مینی‌اپ داخل تلگرام و در یک iframe باز می‌شود، پس اینجا — و فقط
     # اینجا — قاب شدن ممنوع نیست؛ در عوض صریح گفته می‌شود که فقط
     # تلگرام اجازه دارد قابش کند.
+    # رابط JSON مینی‌اپ، پیش از فایل‌های ثابتش.
+    #
+    # <b>این یکی جا افتاده بود و باگش بی‌صدا بود.</b> در nginx
+    # طولانی‌ترین پیشوند برنده است، و بدون این بلوک «/app/api/me» هم
+    # زیر «location /app» می‌افتاد. آنجا try_files به index.html
+    # می‌رسید، یعنی رابط JSON با کد ۲۰۰ یک صفحه‌ی HTML برمی‌گرداند.
+    # اپ هم آن را «کاربر ناشناس» می‌خواند و می‌گفت «هنوز ربات را
+    # استارت نکرده‌اید» — پیامی که هیچ ربطی به علت نداشت.
+    location /app/api {
+        proxy_pass http://127.0.0.1:$WEB_PORT;
+
+        proxy_set_header Host              \$host;
+        proxy_set_header X-Real-IP         \$remote_addr;
+        proxy_set_header X-Forwarded-For   \$proxy_add_x_forwarded_for;
+        proxy_set_header X-Forwarded-Proto \$scheme;
+        proxy_http_version 1.1;
+
+        proxy_connect_timeout 10s;
+        proxy_read_timeout    60s;
+        proxy_send_timeout    60s;
+
+        limit_req zone=telkap_panel burst=20 nodelay;
+        include /etc/nginx/snippets/telkap-headers.conf;
+    }
+
     location /app {
         try_files \$uri \$uri/ /app/index.html =404;
         include /etc/nginx/snippets/telkap-headers.conf;

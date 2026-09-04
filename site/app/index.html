@@ -281,7 +281,19 @@ input:focus, textarea:focus, select:focus {
       options.body = JSON.stringify(options.body);
     }
     return fetch('/app/api' + path, options).then(function (r) {
-      return r.json().catch(function () { return {}; }).then(function (data) {
+      // اگر جواب JSON نبود، یعنی چیزی جز رابطِ ما جواب داده — مثلاً
+      // وب‌سرور صفحه‌ی HTML برگردانده. اول این خطا بی‌صدا به {} تبدیل
+      // می‌شد و اپ آن را «کاربر ناشناس» می‌خواند و پیامی نشان می‌داد
+      // که هیچ ربطی به علت نداشت. حالا صریح می‌گوید چه شده.
+      return r.text().then(function (raw) {
+        var data;
+        try { data = JSON.parse(raw); }
+        catch (e) {
+          throw new Error(
+            r.ok ? 'پاسخ سرور JSON نبود — پیکربندی وب‌سرور را بررسی کنید'
+                 : ('خطای ' + r.status)
+          );
+        }
         if (!r.ok) throw new Error(data.error || ('خطای ' + r.status));
         return data;
       });

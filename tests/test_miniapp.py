@@ -517,3 +517,45 @@ async def test_wallet_and_stats_are_per_person(tmp_path, monkeypatch):
         assert "speed" in stats and "daily" in stats
     finally:
         await db_module.close_db()
+
+
+def test_the_nginx_config_sends_the_api_to_the_bot():
+    """<b>باگی که بی‌صدا بود و پیامش گمراه‌کننده.</b>
+
+    در nginx طولانی‌ترین پیشوند برنده است. بدون یک بلوک جدا برای
+    «/app/api»، آن مسیر هم زیر «location /app» می‌افتاد و try_files
+    به index.html می‌رسید — یعنی رابط JSON با کد ۲۰۰ یک صفحه‌ی HTML
+    برمی‌گرداند. اپ آن را «کاربر ناشناس» می‌خواند و می‌گفت «هنوز
+    ربات را استارت نکرده‌اید»، که هیچ ربطی به علت نداشت.
+
+    اسکریپت bash است و تست واحد ندارد، ولی نبودنِ این بلوک همان یک
+    خط است و همین‌جا گرفته می‌شود.
+    """
+    from pathlib import Path
+
+    script = (
+        Path(__file__).parent.parent / "deploy" / "web-setup.sh"
+    ).read_text(encoding="utf-8")
+
+    assert "location /app/api {" in script
+    assert "location /app {" in script
+    # و باید پیش از فایل‌های ثابت بیاید تا خواندنش گمراه نکند
+    assert script.index("location /app/api {") < script.index("location /app {")
+    # و واقعاً به ربات پراکسی شود، نه try_files
+    api_block = script.split("location /app/api {")[1].split("}")[0]
+    assert "proxy_pass" in api_block
+    assert "try_files" not in api_block
+
+
+def test_the_api_prefix_the_app_calls_matches_the_one_nginx_proxies():
+    """اگر یکی عوض شود و دیگری نه، همان باگ برمی‌گردد."""
+    from pathlib import Path
+
+    from telkap.web.miniapp import API_PREFIX
+
+    root = Path(__file__).parent.parent
+    page = (root / "site" / "app" / "index.html").read_text(encoding="utf-8")
+    script = (root / "deploy" / "web-setup.sh").read_text(encoding="utf-8")
+
+    assert f"fetch('{API_PREFIX}'" in page
+    assert f"location {API_PREFIX} {{" in script
