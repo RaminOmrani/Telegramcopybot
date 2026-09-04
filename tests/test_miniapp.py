@@ -120,6 +120,31 @@ def test_a_payload_signed_with_another_token_is_refused():
     assert miniapp.check(signed, TOKEN) is None       # با توکن ما، نه
 
 
+def test_telegrams_own_signature_field_does_not_break_the_check():
+    """<b>همان چیزی که مینی‌اپ را روی سرور واقعی از کار انداخت.</b>
+
+    تلگرام بعداً فیلد <code>signature</code> را اضافه کرد — یک امضای
+    Ed25519 برای سرویس‌های ثالث. آن فیلد جزو رشته‌ی امضای HMAC نیست و
+    باید مثل <code>hash</code> بیرون بماند. تا وقتی بیرون نمی‌ماند،
+    <b>هر</b> initDataیی که تلگرام می‌فرستاد رد می‌شد و اپ می‌گفت
+    «شناسایی نشدید» — بی‌هیچ ردی در لاگ، چون از نظر کد فقط یک امضای
+    غلط بود.
+    """
+    fields = {
+        "auth_date": str(int(time.time())),
+        "query_id": "AAB",
+        "user": json.dumps({"id": 7, "first_name": "رامین"}),
+    }
+    # تلگرام signature را بیرون از رشته‌ی امضا می‌گذارد و بعد به
+    # پارامترها اضافه‌اش می‌کند
+    signed = _sign(fields) + "&signature=" + "a" * 86
+
+    data = miniapp.check(signed, TOKEN)
+
+    assert data is not None
+    assert miniapp.user_id_from(signed, TOKEN) == 7
+
+
 def test_changing_one_character_breaks_the_signature():
     """امضا باید روی <b>همه‌ی</b> فیلدها باشد، نه فقط بعضی‌شان."""
     signed = _fresh(7)

@@ -492,7 +492,11 @@ input:focus, textarea:focus, select:focus {
       make.style.marginTop = '6px';
       make.onclick = function () { startNewTask(); };
       box.appendChild(make);
-    }).catch(function () { failed(box, 'اطلاعات حساب نیامد.', fill.home); });
+    }).catch(function (e) {
+      // پیامِ واقعیِ سرور، نه یک جمله‌ی عمومی. بار اول همین را دور
+      // ریخته بودم و تشخیصِ «۴۰۱ است یا ۵۰۰» ممکن نبود.
+      failed(box, e.message || 'اطلاعات حساب نیامد.', fill.home);
+    });
   };
 
   // ── کیف پول ───────────────────────────────────────────────────

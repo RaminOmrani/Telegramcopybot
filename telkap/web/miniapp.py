@@ -90,6 +90,17 @@ def check(init_data: str, token: str, *, now: float | None = None) -> dict | Non
     if not given:
         return None
 
+    # <b>«signature» هم مثل «hash» بیرون می‌ماند.</b>
+    #
+    # تلگرام بعداً فیلد signature را اضافه کرد — یک امضای Ed25519 برای
+    # اینکه سرویس‌های ثالث بتوانند بدون داشتنِ توکنِ ربات هم داده را
+    # بسنجند. آن فیلد جزو رشته‌ی امضای HMAC نیست.
+    #
+    # تا وقتی اینجا نبود، هر initDataیی که تلگرام می‌فرستاد رد می‌شد و
+    # اپ می‌گفت «شناسایی نشدید» — بی‌آنکه چیزی در لاگ بیفتد، چون از
+    # نظر کد این فقط یک امضای غلط بود.
+    pairs.pop("signature", None)
+
     check_string = "\n".join(f"{key}={pairs[key]}" for key in sorted(pairs))
     secret = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
     mine = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
