@@ -584,3 +584,156 @@ def test_the_api_prefix_the_app_calls_matches_the_one_nginx_proxies():
 
     assert f"fetch('{API_PREFIX}'" in page
     assert f"location {API_PREFIX} {{" in script
+
+
+def test_every_setting_the_app_accepts_is_a_real_setting():
+    """<b>غلط املایی در نام تنظیم، بی‌صداترین باگ ممکن است.</b>
+
+    یک کلید نادرست در فهرست‌های مجاز، هم ذخیره می‌شود و هم برمی‌گردد
+    و اپ سوئیچش را درست نشان می‌دهد — ولی کپی‌کننده هرگز نگاهش
+    نمی‌کند. کاربر گزینه را روشن می‌کند و هیچ اتفاقی نمی‌افتد.
+    """
+    from telkap.services.defaults import DEFAULT_SETTINGS
+    from telkap.web import miniapp
+
+    known = set(
+        (
+            *miniapp.BOOL_SETTINGS, *miniapp.TEXT_SETTINGS,
+            *miniapp.INT_SETTINGS, *miniapp.CHOICE_SETTINGS,
+            *miniapp.LIST_SETTINGS,
+        )
+    )
+    assert known <= set(DEFAULT_SETTINGS), sorted(known - set(DEFAULT_SETTINGS))
+
+
+def test_the_choices_match_the_modules_that_own_them():
+    """گزینه‌ها اینجا دوباره نوشته شده‌اند تا وب سبک بماند؛ اگر منبع
+    اصلی عوض شود و اینجا نه، کاربر گزینه‌ای می‌بیند که کار نمی‌کند."""
+    from telkap.services.aiskills import LANGUAGES, STYLES
+    from telkap.services.watermark import POSITIONS
+    from telkap.web.miniapp import CHOICE_SETTINGS
+
+    assert set(CHOICE_SETTINGS["watermark_position"]) == set(POSITIONS)
+    assert set(CHOICE_SETTINGS["ai_style"]) == set(STYLES)
+    assert set(CHOICE_SETTINGS["ai_language"]) == set(LANGUAGES)
+
+
+def test_media_kinds_outside_the_known_set_are_dropped():
+    """«allowed_media» به کپی‌کننده می‌گوید چه چیزی رد شود؛ یک مقدار
+    ناشناس در آن یعنی فیلتری که هیچ‌وقت مطابقت نمی‌کند."""
+    from telkap.web.miniapp import _clean_settings
+
+    cfg, problems = _clean_settings(
+        {"allowed_media": ["photo", "video", "قاچاقی", "photo"]}, {}
+    )
+    assert problems == []
+    assert cfg["allowed_media"] == ["photo", "video"]
+
+
+def test_a_list_setting_that_is_not_a_list_is_refused():
+    from telkap.web.miniapp import _clean_settings
+
+    _, problems = _clean_settings({"route_words": "تخفیف"}, {})
+    assert problems == ["route_words"]
+
+
+def test_route_words_are_capped_in_count_and_length():
+    """ورودی از بیرون می‌آید و مستقیم روی هر پست اجرا می‌شود."""
+    from telkap.web.miniapp import MAX_LIST_ITEM_CHARS, MAX_LIST_ITEMS, _clean_settings
+
+    cfg, problems = _clean_settings(
+        {"route_words": [f"واژه{n}" for n in range(200)] + ["ب" * 500]}, {}
+    )
+    assert problems == []
+    assert len(cfg["route_words"]) <= MAX_LIST_ITEMS
+    assert max(len(word) for word in cfg["route_words"]) <= MAX_LIST_ITEM_CHARS
+
+
+def _app_page() -> str:
+    from pathlib import Path
+
+    return (
+        Path(__file__).parent.parent / "site" / "app" / "index.html"
+    ).read_text(encoding="utf-8")
+
+
+def _between(text: str, start: str, end: str) -> str:
+    body = text.split(start, 1)[1]
+    return body.split(end, 1)[0]
+
+
+def test_every_setting_the_page_offers_is_one_the_server_accepts():
+    """<b>سکوتِ کامل، اگر یکی از این دو طرف عوض شود.</b>
+
+    صفحه یک سوئیچ نشان می‌دهد، کاربر می‌زندش، و سرور کلید ناشناس را
+    با ۴۰۰ رد می‌کند. تنها نشانه‌اش یک پیام خطای کوتاه است که کاربر
+    به «اینترنت» ربطش می‌دهد. پس هر کلیدی که در صفحه هست باید در
+    فهرست مجاز سرور هم باشد.
+    """
+    import re
+
+    from telkap.web import miniapp
+
+    allowed = set(
+        (
+            *miniapp.BOOL_SETTINGS, *miniapp.TEXT_SETTINGS,
+            *miniapp.INT_SETTINGS, *miniapp.CHOICE_SETTINGS,
+            *miniapp.LIST_SETTINGS,
+        )
+    )
+    sections = _between(_app_page(), "var SECTIONS = [", "\n  ];")
+    keys = set(re.findall(r"\bk: '([a-z_]+)'", sections))
+
+    assert keys, "کلیدی پیدا نشد؛ ساختار صفحه عوض شده"
+    assert keys <= allowed, sorted(keys - allowed)
+
+
+def test_every_key_a_preset_writes_is_one_the_server_accepts():
+    """الگو یک درخواست است با ده‌ها کلید؛ یک کلید بد یعنی کل الگو
+    رد می‌شود، نه فقط همان یکی."""
+    import re
+
+    from telkap.web import miniapp
+
+    allowed = set(
+        (
+            *miniapp.BOOL_SETTINGS, *miniapp.TEXT_SETTINGS,
+            *miniapp.INT_SETTINGS, *miniapp.CHOICE_SETTINGS,
+            *miniapp.LIST_SETTINGS,
+        )
+    )
+    presets = _between(_app_page(), "var PRESETS = [", "\n  ];")
+    keys = set(re.findall(r"\b([a-z_]+):\s", presets))
+
+    assert keys, "الگویی پیدا نشد؛ ساختار صفحه عوض شده"
+    assert keys <= allowed, sorted(keys - allowed)
+
+
+def test_every_preset_value_passes_the_servers_own_validation():
+    """اگر مقدارِ یک الگو خارج از دامنه باشد، الگو با ۴۰۰ برمی‌گردد."""
+    import json
+    import re
+
+    from telkap.web.miniapp import _clean_settings
+
+    presets = _between(_app_page(), "var PRESETS = [", "\n  ];")
+    posted = {}
+    for key, raw in re.findall(r"\b([a-z_]+):\s*('[^']*'|true|false|\d+)", presets):
+        posted[key] = json.loads(raw.replace("'", '"'))
+
+    _, problems = _clean_settings(posted, {})
+    assert problems == []
+
+
+def test_the_media_chips_cover_every_media_kind():
+    """نوعی که در صفحه نباشد، هیچ‌وقت نمی‌شود روشنش کرد — و چون
+    «allowed_media» فهرستِ اجازه است، نبودنش یعنی آن نوع برای همیشه
+    از این صفحه خاموش می‌ماند."""
+    import re
+
+    from telkap.services.defaults import MEDIA_KINDS
+
+    media = _between(_app_page(), "k: 'allowed_media'", "] },")
+    shown = set(re.findall(r"\['([a-z_]+)',", media))
+
+    assert shown == set(MEDIA_KINDS), sorted(set(MEDIA_KINDS) ^ shown)

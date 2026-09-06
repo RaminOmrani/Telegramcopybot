@@ -188,6 +188,60 @@ input:focus, textarea:focus, select:focus {
 .opt .name { font-size: 14px; }
 .opt .why { font-size: 12px; color: var(--muted); margin-top: 1px; }
 
+/* ── بخش‌های تاشو ───────────────────────────────────────────────
+   با <details> ساخته شده‌اند، نه با جاوااسکریپت: باز و بسته شدن
+   کارِ خودِ مرورگر است، با صفحه‌کلید هم کار می‌کند، و اگر اسکریپت
+   نرسید باز هم محتوا در دسترس است. */
+details.sec {
+  background: var(--card); border-radius: var(--radius);
+  margin-bottom: 10px; overflow: hidden;
+}
+details.sec > summary {
+  display: flex; align-items: center; gap: 10px;
+  padding: 14px 16px; cursor: pointer;
+  font-weight: 600; font-size: 14px; list-style: none;
+}
+details.sec > summary::-webkit-details-marker { display: none; }
+details.sec > summary .grow { flex: 1; min-width: 0; }
+details.sec > summary .chev { transition: transform .15s; font-size: 13px; }
+details.sec[open] > summary .chev { transform: rotate(180deg); }
+details.sec .inner { padding: 0 16px 6px; }
+/* ردیف اول داخل هر بخش نباید خط بالای اضافه بگیرد */
+details.sec .inner > .opt:first-child { padding-top: 4px; }
+@media (prefers-reduced-motion: reduce) {
+  details.sec > summary .chev { transition: none; }
+}
+
+/* ── الگوهای آماده ─────────────────────────────────────────────
+   افقی می‌چرخند تا چهارتا الگو یک ستون بلند نسازند. */
+.presets {
+  display: flex; gap: 8px; overflow-x: auto;
+  padding-bottom: 4px; margin-bottom: 8px;
+  scrollbar-width: none;
+}
+.presets::-webkit-scrollbar { display: none; }
+.presets .btn { flex: 0 0 auto; width: auto; white-space: nowrap; }
+
+/* ── جست‌وجوی تنظیمات ──────────────────────────────────────────── */
+input.find { margin: 18px 0 12px; }
+
+/* ── تراشه‌ها (فهرست‌های چندگزینه‌ای) ───────────────────────────── */
+.field { padding: 12px 0; }
+.field + .field, .field + label.f, label.f + .field {
+  border-top: 1px solid var(--line);
+}
+.field .cap { font-size: 12.5px; color: var(--muted); }
+.chips { display: flex; flex-wrap: wrap; gap: 6px; margin: 8px 0; }
+.chip {
+  background: var(--bg); color: var(--muted);
+  border: 1px solid var(--line); border-radius: 999px;
+  padding: 5px 12px; font: inherit; font-size: 12.5px; cursor: pointer;
+}
+.chip[aria-pressed="true"] {
+  color: var(--ink); border-color: var(--accent);
+  background: color-mix(in srgb, var(--accent) 16%, transparent);
+}
+
 /* ── نمودار ────────────────────────────────────────────────────── */
 .spark { display: flex; align-items: stretch; gap: 4px; height: 92px; }
 .spark .col { flex: 1; display: flex; flex-direction: column; min-width: 0; }
@@ -608,36 +662,194 @@ input:focus, textarea:focus, select:focus {
 
   // ── جزئیات یک کار ─────────────────────────────────────────────
   //
-  // فهرست تنظیم‌ها عمداً همان‌هایی است که اغلب عوض می‌شوند. بقیه در
-  // ربات هستند؛ آوردنِ همه‌ی هفتاد گزینه به اینجا، اپ را به یک فرمِ
-  // بی‌انتها تبدیل می‌کرد که هیچ‌کس تا تهش نمی‌رود.
-  var GROUPS = [
-    ['پاک‌سازی متن', [
-      ['remove_links', 'حذف لینک‌ها', 'هر نشانی اینترنتی از متن برداشته می‌شود'],
-      ['remove_mentions', 'حذف یوزرنیم‌ها', '@… ها برداشته می‌شوند'],
-      ['remove_hashtags', 'حذف هشتگ‌ها', ''],
-      ['remove_emails', 'حذف ایمیل‌ها', ''],
-      ['remove_source_signature', 'حذف امضای مبدا', 'آیدی کانال مبدا از ته پست'],
-      ['strip_empty_lines', 'حذف خط‌های خالی اضافه', '']
+  // <b>مسئله‌ی این صفحه سادگی نیست، «سادگیِ اول» است.</b> هفتاد
+  // تنظیم واقعاً لازم‌اند — هرکدام را یک مشتری خواسته — ولی اگر
+  // هفتادتا با هم روی صفحه بریزند، کسی که فقط می‌خواهد یک کانال را
+  // کپی کند همان‌جا رها می‌کند.
+  //
+  // پس سه لایه:
+  //   ۱. الگوهای آماده — یک ضربه، ده‌ها تنظیم. اکثر مردم همین‌جا
+  //      تمام می‌کنند و هیچ گزینه‌ای را باز نمی‌کنند.
+  //   ۲. «پرکاربردها» که تنها بخشِ بازِ اول است.
+  //   ۳. بقیه، در بخش‌های تاشو. هست، ولی تا نخواهی دیده نمی‌شود.
+  //
+  // و یک جست‌وجو، چون وقتی گزینه‌ای پنهان باشد کاربر باید بتواند
+  // نامش را بنویسد و مستقیم برسد؛ وگرنه تاشو کردن یعنی گم کردن.
+
+  // نوعِ هر ردیف: bool | choice | text | area | num | chips
+  var SECTIONS = [
+    ['⭐ پرکاربردها', [
+      { k: 'mode', t: 'choice', n: 'شیوه‌ی ارسال', o: [
+        ['copy', 'کپی', 'بدون برچسب «فوروارد از…»؛ انگار خودتان گذاشته‌اید'],
+        ['forward', 'فوروارد', 'با برچسب مبدا، مثل فوروارد معمولی']
+      ]},
+      { k: 'remove_source_signature', t: 'bool', n: 'حذف امضای مبدا',
+        w: 'آیدی کانال مبدا از ته پست برداشته می‌شود' },
+      { k: 'block_ads', t: 'bool', n: 'فیلتر هوشمند تبلیغات',
+        w: 'پستِ تبلیغاتی اصلاً کپی نمی‌شود' },
+      { k: 'footer', t: 'area', n: 'فوتر (پایین پست)',
+        w: 'مثلاً آیدی کانال خودتان' },
+      { k: 'delay_seconds', t: 'num', n: 'تأخیر پیش از ارسال', u: 'ثانیه',
+        w: '۰ یعنی بی‌درنگ' }
     ]],
-    ['فیلترها', [
-      ['block_ads', 'فیلتر هوشمند تبلیغات', 'پستِ تبلیغاتی اصلاً کپی نمی‌شود'],
-      ['block_with_links', 'رد کردن پستِ دارای لینک', ''],
-      ['block_with_buttons', 'رد کردن پستِ دکمه‌دار', ''],
-      ['block_forwarded', 'رد کردن پستِ فورواردشده', ''],
-      ['skip_duplicates', 'جلوگیری از پست تکراری', '']
+
+    ['🔀 ترتیب انتشار', [
+      { k: 'order_mode', t: 'choice', n: 'ترتیب', o: [
+        ['grace', 'هوشمند', 'به ترتیب، ولی تا ابد پشت پستِ سنگین نمی‌ماند'],
+        ['strict', 'دقیق', 'همیشه به ترتیب مبدا، به هر قیمتی'],
+        ['fast', 'سریع', 'هرکدام زودتر آماده شد؛ ترتیب تضمینی نیست']
+      ]},
+      { k: 'order_grace_seconds', t: 'num', n: 'مهلت حالت هوشمند', u: 'ثانیه',
+        w: 'بعد از این مدت، منتظر پستِ سنگین نمی‌ماند' }
     ]],
-    ['همگام‌سازی', [
-      ['sync_edits', 'ویرایش‌های مبدا اعمال شود', ''],
-      ['sync_deletes', 'حذف‌های مبدا اعمال شود', ''],
-      ['copy_buttons', 'کپی دکمه‌های شیشه‌ای', '']
+
+    ['🧹 پاک‌سازی متن', [
+      { k: 'remove_links', t: 'bool', n: 'حذف لینک‌ها',
+        w: 'هر نشانی اینترنتی از متن برداشته می‌شود' },
+      { k: 'remove_mentions', t: 'bool', n: 'حذف یوزرنیم‌ها', w: '@… ها برداشته می‌شوند' },
+      { k: 'remove_hashtags', t: 'bool', n: 'حذف هشتگ‌ها' },
+      { k: 'remove_emails', t: 'bool', n: 'حذف ایمیل‌ها' },
+      { k: 'remove_emoji', t: 'bool', n: 'حذف ایموجی‌ها' },
+      { k: 'strip_empty_lines', t: 'bool', n: 'حذف خط‌های خالی اضافه' }
+    ]],
+
+    ['🚫 فیلترها', [
+      { k: 'ad_sensitivity', t: 'choice', n: 'حساسیت فیلتر تبلیغات', o: [
+        ['low', 'کم', 'فقط تبلیغِ آشکار'],
+        ['medium', 'متوسط', 'پیشنهاد ما'],
+        ['high', 'زیاد', 'سخت‌گیر؛ ممکن است پستِ سالم هم رد شود']
+      ]},
+      { k: 'block_with_links', t: 'bool', n: 'رد کردن پستِ دارای لینک' },
+      { k: 'block_with_buttons', t: 'bool', n: 'رد کردن پستِ دکمه‌دار' },
+      { k: 'block_forwarded', t: 'bool', n: 'رد کردن پستِ فورواردشده' },
+      { k: 'skip_bots', t: 'bool', n: 'رد کردن پیام ربات‌ها' },
+      { k: 'skip_replies', t: 'bool', n: 'رد کردن پیام‌های پاسخ (reply)' },
+      { k: 'min_length', t: 'num', n: 'حداقل طول متن', u: 'نویسه', w: '۰ = بدون حد' },
+      { k: 'max_length', t: 'num', n: 'حداکثر طول متن', u: 'نویسه', w: '۰ = بدون حد' },
+      { k: 'route_words', t: 'chips', n: 'فقط پستِ دارای این کلمه‌ها',
+        w: 'خالی یعنی همه‌ی پست‌ها بروند' },
+      { k: 'route_skip', t: 'chips', n: 'پستِ دارای این کلمه‌ها نرود' }
+    ]],
+
+    ['✍️ متن‌های ثابت', [
+      { k: 'header', t: 'area', n: 'هدر (بالای پست)' },
+      { k: 'signature', t: 'text', n: 'امضا', w: 'جایگزین امضای مبدا' }
+    ]],
+
+    ['🖼 رسانه', [
+      { k: 'allowed_media', t: 'chips', n: 'چه چیزهایی کپی شود',
+        w: 'هرچه خاموش باشد اصلاً فرستاده نمی‌شود',
+        c: [['text', 'متن'], ['photo', 'عکس'], ['video', 'ویدئو'],
+            ['animation', 'گیف'], ['audio', 'موزیک'], ['voice', 'ویس'],
+            ['document', 'فایل'], ['sticker', 'استیکر'], ['poll', 'نظرسنجی'],
+            ['video_note', 'ویدئو-پیام']] },
+      { k: 'caption_only', t: 'bool', n: 'فقط متن، بدون رسانه' },
+      { k: 'skip_media_over_mb', t: 'num', n: 'رد کردن فایل بزرگ‌تر از', u: 'مگابایت',
+        w: '۰ = بدون محدودیت' }
+    ]],
+
+    ['💧 واترمارک', [
+      { k: 'watermark_enabled', t: 'bool', n: 'واترمارک روی عکس‌ها',
+        w: 'نیازمند طرحی است که واترمارک دارد' },
+      { k: 'watermark_kind', t: 'choice', n: 'نوع', o: [
+        ['text', 'متن', 'همان چیزی که پایین می‌نویسید'],
+        ['logo', 'لوگو', 'فایل لوگو را در ربات آپلود کنید']
+      ]},
+      { k: 'watermark_text', t: 'text', n: 'متن واترمارک' },
+      { k: 'watermark_position', t: 'choice', n: 'جای واترمارک', o: [
+        ['bottom-right', 'پایین راست'], ['bottom-left', 'پایین چپ'],
+        ['top-right', 'بالا راست'], ['top-left', 'بالا چپ'],
+        ['center', 'وسط']
+      ]},
+      { k: 'watermark_opacity', t: 'num', n: 'شفافیت', u: 'درصد' },
+      { k: 'watermark_size', t: 'num', n: 'اندازه', u: 'درصدِ عرض عکس' }
+    ]],
+
+    ['🤖 هوش مصنوعی', [
+      { k: 'ai_rewrite', t: 'bool', n: 'بازنویسی متن',
+        w: 'متن با لحن انتخابی دوباره نوشته می‌شود' },
+      { k: 'ai_style', t: 'choice', n: 'لحن بازنویسی', o: [
+        ['same', 'همان لحن اصلی'], ['formal', 'رسمی و خبری'],
+        ['friendly', 'خودمانی'], ['short', 'کوتاه و فشرده'],
+        ['marketing', 'تبلیغاتی']
+      ]},
+      { k: 'ai_summarize', t: 'bool', n: 'خلاصه‌سازی' },
+      { k: 'ai_sentences', t: 'num', n: 'خلاصه در چند جمله', u: 'جمله' },
+      { k: 'ai_translate', t: 'bool', n: 'ترجمه' },
+      { k: 'ai_language', t: 'choice', n: 'زبان مقصد', o: [
+        ['fa', 'فارسی'], ['en', 'انگلیسی'], ['ar', 'عربی'],
+        ['tr', 'ترکی استانبولی'], ['ru', 'روسی']
+      ]}
+    ]],
+
+    ['⏱ زمان‌بندی و سرعت', [
+      { k: 'max_per_hour', t: 'num', n: 'حداکثر پست در ساعت', w: '۰ = نامحدود' },
+      { k: 'min_gap_seconds', t: 'num', n: 'حداقل فاصله‌ی دو انتشار', u: 'ثانیه' },
+      { k: 'active_from_hour', t: 'num', n: 'ساعت شروع فعالیت', u: '۰ تا ۲۳' },
+      { k: 'active_to_hour', t: 'num', n: 'ساعت پایان فعالیت', u: '۰ تا ۲۳',
+        w: 'اگر هر دو ۰ باشند، همیشه فعال است' },
+      { k: 'hold_outside_hours', t: 'bool', n: 'خارج از ساعت، نگه دار',
+        w: 'به‌جای دور ریختن، تا ساعت فعال صبر می‌کند' },
+      { k: 'approval', t: 'bool', n: 'تأیید دستی پیش از انتشار',
+        w: 'هر پست اول برای خودتان می‌آید' }
+    ]],
+
+    ['🔁 همگام‌سازی', [
+      { k: 'sync_edits', t: 'bool', n: 'ویرایش‌های مبدا اعمال شود' },
+      { k: 'sync_deletes', t: 'bool', n: 'حذف‌های مبدا اعمال شود' },
+      { k: 'copy_buttons', t: 'bool', n: 'کپی دکمه‌های شیشه‌ای' }
+    ]],
+
+    ['🧩 پیشرفته', [
+      { k: 'skip_duplicates', t: 'bool', n: 'جلوگیری از پست تکراری',
+        w: 'همان پست در همین کار دوباره فرستاده نشود' },
+      { k: 'skip_cross_duplicates', t: 'bool', n: 'تکراری بین چند مبدا',
+        w: 'وقتی چند کار به یک مقصد می‌ریزند، فقط اولی برود' },
+      { k: 'duplicate_mode', t: 'choice', n: 'تکراری یعنی چه', o: [
+        ['exact', 'کاملاً یکسان'],
+        ['normalized', 'یکسان با چشم‌پوشی از فاصله و علائم'],
+        ['fuzzy', 'شبیه', 'حتی اگر چند کلمه فرق داشته باشد']
+      ]},
+      { k: 'similarity_percent', t: 'num', n: 'آستانه‌ی شباهت', u: 'درصد' },
+      { k: 'engagement_wait_minutes', t: 'num', n: 'صبر برای سنجش بازخورد', u: 'دقیقه',
+        w: '۰ یعنی خاموش؛ وگرنه این‌قدر صبر می‌کند و بعد آمار پست را می‌بیند' },
+      { k: 'min_views', t: 'num', n: 'حداقل بازدید' },
+      { k: 'min_reactions', t: 'num', n: 'حداقل واکنش' },
+      { k: 'min_forwards', t: 'num', n: 'حداقل فوروارد' },
+      { k: 'rewrite_configs', t: 'bool', n: 'تغییر نام کانفیگ‌های داخل متن' },
+      { k: 'rewrite_files', t: 'bool', n: 'تغییر نام داخل فایل‌های پیوست' },
+      { k: 'config_tag', t: 'text', n: 'نام تازه‌ی کانفیگ',
+        w: 'خالی = از امضا یا فوتر برداشته می‌شود' },
+      { k: 'file_rename', t: 'text', n: 'الگوی نام فایل',
+        w: '{tag} و {name} پذیرفته است' }
     ]]
   ];
 
-  var ORDERS = [
-    ['grace', 'هوشمند', 'به ترتیب، ولی پشت پستِ سنگین نمی‌ماند'],
-    ['strict', 'دقیق', 'همیشه به ترتیب مبدا، به هر قیمتی'],
-    ['fast', 'سریع', 'هرکدام زودتر آماده شد؛ ترتیب تضمینی نیست']
+  // یک ضربه، ده‌ها تنظیم. هر کلید اینجا باید در فهرست مجازِ سرور
+  // باشد، وگرنه کل الگو با خطا برمی‌گردد.
+  var PRESETS = [
+    ['کپی ساده', 'همان پست، بدون دست‌کاری', {
+      mode: 'copy', order_mode: 'grace',
+      remove_links: false, remove_hashtags: false, remove_mentions: false,
+      remove_emails: false, remove_emoji: false, remove_source_signature: true,
+      strip_empty_lines: true, block_ads: false, block_with_links: false,
+      block_with_buttons: false, block_forwarded: false, caption_only: false
+    }],
+    ['کانال خبری', 'ترتیب دقیق، بدون لینک و امضای مبدا', {
+      mode: 'copy', order_mode: 'strict',
+      remove_links: true, remove_source_signature: true, strip_empty_lines: true,
+      block_ads: true, ad_sensitivity: 'medium',
+      skip_duplicates: true, sync_edits: true
+    }],
+    ['ضدتبلیغ', 'هرچه بوی تبلیغ بدهد رد می‌شود', {
+      block_ads: true, ad_sensitivity: 'high',
+      block_with_links: true, block_with_buttons: true, block_forwarded: true,
+      remove_mentions: true, skip_duplicates: true, skip_bots: true
+    }],
+    ['برند خودم', 'امضای مبدا می‌رود، فوتر شما می‌ماند', {
+      mode: 'copy', remove_links: true, remove_mentions: true,
+      remove_source_signature: true, strip_empty_lines: true, copy_buttons: false
+    }]
   ];
 
   function taskView(box, taskId) {
@@ -680,94 +892,78 @@ input:focus, textarea:focus, select:focus {
       counts.appendChild(crow);
       body.appendChild(counts);
 
-      // ترتیب انتشار
-      body.appendChild(el('h2', null, 'ترتیب انتشار'));
-      var orderBox = el('div', 'card');
-      ORDERS.forEach(function (item) {
-        var opt = el('div', 'opt tap');
-        var grow = el('div', 'grow');
-        grow.appendChild(el('div', 'name', item[1]));
-        grow.appendChild(el('div', 'why', item[2]));
-        var mark = el('div', null, cfg.order_mode === item[0] ? '🔘' : '⚪️');
-        opt.appendChild(grow); opt.appendChild(mark);
-        opt.onclick = function () {
-          save(taskId, { order_mode: item[0] }, function () { refreshOver(); });
+      // ── الگوهای آماده ──────────────────────────────────────────
+      body.appendChild(el('h2', null, 'الگوی آماده'));
+      var strip = el('div', 'presets');
+      PRESETS.forEach(function (preset) {
+        var btn = el('button', 'btn ghost small', preset[0]);
+        btn.title = preset[1];
+        btn.onclick = function () {
+          ask('الگوی «' + preset[0] + '» روی این کار بنشیند؟\n' + preset[1]
+              + '\nتنظیم‌های مربوطه بازنویسی می‌شوند.', function (yes) {
+            if (!yes) return;
+            api('/tasks/' + taskId + '/settings', { body: preset[2] })
+              .then(function () { buzz('success'); refreshOver(); })
+              .catch(function (e) { buzz('error'); say(e.message); });
+          });
         };
-        orderBox.appendChild(opt);
+        strip.appendChild(btn);
       });
-      body.appendChild(orderBox);
+      body.appendChild(strip);
+      body.appendChild(el('p', 'hint', 'الگو فقط نقطه‌ی شروع است؛ هر گزینه‌ای'
+        + ' را بعدش می‌شود جدا عوض کرد.'));
 
-      // گزینه‌های کلیدی
-      GROUPS.forEach(function (group) {
-        body.appendChild(el('h2', null, group[0]));
-        var groupBox = el('div', 'card');
-        group[1].forEach(function (item) {
-          var key = item[0];
-          var opt = el('div', 'opt');
-          var grow = el('div', 'grow');
-          grow.appendChild(el('div', 'name', item[1]));
-          if (item[2]) grow.appendChild(el('div', 'why', item[2]));
-          var sw = el('button', 'sw');
-          sw.setAttribute('aria-pressed', String(!!cfg[key]));
-          sw.setAttribute('aria-label', item[1]);
-          sw.onclick = function () {
-            var was = sw.getAttribute('aria-pressed') === 'true';
-            sw.setAttribute('aria-pressed', String(!was));
-            sw.disabled = true;
-            var patch = {}; patch[key] = !was;
-            api('/tasks/' + taskId + '/settings', { body: patch })
-              .then(function () { cfg[key] = !was; buzz('success'); })
-              .catch(function (e) {
-                sw.setAttribute('aria-pressed', String(was));
-                buzz('error'); say(e.message);
-              })
-              .then(function () { sw.disabled = false; });
-          };
-          opt.appendChild(grow); opt.appendChild(sw);
-          groupBox.appendChild(opt);
+      // ── جست‌وجو در تنظیمات ─────────────────────────────────────
+      // بخش‌ها پایین‌تر ساخته می‌شوند؛ این دو تا همین‌جا اعلام
+      // می‌شوند چون جست‌وجو به هر دو نیاز دارد و تا کاربر چیزی
+      // ننویسد اجرا نمی‌شود.
+      var rows = [];
+      var sectionBoxes = [];
+      var find = document.createElement('input');
+      find.type = 'text';
+      find.placeholder = '🔍 جست‌وجو در تنظیمات…';
+      find.className = 'find';
+      body.appendChild(find);
+      find.oninput = function () {
+        var q = find.value.trim().toLowerCase();
+        SECTIONS.forEach(function (section, index) {
+          var det = sectionBoxes[index];
+          var hits = 0;
+          rows.forEach(function (row) {
+            if (row.section !== index) return;
+            var on = !q || row.hay.indexOf(q) !== -1;
+            row.node.classList.toggle('hidden', !on);
+            if (on) hits++;
+          });
+          det.classList.toggle('hidden', hits === 0);
+          // با جست‌وجو بخش‌ها باز می‌شوند، وگرنه نتیجه پیدا شده ولی
+          // دیده نمی‌شود. بدون جست‌وجو، همه جز اولی بسته‌اند.
+          det.open = q ? true : index === 0;
         });
-        body.appendChild(groupBox);
-      });
+      };
 
-      // متن‌های ثابت
-      body.appendChild(el('h2', null, 'متن‌های ثابت'));
-      var textBox = el('div', 'card');
-      [['header', 'هدر (بالای پست)'], ['footer', 'فوتر (پایین پست)'],
-       ['signature', 'امضا']].forEach(function (item) {
-        var label = el('label', 'f');
-        label.appendChild(el('span', 'cap', item[1]));
-        var input = document.createElement('textarea');
-        input.value = cfg[item[0]] || '';
-        input.rows = 2;
-        label.appendChild(input);
-        textBox.appendChild(label);
-        input.onchange = function () {
-          var patch = {}; patch[item[0]] = input.value;
-          save(taskId, patch);
-        };
+      // ── بخش‌های تنظیمات ────────────────────────────────────────
+      SECTIONS.forEach(function (section, index) {
+        var det = document.createElement('details');
+        det.className = 'sec';
+        det.open = index === 0;
+        var sum = document.createElement('summary');
+        sum.appendChild(el('span', 'grow', section[0]));
+        sum.appendChild(el('span', 'chev', '▾'));
+        det.appendChild(sum);
+        var inner = el('div', 'inner');
+        section[1].forEach(function (item) {
+          var node = fieldRow(taskId, cfg, item);
+          inner.appendChild(node);
+          rows.push({
+            node: node, section: index,
+            hay: ((item.n || '') + ' ' + (item.w || '') + ' ' + item.k).toLowerCase()
+          });
+        });
+        det.appendChild(inner);
+        sectionBoxes.push(det);
+        body.appendChild(det);
       });
-      body.appendChild(textBox);
-
-      // تأخیر و سقف
-      body.appendChild(el('h2', null, 'سرعت و ترافیک'));
-      var speedBox = el('div', 'card');
-      [['delay_seconds', 'تأخیر پیش از ارسال (ثانیه)', '۰ یعنی بی‌درنگ'],
-       ['max_per_hour', 'حداکثر پست در ساعت', '۰ یعنی نامحدود']
-      ].forEach(function (item) {
-        var label = el('label', 'f');
-        label.appendChild(el('span', 'cap', item[1]));
-        var input = document.createElement('input');
-        input.type = 'number'; input.min = '0';
-        input.value = cfg[item[0]] || 0;
-        label.appendChild(input);
-        label.appendChild(el('div', 'hint', item[2]));
-        speedBox.appendChild(label);
-        input.onchange = function () {
-          var patch = {}; patch[item[0]] = input.value;
-          save(taskId, patch);
-        };
-      });
-      body.appendChild(speedBox);
 
       var actions = el('div', 'tail');
       var remove = el('button', 'btn ghost danger', '🗑 حذف این کار');
@@ -787,6 +983,151 @@ input:focus, textarea:focus, select:focus {
     }).catch(function (e) {
       failed(body, e.message, function () { taskView(box, taskId); });
     });
+  }
+
+  // یک ردیفِ تنظیم می‌سازد و خودش ذخیره‌اش می‌کند. هر نوع، شکل خودش
+  // را دارد ولی رفتار ذخیره یکی است: تغییر که داد، همان لحظه می‌رود.
+  function fieldRow(taskId, cfg, item) {
+    if (item.t === 'bool') {
+      var opt = el('div', 'opt');
+      var grow = el('div', 'grow');
+      grow.appendChild(el('div', 'name', item.n));
+      if (item.w) grow.appendChild(el('div', 'why', item.w));
+      var sw = el('button', 'sw');
+      sw.setAttribute('aria-pressed', String(!!cfg[item.k]));
+      sw.setAttribute('aria-label', item.n);
+      sw.onclick = function () {
+        var was = sw.getAttribute('aria-pressed') === 'true';
+        sw.setAttribute('aria-pressed', String(!was));
+        sw.disabled = true;
+        var patch = {}; patch[item.k] = !was;
+        api('/tasks/' + taskId + '/settings', { body: patch })
+          .then(function () { cfg[item.k] = !was; buzz('success'); })
+          .catch(function (e) {
+            sw.setAttribute('aria-pressed', String(was));
+            buzz('error'); say(e.message);
+          })
+          .then(function () { sw.disabled = false; });
+      };
+      opt.appendChild(grow); opt.appendChild(sw);
+      return opt;
+    }
+
+    if (item.t === 'choice') {
+      var wrap = el('label', 'f');
+      wrap.appendChild(el('span', 'cap', item.n));
+      var sel = document.createElement('select');
+      item.o.forEach(function (choice) {
+        var o = document.createElement('option');
+        o.value = choice[0]; o.textContent = choice[1];
+        if (cfg[item.k] === choice[0]) o.selected = true;
+        sel.appendChild(o);
+      });
+      wrap.appendChild(sel);
+      var why = el('div', 'hint');
+      var explain = function () {
+        var found = '';
+        item.o.forEach(function (choice) {
+          if (choice[0] === sel.value && choice[2]) found = choice[2];
+        });
+        why.textContent = found || item.w || '';
+      };
+      explain();
+      wrap.appendChild(why);
+      sel.onchange = function () {
+        var patch = {}; patch[item.k] = sel.value;
+        cfg[item.k] = sel.value;
+        explain();
+        save(taskId, patch);
+      };
+      return wrap;
+    }
+
+    if (item.t === 'chips') {
+      var chipsWrap = el('div', 'field');
+      chipsWrap.appendChild(el('div', 'cap', item.n));
+      if (item.w) chipsWrap.appendChild(el('div', 'hint', item.w));
+      var picked = (cfg[item.k] || []).slice();
+      var strip = el('div', 'chips');
+      chipsWrap.appendChild(strip);
+
+      // فهرستِ بسته (مثل نوع رسانه) دکمه‌های ثابت دارد؛ فهرستِ باز
+      // (کلمه‌های کاربر) یک ورودی می‌خواهد تا هرچه خواست اضافه کند.
+      if (item.c) {
+        item.c.forEach(function (choice) {
+          var chip = el('button', 'chip', choice[1]);
+          var on = picked.indexOf(choice[0]) !== -1;
+          chip.setAttribute('aria-pressed', String(on));
+          chip.onclick = function () {
+            var at = picked.indexOf(choice[0]);
+            if (at === -1) picked.push(choice[0]); else picked.splice(at, 1);
+            chip.setAttribute('aria-pressed', String(at === -1));
+            var patch = {}; patch[item.k] = picked;
+            cfg[item.k] = picked.slice();
+            save(taskId, patch);
+          };
+          strip.appendChild(chip);
+        });
+        return chipsWrap;
+      }
+
+      var draw = function () {
+        strip.textContent = '';
+        picked.forEach(function (word, at) {
+          var chip = el('button', 'chip', word + ' ✕');
+          chip.setAttribute('aria-pressed', 'true');
+          chip.onclick = function () {
+            picked.splice(at, 1);
+            var patch = {}; patch[item.k] = picked;
+            cfg[item.k] = picked.slice();
+            draw(); save(taskId, patch);
+          };
+          strip.appendChild(chip);
+        });
+      };
+      draw();
+      var add = document.createElement('input');
+      add.type = 'text';
+      add.placeholder = 'کلمه را بنویسید و Enter بزنید';
+      add.onkeydown = function (event) {
+        if (event.key !== 'Enter') return;
+        event.preventDefault();
+        var word = add.value.trim();
+        if (!word || picked.indexOf(word) !== -1) { add.value = ''; return; }
+        picked.push(word); add.value = '';
+        var patch = {}; patch[item.k] = picked;
+        cfg[item.k] = picked.slice();
+        draw(); save(taskId, patch);
+      };
+      chipsWrap.appendChild(add);
+      return chipsWrap;
+    }
+
+    // text | area | num
+    var label = el('label', 'f');
+    label.appendChild(el('span', 'cap', item.n + (item.u ? ' (' + item.u + ')' : '')));
+    var input;
+    if (item.t === 'area') {
+      input = document.createElement('textarea');
+      input.rows = 2;
+      input.value = cfg[item.k] || '';
+    } else if (item.t === 'num') {
+      input = document.createElement('input');
+      input.type = 'number'; input.min = '0';
+      input.value = cfg[item.k] || 0;
+    } else {
+      input = document.createElement('input');
+      input.type = 'text';
+      input.value = cfg[item.k] || '';
+    }
+    label.appendChild(input);
+    if (item.w) label.appendChild(el('div', 'hint', item.w));
+    input.onchange = function () {
+      var patch = {}; patch[item.k] = input.value;
+      cfg[item.k] = input.value;
+      save(taskId, patch);
+    };
+    return label;
   }
 
   function save(taskId, patch, done) {

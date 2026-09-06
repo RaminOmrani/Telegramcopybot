@@ -301,10 +301,17 @@ BOOL_SETTINGS = (
     "remove_links", "remove_hashtags", "remove_mentions", "remove_emails",
     "remove_emoji", "remove_source_signature", "strip_empty_lines",
     "block_ads", "block_forwarded", "block_with_links", "block_with_buttons",
-    "skip_duplicates", "skip_bots", "skip_replies",
+    "skip_duplicates", "skip_bots", "skip_replies", "skip_cross_duplicates",
     "sync_edits", "sync_deletes", "copy_buttons", "caption_only",
+    "approval", "hold_outside_hours",
+    "watermark_enabled", "rewrite_configs", "rewrite_files",
+    "ai_summarize", "ai_rewrite", "ai_translate", "feed_preview",
 )
-TEXT_SETTINGS = {"header": 1024, "footer": 1024, "signature": 256}
+TEXT_SETTINGS = {
+    "header": 1024, "footer": 1024, "signature": 256,
+    "watermark_text": 64, "config_tag": 64, "file_rename": 128,
+    "feed_template": 1024,
+}
 INT_SETTINGS = {
     "delay_seconds": (0, 86_400),
     "max_per_hour": (0, 10_000),
@@ -312,12 +319,58 @@ INT_SETTINGS = {
     "max_length": (0, 4096),
     "order_grace_seconds": (5, 86_400),
     "skip_media_over_mb": (0, 4096),
+    "active_from_hour": (0, 23),
+    "active_to_hour": (0, 23),
+    "min_gap_seconds": (0, 86_400),
+    "engagement_wait_minutes": (0, 1_440),
+    "min_views": (0, 100_000_000),
+    "min_reactions": (0, 1_000_000),
+    "min_forwards": (0, 1_000_000),
+    "similarity_percent": (50, 100),
+    "watermark_opacity": (0, 100),
+    "watermark_size": (1, 20),
+    "ai_sentences": (1, 10),
+    "feed_summary_chars": (0, 4096),
 }
+# <b>چرا این چهارتا اینجا دوباره نوشته شده‌اند.</b> منبع اصلی‌شان
+# جای دیگری است (watermark.POSITIONS و aiskills.STYLES/LANGUAGES)، ولی
+# آوردنِ آن ماژول‌ها به لایه‌ی وب یعنی وارد کردن PIL و کل زنجیره‌ی هوش
+# مصنوعی فقط برای خواندن چند کلید. پس اینجا نوشته شده‌اند و یک تست
+# مراقب است که با منبع اصلی یکی بمانند.
 CHOICE_SETTINGS = {
     "mode": ("copy", "forward"),
     "order_mode": ("strict", "fast", "grace"),
     "ad_sensitivity": ("low", "medium", "high"),
+    "duplicate_mode": ("exact", "normalized", "fuzzy"),
+    "watermark_kind": ("text", "logo"),
+    "watermark_position": (
+        "top-left", "top-right", "bottom-left", "bottom-right", "center",
+    ),
+    "ai_style": ("same", "formal", "friendly", "short", "marketing"),
+    "ai_language": ("fa", "en", "ar", "tr", "ru"),
 }
+# فهرست‌ها. «allowed_media» از مجموعه‌ی بسته‌ی نوع رسانه‌ها می‌آید؛ دو
+# تای دیگر کلمه‌های دلخواه کاربرند و فقط تعداد و طولشان مهار می‌شود.
+LIST_SETTINGS = {"allowed_media", "route_words", "route_skip"}
+MAX_LIST_ITEMS = 60
+MAX_LIST_ITEM_CHARS = 64
+
+
+def _clean_list(key: str, value: object) -> list[str] | None:
+    """یک فهرست تمیز، یا None اگر ورودی اصلاً فهرست نبود."""
+    if not isinstance(value, list):
+        return None
+    from telkap.services.defaults import MEDIA_KINDS
+
+    items: list[str] = []
+    for raw in value[:MAX_LIST_ITEMS]:
+        item = str(raw or "").strip()[:MAX_LIST_ITEM_CHARS]
+        if not item or item in items:
+            continue
+        if key == "allowed_media" and item not in MEDIA_KINDS:
+            continue
+        items.append(item)
+    return items
 
 
 def _clean_settings(posted: dict, cfg: dict) -> tuple[dict, list[str]]:
@@ -339,6 +392,12 @@ def _clean_settings(posted: dict, cfg: dict) -> tuple[dict, list[str]]:
                 cfg[key] = max(low, min(int(value), high))
             except (TypeError, ValueError):
                 problems.append(key)
+        elif key in LIST_SETTINGS:
+            items = _clean_list(key, value)
+            if items is None:
+                problems.append(key)
+            else:
+                cfg[key] = items
         else:
             problems.append(key)
     return cfg, problems
@@ -386,7 +445,8 @@ async def task_detail(request: web.Request) -> web.Response:
         "settings": {
             key: cfg.get(key)
             for key in (
-                *BOOL_SETTINGS, *TEXT_SETTINGS, *INT_SETTINGS, *CHOICE_SETTINGS
+                *BOOL_SETTINGS, *TEXT_SETTINGS, *INT_SETTINGS,
+                *CHOICE_SETTINGS, *LIST_SETTINGS,
             )
         },
     })
