@@ -187,6 +187,10 @@ async def main() -> None:
         "پس از راه‌اندازی: %d کاربر بازیابی شد، %d از %d کار فعال گوش داده می‌شود",
         restored, armed, enabled,
     )
+    # کنسول VNC هیچ حرف فارسی‌ای را نشان نمی‌دهد — همه را ♦ می‌کند. پس
+    # همان سه عدد یک بار هم لاتین لاگ می‌شوند تا از روی کنسول خواندنی
+    # باشند: journalctl -u telkap | grep startup:
+    log.info("startup: restored=%d armed=%d enabled=%d", restored, armed, enabled)
     if failed_users or armed < enabled:
         asyncio.create_task(
             alerts.send(
