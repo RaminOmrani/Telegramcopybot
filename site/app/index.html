@@ -400,8 +400,8 @@ input.find { margin: 18px 0 12px; }
     }
   }
 
-  function failed(box, what, retry) {
-    nothing(box, '⚠️', what, 'اینترنت را بررسی کنید.', 'تلاش دوباره', retry);
+  function failed(box, what, retry, note) {
+    nothing(box, '⚠️', what, note || 'اینترنت را بررسی کنید.', 'تلاش دوباره', retry);
   }
 
   // ── نمای رویی ──────────────────────────────────────────────────
@@ -542,6 +542,9 @@ input.find { margin: 18px 0 12px; }
         box.appendChild(note);
       }
 
+      box.appendChild(card('سلامت کارها', 'بررسی کنید کدام کار واقعاً کار می‌کند',
+        '', 'بررسی', function () { openOver(healthView); }));
+
       var make = el('button', 'btn', '➕ ساخت کار کپی');
       make.style.marginTop = '6px';
       make.onclick = function () { startNewTask(); };
@@ -549,9 +552,105 @@ input.find { margin: 18px 0 12px; }
     }).catch(function (e) {
       // پیامِ واقعیِ سرور، نه یک جمله‌ی عمومی. بار اول همین را دور
       // ریخته بودم و تشخیصِ «۴۰۱ است یا ۵۰۰» ممکن نبود.
-      failed(box, e.message || 'اطلاعات حساب نیامد.', fill.home);
+      var what = e.message || 'اطلاعات حساب نیامد.';
+      failed(box, what, fill.home);
+      // «شناسایی نشدید» هم به‌تنهایی هیچ نمی‌گوید: سه علتِ کاملاً
+      // متفاوت یک پیام می‌دهند. پس همان‌جا از سرور می‌پرسیم کدام
+      // بررسی شکسته و همان را زیرش می‌نویسیم.
+      api('/ping').then(function (p) {
+        if (p && p.why) failed(box, what, fill.home, p.why);
+      }).catch(function () { /* تشخیص هم نیامد؛ پیام اول سر جایش است */ });
     });
   };
+
+  // ── سلامت کارها ───────────────────────────────────────────────
+  //
+  // <b>چرا این صفحه لازم شد.</b> «کار نمی‌کند» از بیرون یک شکل دارد:
+  // مقصد خالی می‌ماند. کاری که مبدأش پیدا نشده، کاری که اکانت از
+  // کانالش بیرون افتاده، و کاری که مبدأش واقعاً چیزی نگذاشته — هر سه
+  // یکسان دیده می‌شوند. با چند کار، حدس زدن ممکن است؛ با ده کار، نه.
+  //
+  // و هر مشکل با کارِ بعدی‌اش می‌آید. تشخیصی که نگوید چه باید کرد
+  // فقط نگرانی اضافه می‌کند.
+  var STATE_PILL = {
+    ok:   ['ok',   'سالم'],
+    warn: ['warn', 'هشدار'],
+    bad:  ['bad',  'کار نمی‌کند']
+  };
+
+  function healthView(box) {
+    box.textContent = '';
+    var body = el('div', 'view');
+    box.appendChild(body);
+    body.appendChild(el('h1', null, 'سلامت کارها'));
+    var note = el('p', 'sub', 'هر کار با تلگرام سنجیده می‌شود؛ چند ثانیه طول می‌کشد.');
+    body.appendChild(note);
+    skeleton(body, 4);
+
+    api('/health').then(function (data) {
+      body.textContent = '';
+      body.appendChild(el('h1', null, 'سلامت کارها'));
+
+      var sum = el('p', 'sub');
+      sum.textContent = data.live
+        ? (fa(data.healthy) + ' کار از ' + fa(data.live) + ' کارِ روشن سالم است.')
+        : 'هیچ کار روشنی ندارید.';
+      body.appendChild(sum);
+
+      if (data.account && data.account.length) {
+        var acc = el('div', 'card');
+        acc.appendChild(el('span', 'pill bad', 'مشکل اکانت'));
+        data.account.forEach(function (line) {
+          acc.appendChild(el('div', 'why', line));
+        });
+        (data.fixes || []).forEach(function (line) {
+          acc.appendChild(el('div', 'mini', '← ' + line));
+        });
+        body.appendChild(acc);
+      }
+
+      if (!data.tasks.length) {
+        nothing(body, '📋', 'هنوز کاری نساخته‌اید.', '');
+        return;
+      }
+
+      data.tasks.forEach(function (task) {
+        var item = el('div', 'card');
+        var row = el('div', 'row');
+        var grow = el('div', 'grow');
+        grow.appendChild(el('div', 'name', task.title));
+        row.appendChild(grow);
+
+        var look = task.enabled ? (STATE_PILL[task.state] || STATE_PILL.warn)
+                                : ['', 'خاموش'];
+        row.appendChild(el('span', 'pill ' + look[0], look[1]));
+        item.appendChild(row);
+
+        task.problems.forEach(function (line) {
+          item.appendChild(el('div', 'why', '• ' + line));
+        });
+        task.fixes.forEach(function (line) {
+          item.appendChild(el('div', 'mini', '← ' + line));
+        });
+        if (task.enabled && task.state === 'ok') {
+          item.appendChild(el('div', 'mini',
+            'تا حالا ' + fa(task.copied) + ' پست کپی شده.'));
+        }
+
+        item.classList.add('tap');
+        item.onclick = function () {
+          openOver(function (b) { taskView(b, task.id); });
+        };
+        body.appendChild(item);
+      });
+
+      var again = el('button', 'btn ghost', '↻ بررسی دوباره');
+      again.onclick = function () { healthView(box); };
+      body.appendChild(again);
+    }).catch(function (e) {
+      failed(body, e.message, function () { healthView(box); });
+    });
+  }
 
   // ── کیف پول ───────────────────────────────────────────────────
   function walletView(box) {
@@ -607,6 +706,11 @@ input.find { margin: 18px 0 12px; }
         box.appendChild(wrap);
         return;
       }
+
+      var check = el('button', 'btn ghost', '🩺 بررسی سلامت همه');
+      check.style.marginTop = '8px';
+      check.onclick = function () { openOver(healthView); };
+      box.appendChild(check);
 
       box.appendChild(el('h2', null, fa(data.tasks.length) + ' کار'));
       data.tasks.forEach(function (task) {

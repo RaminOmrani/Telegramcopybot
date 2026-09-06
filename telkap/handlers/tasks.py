@@ -155,6 +155,49 @@ async def cb_list(call: CallbackQuery) -> None:
     )
 
 
+@router.callback_query(F.data == "task:health")
+async def cb_health(call: CallbackQuery) -> None:
+    """<b>کدام کار واقعاً کار می‌کند.</b>
+
+    در فهرست، کارِ خراب هم همان‌قدر سبز است — «فعال» یعنی سوئیچش
+    روشن است، نه اینکه دارد کار می‌کند. این دو را تا امروز هیچ‌جا
+    نمی‌شد از هم جدا کرد.
+    """
+    from telkap.services import checkup
+
+    await call.answer("در حال بررسی…")
+    await call.message.edit_text("🩺 در حال بررسی کارها… چند ثانیه طول می‌کشد.")
+
+    report = await checkup.check_user(call.from_user.id)
+    lines: list[str] = [
+        f"🩺 <b>سلامت کارها</b> — {fa_num(report.healthy)} از "
+        f"{fa_num(report.live)} کارِ روشن سالم است."
+    ]
+
+    if report.account:
+        lines.append("\n⚠️ <b>اکانت</b>")
+        lines += [f"• {line}" for line in report.account]
+        lines += [f"  ← {line}" for line in report.fixes]
+
+    marks = {checkup.OK: "🟢", checkup.WARN: "🟡", checkup.BAD: "🔴"}
+    for item in report.tasks:
+        mark = "⚪️" if not item.enabled else marks.get(item.state, "🟡")
+        lines.append(f"\n{mark} <b>{item.title[:40]}</b>")
+        lines += [f"• {line}" for line in item.problems]
+        lines += [f"  ← {line}" for line in item.fixes]
+        if item.enabled and item.state == checkup.OK:
+            lines.append(f"• تا حالا {fa_num(item.copied)} پست کپی شده.")
+
+    text = "\n".join(lines)
+    # پیام تلگرام سقف دارد و گزارشِ ده کار به آن می‌رسد
+    await call.message.edit_text(
+        text[:3900],
+        reply_markup=InlineKeyboardBuilder()
+        .row(InlineKeyboardButton(text="🔙 بازگشت به کارها", callback_data="task:list"))
+        .as_markup(),
+    )
+
+
 @router.callback_query(F.data.startswith("task:open:"))
 async def cb_open(call: CallbackQuery) -> None:
     task_id = int(call.data.split(":")[2])

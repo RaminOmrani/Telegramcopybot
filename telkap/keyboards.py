@@ -94,6 +94,10 @@ def tasks_list(tasks: list[Task], *, dest_counts: dict[int, int] | None = None) 
             )
         )
     kb.row(InlineKeyboardButton(text="➕ ساخت کار جدید", callback_data="task:new"))
+    if tasks:
+        # «کدامش کار می‌کند» پرسشی است که با نگاه کردن به این فهرست
+        # جواب نمی‌گیرد: کارِ خراب هم همین‌قدر سبز است.
+        kb.row(InlineKeyboardButton(text="🩺 بررسی سلامت کارها", callback_data="task:health"))
     return kb.as_markup()
 
 

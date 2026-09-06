@@ -737,3 +737,59 @@ def test_the_media_chips_cover_every_media_kind():
     shown = set(re.findall(r"\['([a-z_]+)',", media))
 
     assert shown == set(MEDIA_KINDS), sorted(set(MEDIA_KINDS) ^ shown)
+
+
+def _signed(token: str, *, auth_date: int, user_id: int = 5) -> str:
+    """initDataیی که واقعاً با این توکن امضا شده."""
+    import hashlib
+    import hmac
+    import json
+    from urllib.parse import urlencode
+
+    pairs = {"auth_date": str(auth_date), "user": json.dumps({"id": user_id})}
+    check_string = "\n".join(f"{k}={pairs[k]}" for k in sorted(pairs))
+    secret = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
+    pairs["hash"] = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
+    return urlencode(pairs)
+
+
+def test_diagnose_separates_the_three_reasons_auth_can_fail():
+    """<b>سه علتِ کاملاً متفاوت، تا امروز یک پیام می‌دادند.</b>
+
+    «شناسایی نشدید» نه به کاربر چیزی می‌گفت نه به ما؛ پیدا کردن علت
+    به حدس زدن می‌گذشت و یک بار هم حدسمان غلط بود. هر علت باید
+    درمانِ خودش را نام ببرد.
+    """
+    from telkap.web.miniapp import diagnose
+
+    token = "123456:TEST"
+    now = 1_800_000_000
+
+    # ۱) اصلاً از داخل تلگرام باز نشده
+    assert "تلگرام" in diagnose("", token)
+
+    # ۲) امضا با توکنِ دیگری زده شده
+    other = diagnose(_signed("999:OTHER", auth_date=now - 10), token, now=now)
+    assert "توکن" in other
+
+    # ۳) صفحه از دیروز باز مانده
+    stale = diagnose(_signed(token, auth_date=now - 90_000), token, now=now)
+    assert "دوباره" in stale
+
+    # و وقتی همه‌چیز درست است، حرفی برای گفتن نیست
+    assert diagnose(_signed(token, auth_date=now - 10), token, now=now) == ""
+
+
+def test_diagnose_never_leaks_the_token_or_the_right_signature():
+    """این مسیر هویت نمی‌خواهد، پس هرکسی می‌تواند صدایش بزند."""
+    from telkap.web.miniapp import diagnose
+
+    token = "123456:SECRETTOKEN"
+    now = 1_800_000_000
+    for text in (
+        diagnose("", token),
+        diagnose("junk", token, now=now),
+        diagnose(_signed("999:OTHER", auth_date=now - 10), token, now=now),
+    ):
+        assert "SECRETTOKEN" not in text
+        assert "123456" not in text

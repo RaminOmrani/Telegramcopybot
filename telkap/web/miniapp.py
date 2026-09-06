@@ -149,6 +149,50 @@ async def _who(request: web.Request) -> int | None:
     return user_id_from(_init_data(request), get_settings().bot_token)
 
 
+def diagnose(init_data: str, token: str, *, now: float | None = None) -> str:
+    """چرا احراز هویت شکست خورد — به زبان آدمیزاد.
+
+    <b>چرا این لازم شد.</b> «شناسایی نشدید» برای کاربر یعنی هیچ، و
+    برای ما هم یعنی هیچ: سه علتِ کاملاً متفاوت یک پیام می‌دهند و
+    پیدا کردنشان به حدس زدن می‌گذرد. یک بار حدس زدیم و اشتباه بود.
+
+    <b>و چرا افشای اطلاعات نیست.</b> هرچه اینجا گفته می‌شود درباره‌ی
+    داده‌ای است که خودِ درخواست‌دهنده فرستاده. توکن، کلید و امضای
+    درست هیچ‌جا بیرون نمی‌رود؛ فقط می‌گوید سهمِ خودت کجایش ایراد
+    دارد.
+    """
+    if not token:
+        return "توکن ربات روی سرور تنظیم نشده است."
+    if not init_data:
+        return (
+            "تلگرام هویتی نفرستاد. یعنی این صفحه از داخل تلگرام باز نشده،"
+            " یا از راهی باز شده که مینی‌اپ نیست."
+        )
+    try:
+        pairs = dict(parse_qsl(init_data, strict_parsing=True))
+    except ValueError:
+        return "داده‌ی هویت خراب بود."
+    if "hash" not in pairs:
+        return "داده‌ی هویت امضا نداشت."
+    if check(init_data, token, now=now) is not None:
+        return ""
+
+    # امضا غلط است یا کهنه. این دو را از هم جدا می‌کنیم چون درمانشان
+    # کاملاً فرق دارد: یکی توکنِ عوض‌شده است، دیگری فقط بازکردن دوباره.
+    try:
+        issued = int(pairs.get("auth_date", "0"))
+    except ValueError:
+        issued = 0
+    age = (now or time.time()) - issued
+    if issued > 0 and age > MAX_AGE_SECONDS:
+        return "این صفحه از دیروز باز مانده؛ ببندید و دوباره بازش کنید."
+    return (
+        "امضای تلگرام با توکن این سرور نمی‌خواند."
+        " معمولاً یعنی توکن ربات عوض شده و در .env به‌روز نشده،"
+        " یا این صفحه با رباتِ دیگری باز شده است."
+    )
+
+
 def _no(message: str = "شناسایی نشدید", status: int = 401) -> web.Response:
     return web.json_response({"error": message}, status=status)
 
@@ -239,6 +283,17 @@ async def toggle(request: web.Request) -> web.Response:
 
     await manager.reload_user(user_id)
     return _yes({"id": task_id, "enabled": now_on})
+
+
+async def ping(request: web.Request) -> web.Response:
+    """آیا شناسایی شدم، و اگر نه چرا.
+
+    هویت نمی‌خواهد — چون دقیقاً برای وقتی است که هویت کار نمی‌کند.
+    """
+    why = diagnose(_init_data(request), get_settings().bot_token)
+    if why:
+        log.warning("مینی‌اپ شناسایی نکرد: %s", why)
+    return _yes({"ok": not why, "why": why})
 
 
 async def plans(request: web.Request) -> web.Response:
@@ -659,8 +714,41 @@ async def stats(request: web.Request) -> web.Response:
     })
 
 
+async def health(request: web.Request) -> web.Response:
+    """کدام کار کار می‌کند، کدام نه، و چرا."""
+    user_id = await _who(request)
+    if user_id is None:
+        return _no()
+
+    from telkap.services import checkup
+
+    report = await checkup.check_user(user_id)
+    return _yes({
+        "account": report.account,
+        "fixes": report.fixes,
+        "live": report.live,
+        "healthy": report.healthy,
+        "broken": report.broken,
+        "tasks": [
+            {
+                "id": item.task_id,
+                "title": item.title,
+                "enabled": item.enabled,
+                "state": item.state,
+                "problems": item.problems,
+                "fixes": item.fixes,
+                "copied": item.copied,
+                "last_copy": item.last_copy.isoformat() if item.last_copy else None,
+            }
+            for item in report.tasks
+        ],
+    })
+
+
 def routes() -> list:
     return [
+        web.get(f"{API_PREFIX}/ping", ping),
+        web.get(f"{API_PREFIX}/health", health),
         web.get(f"{API_PREFIX}/plans", plans),
         web.get(f"{API_PREFIX}/me", me),
         web.get(f"{API_PREFIX}/stats", stats),
