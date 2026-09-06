@@ -95,6 +95,37 @@ def chevron_with_trail(top, bottom, mark, dot) -> Image.Image:
     return image.resize((SIZE, SIZE), Image.LANCZOS)
 
 
+def share_card(top, bottom, mark) -> Image.Image:
+    """کارتی که هنگام هم‌رسانی لینک در تلگرام دیده می‌شود (og:image).
+
+    <b>چرا هیچ متنی رویش نیست.</b> نوشتن فارسی با PIL بدون کتابخانه‌ی
+    شکل‌دهی، حروف را جدا و برعکس می‌کشد — کارتی که خرابیِ فارسی را
+    نشان بدهد از نداشتنش بدتر است. متن در og:title و og:description
+    می‌رود، که تلگرام کنارِ همین تصویر نشانش می‌دهد.
+    """
+    width, height = 1200 * 2, 630 * 2
+    image = _gradient(max(width, height), top, bottom).convert("RGBA")
+    image = image.crop((0, 0, width, height))
+    draw = ImageDraw.Draw(image)
+
+    # حلقه‌ی کم‌رنگ پشت نشان، تا در کارتِ پهن گم نشود
+    ring = round(height * 0.42)
+    cx, cy = width // 2, height // 2
+    draw.ellipse(
+        [(cx - ring, cy - ring), (cx + ring, cy + ring)],
+        outline=(255, 255, 255, 46),
+        width=round(height * 0.012),
+    )
+
+    size = height
+    chunk = round(size * 0.42)
+    thickness = round(size * 0.082)
+    gap = round(size * 0.15)
+    _chevron(draw, cx - gap // 2, cy, chunk, thickness, mark)
+    _chevron(draw, cx + gap // 2, cy, chunk, thickness, mark)
+    return image.resize((1200, 630), Image.LANCZOS)
+
+
 def main() -> None:
     OUT.mkdir(parents=True, exist_ok=True)
     white = (255, 255, 255, 255)
@@ -115,6 +146,17 @@ def main() -> None:
     for name, image in designs.items():
         image.save(OUT / name, "PNG")
         print(f"✓ site/brand/{name}")
+
+    # طرحِ انتخاب‌شده مبنای بقیه است: آیکون تب و کارتِ هم‌رسانی باید
+    # همان چیزی باشند که در تلگرام دیده می‌شود، وگرنه سه نشانِ کمی
+    # متفاوت داریم.
+    chosen = designs["avatar-blue.png"]
+    for size, name in ((32, "favicon-32.png"), (180, "apple-touch-icon.png")):
+        chosen.resize((size, size), Image.LANCZOS).save(OUT / name, "PNG")
+        print(f"✓ site/brand/{name}")
+
+    share_card((59, 130, 246), (29, 78, 216), white).save(OUT / "og.png", "PNG")
+    print("✓ site/brand/og.png")
 
 
 if __name__ == "__main__":

@@ -250,3 +250,52 @@ def test_the_product_name_is_the_same_everywhere():
         assert "ادمین پست" in text
     # و نامِ قدیمی هیچ‌جا نمانده باشد
     assert "کپی‌یار" not in landing
+
+
+def test_every_brand_image_the_landing_points_at_really_exists():
+    """<b>کارتِ هم‌رسانیِ خراب، بی‌صداترین خرابیِ یک صفحه‌ی فروش است.</b>
+
+    این لینک بیشتر از هر جای دیگر داخل خودِ تلگرام هم‌رسانی می‌شود. اگر
+    og:image به فایلی اشاره کند که نیست، لینک بدون کارت می‌رود — و
+    هیچ خطایی هم هیچ‌جا دیده نمی‌شود.
+    """
+    import re
+    from pathlib import Path
+
+    site = Path(__file__).parent.parent / "site"
+    refs = set(re.findall(r'["\'](?:https://[^"\']*?)?(/brand/[^"\']+)["\']', _landing()))
+
+    assert refs, "هیچ نشانی برندی در صفحه نیست"
+    for ref in refs:
+        assert (site / ref.lstrip("/")).is_file(), ref
+
+
+def test_the_share_card_is_an_absolute_url():
+    """تلگرام نشانی نسبی را برای og:image نمی‌خواند."""
+    import re
+
+    page = _landing()
+    found = re.search(r'property="og:image" content="([^"]+)"', page)
+    assert found, "og:image اصلاً نیست"
+    assert found.group(1).startswith("https://"), found.group(1)
+
+
+def test_the_reseller_section_does_not_promise_a_payout():
+    """<b>قاعده‌ی کسب‌وکار: پول فقط دریافت می‌شود.</b>
+
+    سهم نماینده به کیف پولش می‌نشیند، نه به حسابش واریز می‌شود. یک
+    جمله‌ی نادرست اینجا یعنی توقعی که هیچ‌وقت نمی‌شود برآوردش کرد.
+    """
+    page = _landing()
+    section = page.split('id="agents"', 1)[1].split("</section>", 1)[0]
+
+    for phrase in ("واریز به حساب", "واریز می‌شود به حساب", "برداشت وجه", "تسویه نقدی"):
+        assert phrase not in section, phrase
+
+
+def test_the_new_sections_are_reachable_from_the_menu():
+    """بخشی که در منو نباشد، در صفحه‌ی بلند پیدا نمی‌شود."""
+    page = _landing()
+    for anchor in ("#who", "#agents", "#plans", "#faq"):
+        assert f'href="{anchor}"' in page, anchor
+        assert f'id="{anchor[1:]}"' in page, anchor

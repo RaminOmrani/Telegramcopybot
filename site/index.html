@@ -2,6 +2,26 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <meta name="description" content="محتوای هر کانال تلگرامی را بردارید، تبلیغ و لینکش را پاک کنید و با نام خودتان منتشر کنید — بدون اینکه در کانال مبدا ادمین باشید.">
+
+<!-- آیکون تب و کارتِ هم‌رسانی. هر دو از tools/avatar.py می‌آیند تا
+     همان نشانی باشند که در تلگرام روی خودِ ربات دیده می‌شود.
+
+     og:image مهم‌تر از آن است که به نظر می‌رسد: این لینک بیشتر از هر
+     جای دیگر داخل خودِ تلگرام هم‌رسانی می‌شود، و لینکِ بی‌کارت کنارِ
+     لینک‌های دیگر شبیه چیزی است که کسی پشتش نیست. نشانی باید مطلق
+     باشد؛ تلگرام نشانی نسبی را نمی‌خواند. -->
+<link rel="icon" type="image/png" sizes="32x32" href="/brand/favicon-32.png">
+<link rel="apple-touch-icon" href="/brand/apple-touch-icon.png">
+<meta name="theme-color" content="#2563EB">
+<meta property="og:type" content="website">
+<meta property="og:site_name" content="فورواردبات (ادمین پست)">
+<meta property="og:title" content="فورواردبات — کپی خودکار محتوای کانال تلگرام">
+<meta property="og:description" content="محتوای هر کانالی را بردارید، تبلیغ و لینکش را پاک کنید و با نام خودتان منتشر کنید. بدون ادمین بودن در کانال مبدا. یک روز آزمایش رایگان.">
+<meta property="og:url" content="https://forwardbot.softmiliac.com/">
+<meta property="og:image" content="https://forwardbot.softmiliac.com/brand/og.png">
+<meta property="og:image:width" content="1200">
+<meta property="og:image:height" content="630">
+<meta name="twitter:card" content="summary_large_image">
 <style>
 /* ── فونت ────────────────────────────────────────────────────────────
    وزیرمتن، از خودِ سرور نه از CDN. مخاطب این صفحه کاربر ایرانی است و
@@ -284,6 +304,34 @@ section { padding: 84px 0; }
 .wire b { display: block; font-weight: 600; font-size: 15px; }
 .wire span { font-size: 14px; color: var(--muted); }
 
+/* برای چه کسانی */
+.uses { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
+@media (max-width: 780px) { .uses { grid-template-columns: 1fr; } }
+.use {
+  background: var(--paper); border: 1px solid var(--line);
+  border-radius: 14px; padding: 26px 24px;
+}
+.use .who { font-size: 13px; color: var(--src); font-weight: 600; margin-bottom: 8px; }
+.use h3 { margin: 0 0 10px; font-size: 19px; font-weight: 700; }
+.use p { margin: 0 0 14px; color: var(--muted); font-size: 15px; line-height: 1.8; }
+.use ul { margin: 0; padding-inline-start: 18px; color: var(--muted); font-size: 14.5px; }
+.use li { margin-bottom: 6px; }
+.use li b { color: var(--ink); font-weight: 600; }
+
+/* نمایندگی */
+.agent { display: grid; grid-template-columns: 1fr 1fr; gap: 48px; align-items: center; }
+@media (max-width: 860px) { .agent { grid-template-columns: 1fr; gap: 30px; } }
+.agent h2 { margin: 0 0 16px; font-size: clamp(25px, 3.4vw, 34px); font-weight: 800; }
+.agent p { color: var(--muted); margin: 0 0 16px; }
+.agent strong { color: var(--ink); font-weight: 600; }
+.perks { display: flex; flex-direction: column; gap: 12px; }
+.perk {
+  background: var(--paper); border: 1px solid var(--line);
+  border-radius: 11px; padding: 16px 18px;
+}
+.perk b { display: block; font-weight: 600; font-size: 15px; margin-bottom: 3px; }
+.perk span { font-size: 14px; color: var(--muted); line-height: 1.7; }
+
 /* امکانات */
 .features { display: grid; grid-template-columns: repeat(3, 1fr); gap: 1px; background: var(--line-soft); border: 1px solid var(--line-soft); border-radius: 14px; overflow: hidden; }
 @media (max-width: 900px) { .features { grid-template-columns: repeat(2, 1fr); } }
@@ -386,7 +434,9 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space
     <nav>
       <a href="#how">چطور کار می‌کند</a>
       <a href="#features">امکانات</a>
+      <a href="#who">برای چه کسانی</a>
       <a href="#plans">تعرفه</a>
+      <a href="#agents">نمایندگی</a>
       <a href="#faq">پرسش‌ها</a>
       <a href="/app">مینی‌اپ</a>
     </nav>
@@ -577,6 +627,78 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space
     </div>
   </section>
 
+  <!-- ── برای چه کسانی ──────────────────────────────────────────── -->
+  <section id="who">
+    <div class="wrap">
+      <div class="section-head">
+        <p class="kicker">برای چه کسانی</p>
+        <h2>اگر کانالتان باید هر روز پر شود</h2>
+        <p>
+          چهار کاری که مشتری‌های ما بیشتر از همه با این ربات می‌کنند. اگر کارتان
+          شبیه یکی از این‌هاست، تنظیماتش را همان اول درست می‌گذاریم.
+        </p>
+      </div>
+
+      <div class="uses">
+        <article class="use">
+          <div class="who">کانال خبری</div>
+          <h3>خبر را زودتر از بقیه بگذارید</h3>
+          <p>
+            چند خبرگزاری را مبدا می‌گذارید و کانالتان بدون اینکه پشت میز بنشینید
+            به‌روز می‌ماند. همان خبری که از دو کانال بیاید، یک بار منتشر می‌شود.
+          </p>
+          <ul>
+            <li><b>ترتیب دقیق</b> — پست‌ها به همان ترتیبی می‌روند که منتشر شده‌اند</li>
+            <li><b>فید RSS</b> — سایت‌های خبری هم می‌توانند مبدا باشند</li>
+            <li><b>تشخیص خبر تکراری</b> — حتی با نگارش متفاوت</li>
+          </ul>
+        </article>
+
+        <article class="use">
+          <div class="who">فروشگاه و تخفیف</div>
+          <h3>محصول را با قیمت خودتان نشان بدهید</h3>
+          <p>
+            پست فروشنده‌ی اصلی را برمی‌دارید، شماره تماس و لینک او را پاک می‌کنید و
+            امضای خودتان را می‌گذارید.
+          </p>
+          <ul>
+            <li><b>حذف شماره و لینک</b> — مشتری مستقیم سراغ او نمی‌رود</li>
+            <li><b>جایگزینی کلمه</b> — نام او با نام شما عوض می‌شود</li>
+            <li><b>واترمارک</b> — عکس‌ها با لوگوی شما می‌روند</li>
+          </ul>
+        </article>
+
+        <article class="use">
+          <div class="who">کانال کانفیگ و پروکسی</div>
+          <h3>کانفیگ‌ها با نام شما منتشر شوند</h3>
+          <p>
+            نام کانال داخل خودِ کانفیگ‌ها — همان چیزی که کاربر در برنامه‌اش می‌بیند —
+            با نام شما عوض می‌شود؛ حتی داخل فایل‌های اشتراک.
+          </p>
+          <ul>
+            <li><b>بازنویسی نام کانفیگ</b> — در متن و در فایل پیوست</li>
+            <li><b>فیلتر تبلیغات</b> — پست‌های تبلیغاتی مبدا رد می‌شوند</li>
+            <li><b>قالب ناشناخته دست‌نخورده می‌رود</b> — چیزی خراب نمی‌شود</li>
+          </ul>
+        </article>
+
+        <article class="use">
+          <div class="who">کانال تجمیعی</div>
+          <h3>ده کانال را در یک کانال جمع کنید</h3>
+          <p>
+            چند مبدا به یک مقصد می‌ریزند و شما فقط بهترین‌ها را نگه می‌دارید — با
+            فیلتر کلمه، یا با آمار خودِ پست در کانال مبدا.
+          </p>
+          <ul>
+            <li><b>فیلتر تعامل</b> — فقط پستی که در مبدا گرفته</li>
+            <li><b>مسیریابی با کلمه</b> — هر موضوع به کانال خودش</li>
+            <li><b>صف تأیید</b> — اگر خواستید، خودتان آخرین تصمیم را بگیرید</li>
+          </ul>
+        </article>
+      </div>
+    </div>
+  </section>
+
   <!-- ── تعرفه ──────────────────────────────────────────────────── -->
   <section class="band" id="plans">
     <div class="wrap">
@@ -621,6 +743,59 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space
       <div class="pay-note">
                 <span><b>پرداخت</b> کارت‌به‌کارت، درگاه زرین‌پال، یا تتر و ترون — همه داخل ربات</span>
         <span><b>دعوت دوستان</b> — از هر خرید دعوت‌شده‌هایتان به کیف پول شما برمی‌گردد</span>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── نمایندگی ───────────────────────────────────────────────── -->
+  <section class="band" id="agents">
+    <div class="wrap agent">
+      <div>
+        <p class="kicker">نمایندگی فروش</p>
+        <h2>اگر مشتری دارید، بفروشیدش</h2>
+        <p>
+          اگر کارتان ساخت و مدیریت کانال است، احتمالاً همین حالا چند نفر را
+          می‌شناسید که به این ربات نیاز دارند. به‌جای معرفی ساده، <strong>خودتان
+          بفروشید</strong>: اشتراک را با تخفیف نمایندگی می‌خرید و به قیمت خودتان
+          می‌فروشید.
+        </p>
+        <p>
+          کیف پولتان را شارژ می‌کنید و بعد هر وقت خواستید، شناسه‌ی مشتری را
+          می‌دهید و اشتراکش <strong>همان لحظه</strong> فعال می‌شود — بدون رسید،
+          بدون انتظار تأیید ما، حتی نصف شب.
+        </p>
+        <p style="font-size:15px">
+          برای شروع، در ربات به پشتیبانی پیام بدهید و بگویید می‌خواهید نماینده شوید.
+        </p>
+        <a class="btn" href="https://t.me/AdvancedForwardBot">درخواست نمایندگی</a>
+      </div>
+
+      <div class="perks">
+        <div class="perk">
+          <b>تخفیف روی همه‌ی طرح‌ها</b>
+          <span>درصدش برای هر نماینده جداگانه تعیین می‌شود و روی هر خریدی اعمال می‌شود.</span>
+        </div>
+        <div class="perk">
+          <b>مشتری به نام شما می‌ماند</b>
+          <span>
+            اگر همان مشتری بعداً خودش مستقیم از ربات بخرد، باز هم سهم شما پرداخت
+            می‌شود. نگرانیِ «مشتریم را از دست می‌دهم» همین‌جا بسته است.
+          </span>
+        </div>
+        <div class="perk">
+          <b>پیش از ما خبردار می‌شوید</b>
+          <span>
+            یک هفته مانده به تمام شدن اشتراک هر مشتری، به شما خبر می‌رسد تا
+            خودتان سراغش بروید — نه اینکه بعد از تمام شدن بفهمید.
+          </span>
+        </div>
+        <div class="perk">
+          <b>پنل وب مخصوص خودتان</b>
+          <span>
+            مشتری‌ها، فروش‌ها، سود و اینکه کدام مشتری دارد تمام می‌شود — همه در یک
+            صفحه، هم در ربات هم در مرورگر.
+          </span>
+        </div>
       </div>
     </div>
   </section>
@@ -693,6 +868,42 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space
             بستگی به طرح دارد: از ۱ کار در طرح آزمایشی تا ۵۰ کار در طرح اختصاصی.
             هر کار هم می‌تواند چند کانال مقصد داشته باشد و مبدا فقط یک بار خوانده
             می‌شود، پس چند مقصد چند برابر سهمیه نمی‌برد.
+          </p>
+        </details>
+        <details>
+          <summary>چند کانال مبدا را به یک کانال بریزم؟ چند کار لازم است؟</summary>
+          <p>
+            هر کار یک مبدا دارد ولی چند مقصد. پس سه مبدا به یک مقصد یعنی سه کار،
+            و یک مبدا به پنج مقصد یعنی یک کار. برای ساختن آن سه کار لازم نیست
+            تنظیمات را سه بار بزنید: یکی را کامل تنظیم می‌کنید و بقیه را از رویش
+            کپی می‌گیرید. گزینه‌ی «تکراری بین چند مبدا» را هم روشن کنید تا خبری که
+            در هر سه کانال هست، یک بار منتشر شود.
+          </p>
+        </details>
+        <details>
+          <summary>پست‌ها با چه ترتیبی می‌رسند؟</summary>
+          <p>
+            خودتان انتخاب می‌کنید. حالت «دقیق» ترتیب مبدا را به هر قیمتی حفظ
+            می‌کند؛ حالت «سریع» هرکدام زودتر آماده شد را می‌فرستد؛ و حالت
+            «هوشمند» — که پیش‌فرض است — ترتیب را نگه می‌دارد ولی پشت یک ویدیوی
+            سنگین تا ابد منتظر نمی‌ماند. در پنل هم می‌بینید هر پست دقیقاً چقدر
+            طول کشیده تا برسد.
+          </p>
+        </details>
+        <details>
+          <summary>حتماً باید در تلگرام کار کنم یا صفحه‌ی وب هم هست؟</summary>
+          <p>
+            هر دو. همه‌ی کارها در خود ربات انجام می‌شود، و یک مینی‌اپ هم هست که
+            داخل تلگرام باز می‌شود: ساخت کار، تنظیمات، آمار و کیف پول — با
+            الگوهای آماده‌ای که با یک ضربه ده‌ها تنظیم را با هم می‌گذارند.
+          </p>
+        </details>
+        <details>
+          <summary>از سایت هم می‌شود مطلب گرفت یا فقط کانال تلگرام؟</summary>
+          <p>
+            فید RSS سایت‌ها هم پشتیبانی می‌شود. نشانی فید را می‌دهید و مطلب‌های
+            تازه با همان قواعد — امضا، فوتر، فیلتر — در کانالتان منتشر می‌شوند.
+            مطلب‌های قبلیِ فید منتشر نمی‌شوند؛ فقط از آن لحظه به بعد.
           </p>
         </details>
       </div>
