@@ -27,10 +27,10 @@ import logging
 from dataclasses import dataclass, field
 from datetime import datetime
 
-from sqlalchemy import select
+from sqlalchemy import func, select
 
 from telkap.db import get_session
-from telkap.models import Destination, Task, User
+from telkap.models import Destination, RetryItem, Task, User
 from telkap.services import health, subscription
 from telkap.services.userbot import manager
 
@@ -200,6 +200,22 @@ async def _check_task(
     # اتفاق افتاده، نه چیزی که ما حدس می‌زنیم.
     if task.last_error:
         health.warn("آخرین خطا: " + task.last_error[:200])
+
+    # <b>صفِ تلاش مجدد، دیده‌نشدنی‌ترین نشانه‌ی خرابی است.</b> کار
+    # روشن است، مبدا و مقصد سر جایشان‌اند، ولی هر پست پشت سر هم شکست
+    # می‌خورد و در صف می‌ماند. از بیرون فقط «مقصد خالی» دیده می‌شود.
+    async with get_session() as db:
+        waiting = int(
+            await db.scalar(
+                select(func.count(RetryItem.id)).where(RetryItem.task_id == task.id)
+            )
+            or 0
+        )
+    if waiting:
+        health.warn(
+            f"{waiting} پست در صف تلاش مجدد مانده — یعنی ارسال‌ها شکست خورده‌اند.",
+            "اگر عدد بالا می‌رود، دسترسی ارسال در کانال مقصد را بررسی کنید.",
+        )
 
     if not task.enabled:
         health.problems.append("این کار خاموش است.")

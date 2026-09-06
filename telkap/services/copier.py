@@ -56,6 +56,7 @@ from telkap.services import (
     health,
     pending,
     richtext,
+    roles,
     routing,
 )
 from telkap.services.filters import MessageFacts, content_hash, should_copy
@@ -67,6 +68,7 @@ from telkap.services.transform import (
     remap_entities,
 )
 from telkap.services.watermark import apply_watermark, watermark_ready
+from telkap.texts import fa_num
 
 log = logging.getLogger(__name__)
 
@@ -99,6 +101,22 @@ SLOW_COPY_SECONDS = 60
 
 # فاصله‌ی تلاش‌های مجدد بر حسب ثانیه (۱ دقیقه، ۵ دقیقه، ۱۵ دقیقه، ۱ ساعت)
 RETRY_BACKOFF = (60, 300, 900, 3600)
+
+# <b>سقف صف تلاش مجدد برای هر کار.</b> اگر مقصدی واقعاً خراب باشد —
+# دسترسی ادمین گرفته شده، کانال حذف شده — هر پستِ تازه‌ی مبدا یک آیتم
+# تازه به صف اضافه می‌کند و صف تا بی‌نهایت بالا می‌رود. کاری که به این
+# عدد برسد دیگر «کندِ موقت» نیست، خراب است: متوقف می‌شود و به کاربر
+# گفته می‌شود، چون ادامه دادن فقط تلگرام را می‌کوبد.
+MAX_RETRY_QUEUE = 60
+
+
+class SendFailed(Exception):
+    """ارسال شکست خورد و <b>خودش دوباره در صف گذاشته نشد</b>.
+
+    فقط در مسیر تلاش مجدد پرتاب می‌شود تا کارگرِ صف بفهمد این تلاش
+    ناموفق بوده و همان آیتمِ موجود را — با شمارنده‌ی یکی بیشتر —
+    دوباره زمان‌بندی کند.
+    """
 
 # نامِ خواندنیِ هر مسیر. کدِ ذخیره‌شده انگلیسی و پایدار است تا با عوض
 # شدنِ یک کلمه‌ی فارسی، آمارِ ماه‌های قبل بی‌معنا نشود.
@@ -428,9 +446,20 @@ class Copier:
             self._queues[key] = queue
             self._workers[key] = asyncio.create_task(self._worker(key, queue))
         if queue.qsize() >= BUSY_QUEUE:
+            # <b>صفی که پر می‌شود یعنی چیزی گیر کرده، و این تا امروز
+            # فقط در لاگ می‌ماند.</b> از بیرون همان چیزی دیده می‌شود
+            # که همیشه: مقصد خالی. پس علاوه بر لاگ، به ادمین هم خبر
+            # می‌رود — با فاصله، تا خودش تبدیل به سیل نشود.
             log.warning(
                 "صف مبدا %s برای کاربر %s به %d پست رسید؛ چیزی گیر کرده",
                 chat_id, user_id, queue.qsize(),
+            )
+            await alerts.send(
+                f"🐌 صف مبدا <code>{chat_id}</code> کاربر <code>{user_id}</code> "
+                f"به {queue.qsize()} پست رسید — چیزی گیر کرده است.",
+                cap=roles.CAP_USERS,
+                key=f"queue-stuck-{user_id}-{chat_id}",
+                cooldown=1800,
             )
         await queue.put(slot)
 
@@ -733,6 +762,7 @@ class Copier:
         messages: Sequence,
         *,
         released: str = "",
+        retrying: bool = False,
     ) -> bool:
         """یک پیام یا آلبوم را برای یک کار پردازش و به همه‌ی مقصدها ارسال می‌کند.
 
@@ -740,6 +770,15 @@ class Copier:
         رسیده. اهمیتش در زنجیر شدن است: پستی که برای تعامل منتظر مانده،
         پس از آزاد شدن هنوز باید به صف تأیید برود، ولی پستی که خودِ صف
         تأیید آزادش کرده نباید دوباره همان‌جا بنشیند.
+
+        <b>`retrying` جلوی یک حلقه‌ی بی‌پایان را می‌گیرد.</b> وقتی خودِ
+        کارگرِ صفِ تلاش مجدد این را صدا می‌زند، شکستِ ارسال نباید آیتم
+        <b>تازه‌ای</b> در صف بگذارد — چون آن آیتمِ تازه شمارنده‌ی
+        تلاش‌هایش صفر است و آیتم قدیمی هم بلافاصله دور ریخته می‌شود.
+        نتیجه‌اش صفی بود که هیچ‌وقت به سقفِ تلاش نمی‌رسید: هر دقیقه یک
+        تلاشِ تازه، تا ابد، برای پستی که هرگز نمی‌رفت. با `retrying`،
+        به‌جای آیتم تازه یک <code>SendFailed</code> پرتاب می‌شود تا
+        همان آیتمِ موجود شمرده و در نهایت رها شود.
         """
         waited = bool(released)      # هر انتظاری که بوده، تمام شده
         approved = released == PendingPost.REASON_APPROVAL
@@ -905,6 +944,7 @@ class Copier:
         any_sent = False
         routed_away = 0         # مقصدهایی که کلمه‌ی کلیدی‌شان نخورد
         cross_dupes = 0         # مقصدهایی که این محتوا را قبلاً گرفته بودند
+        failures: list[str] = []   # فقط در مسیر تلاش مجدد پر می‌شود
 
         for spec in targets:
             target = spec.target
@@ -993,6 +1033,13 @@ class Copier:
                 # اوضاع را بدتر می‌کند؛ بالاتر مرکزی رسیدگی می‌شود
                 if health.classify(exc).fatal:
                     raise
+                if retrying:
+                    # آیتمِ صف همین حالا وجود دارد؛ ساختنِ دومی یعنی
+                    # همان حلقه‌ی بی‌پایان. فقط ثبتش می‌کنیم و ته کار
+                    # به کارگر خبر می‌دهیم.
+                    log.warning("تلاش مجدد به مقصد %s باز هم نشد: %s", target, exc)
+                    failures.append(f"{target}: {exc}")
+                    continue
                 log.exception("ارسال به مقصد %s ناموفق بود؛ در صف تلاش مجدد", target)
                 await self._enqueue_retry(
                     task_id, user_id, src_chat_id, src_ids, str(target), str(exc)
@@ -1006,6 +1053,11 @@ class Copier:
             if sent:
                 any_sent = True
                 await self._remember(task_id, src_ids, sent, print_, str(target))
+
+        if retrying and failures and not any_sent:
+            # هیچ مقصدی نگرفت. کارگرِ صف باید همین آیتم را بشمارد، نه
+            # اینکه فکر کند فیلترها جلویش را گرفته‌اند و دورش بیندازد.
+            raise SendFailed("، ".join(failures)[:400])
 
         if any_sent:
             await self._bump(task_id, user_id, skipped=False)
@@ -1478,6 +1530,44 @@ class Copier:
             # بدون نشانی مبدا نمی‌توان پیام را دوباره خواند
             await self._record_error(task_id, error)
             return
+
+        # <b>صفی که فقط بالا می‌رود یعنی مقصد خراب است، نه کند.</b>
+        # وقتی دسترسی ادمین گرفته شده یا کانال حذف شده، هر پستِ تازه‌ی
+        # مبدا یک آیتم دیگر اضافه می‌کند و هیچ‌کدام هرگز نمی‌روند.
+        # ادامه دادن فقط تلگرام را می‌کوبد و اکانت را به محدودیت
+        # می‌رساند — که آن‌وقت <b>کارهای سالمِ دیگر</b> را هم می‌خواباند.
+        async with get_session() as db:
+            waiting = await db.scalar(
+                select(func.count(RetryItem.id)).where(RetryItem.task_id == task_id)
+            )
+        if (waiting or 0) >= MAX_RETRY_QUEUE:
+            await self._pause_task(
+                task_id, f"{MAX_RETRY_QUEUE} پست پشت سر هم ارسال نشد: {error}"[:400]
+            )
+            log.error(
+                "کار %s متوقف شد: صف تلاش مجدد به %s رسید — %s",
+                task_id, waiting, error,
+            )
+            if self.notifier:
+                await self.notifier(
+                    user_id,
+                    "⛔️ <b>یک کار کپی متوقف شد.</b>\n\n"
+                    f"{fa_num(MAX_RETRY_QUEUE)} پست پشت سر هم به کانال مقصد نرفتند، "
+                    "پس ادامه ندادیم تا اکانتتان محدود نشود.\n\n"
+                    f"<b>علت:</b> <code>{error[:200]}</code>\n\n"
+                    "معمولاً یعنی دسترسی ارسال در کانال مقصد گرفته شده. "
+                    "با «🩺 بررسی سلامت کارها» دقیقاً می‌بینید کدام کار و چرا.",
+                )
+            await alerts.send(
+                f"⛔️ کار <code>{task_id}</code> کاربر <code>{user_id}</code> "
+                f"به‌دلیل {MAX_RETRY_QUEUE} شکست پیاپی متوقف شد.\n"
+                f"<code>{error[:200]}</code>",
+                cap=roles.CAP_USERS,
+                key=f"retry-flood-{task_id}",
+                cooldown=3600,
+            )
+            return
+
         async with get_session() as db:
             db.add(
                 RetryItem(
