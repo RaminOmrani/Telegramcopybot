@@ -80,9 +80,16 @@ def check(init_data: str, token: str, *, now: float | None = None) -> dict | Non
     if not init_data or not token:
         return None
 
-    # strict_parsing تا رشته‌ی خراب بی‌صدا به دیکشنری نصفه تبدیل نشود
+    # <b>keep_blank_values حیاتی است.</b> بدون آن، `parse_qsl` هر
+    # فیلدی را که مقدارش خالی است بی‌صدا دور می‌ریزد — مثلاً
+    # «start_param=». ولی تلگرام امضایش را روی <b>همه‌ی</b> فیلدهایی
+    # که فرستاده حساب کرده، از جمله خالی‌ها. نتیجه‌اش رشته‌ای کوتاه‌تر
+    # از چیزی است که تلگرام امضا کرده، و امضا هیچ‌وقت نمی‌خواند: اپ
+    # برای همیشه می‌گفت «شناسایی نشدید».
+    #
+    # strict_parsing هم می‌ماند تا رشته‌ی خراب به دیکشنری نصفه تبدیل نشود.
     try:
-        pairs = dict(parse_qsl(init_data, strict_parsing=True))
+        pairs = dict(parse_qsl(init_data, strict_parsing=True, keep_blank_values=True))
     except ValueError:
         return None
 
@@ -90,24 +97,29 @@ def check(init_data: str, token: str, *, now: float | None = None) -> dict | Non
     if not given:
         return None
 
-    # <b>«signature» هم مثل «hash» بیرون می‌ماند.</b>
-    #
-    # تلگرام بعداً فیلد signature را اضافه کرد — یک امضای Ed25519 برای
-    # اینکه سرویس‌های ثالث بتوانند بدون داشتنِ توکنِ ربات هم داده را
-    # بسنجند. آن فیلد جزو رشته‌ی امضای HMAC نیست.
-    #
-    # تا وقتی اینجا نبود، هر initDataیی که تلگرام می‌فرستاد رد می‌شد و
-    # اپ می‌گفت «شناسایی نشدید» — بی‌آنکه چیزی در لاگ بیفتد، چون از
-    # نظر کد این فقط یک امضای غلط بود.
-    pairs.pop("signature", None)
-
-    check_string = "\n".join(f"{key}={pairs[key]}" for key in sorted(pairs))
     secret = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
-    mine = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
 
-    # compare_digest نه ==، تا مقایسه به‌ازای هر کاراکترِ درست کندتر
-    # نشود و امضا را نشود حرف‌به‌حرف حدس زد
-    if not hmac.compare_digest(mine, given):
+    # <b>«signature» — و چرا هر دو حالت امتحان می‌شود.</b>
+    #
+    # تلگرام بعداً فیلد signature را اضافه کرد: یک امضای Ed25519 تا
+    # سرویس‌های ثالث بتوانند بدون داشتنِ توکنِ ربات هم داده را بسنجند.
+    # مستندات می‌گویند آن فیلد باید مثل hash از رشته‌ی امضا بیرون
+    # بماند، و پیاده‌سازی‌های مرجع هم همین کار را می‌کنند.
+    #
+    # ولی این جزئیات یک بار عوض شده و ممکن است دوباره عوض شود، و
+    # هزینه‌ی اشتباه بودنش این است که هیچ‌کس نمی‌تواند وارد شود. پس
+    # هر دو رشته امتحان می‌شوند. <b>این ضعف امنیتی نیست</b>: هر دو
+    # نامزد به همان HMAC با همان کلید نیاز دارند، و کسی که نمی‌تواند
+    # یکی را جعل کند، دیگری را هم نمی‌تواند.
+    without_signature = {key: value for key, value in pairs.items() if key != "signature"}
+    for fields in (without_signature, pairs):
+        check_string = "\n".join(f"{key}={fields[key]}" for key in sorted(fields))
+        mine = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
+        # compare_digest نه ==، تا مقایسه به‌ازای هر کاراکترِ درست کندتر
+        # نشود و امضا را نشود حرف‌به‌حرف حدس زد
+        if hmac.compare_digest(mine, given):
+            break
+    else:
         return None
 
     try:
@@ -169,7 +181,7 @@ def diagnose(init_data: str, token: str, *, now: float | None = None) -> str:
             " یا از راهی باز شده که مینی‌اپ نیست."
         )
     try:
-        pairs = dict(parse_qsl(init_data, strict_parsing=True))
+        pairs = dict(parse_qsl(init_data, strict_parsing=True, keep_blank_values=True))
     except ValueError:
         return "داده‌ی هویت خراب بود."
     if "hash" not in pairs:

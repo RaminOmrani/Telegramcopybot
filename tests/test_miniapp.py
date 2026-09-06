@@ -793,3 +793,81 @@ def test_diagnose_never_leaks_the_token_or_the_right_signature():
     ):
         assert "SECRETTOKEN" not in text
         assert "123456" not in text
+
+
+def _sign_with(token: str, pairs: dict, *, skip=("hash",)) -> str:
+    """initData واقعی: امضا روی همان فیلدهایی که فرستاده می‌شوند."""
+    import hashlib
+    import hmac
+    from urllib.parse import urlencode
+
+    fields = {k: v for k, v in pairs.items() if k not in skip}
+    check_string = "\n".join(f"{k}={fields[k]}" for k in sorted(fields))
+    secret = hmac.new(b"WebAppData", token.encode(), hashlib.sha256).digest()
+    out = dict(pairs)
+    out["hash"] = hmac.new(secret, check_string.encode(), hashlib.sha256).hexdigest()
+    return urlencode(out)
+
+
+def test_a_field_with_an_empty_value_does_not_break_the_signature():
+    """<b>باگی که مینی‌اپ را برای همیشه از کار انداخته بود.</b>
+
+    parse_qsl بدون keep_blank_values هر فیلدِ خالی را — مثلاً
+    «start_param=» — بی‌صدا دور می‌ریزد. ولی تلگرام امضایش را روی
+    همه‌ی فیلدهایی که فرستاده حساب کرده، از جمله خالی‌ها. رشته‌ی ما
+    کوتاه‌تر می‌شد و امضا هیچ‌وقت نمی‌خواند؛ نتیجه‌اش «شناسایی نشدید»
+    بود، بی هیچ ردی در لاگ.
+    """
+    import json
+    import time
+
+    from telkap.web.miniapp import user_id_from
+
+    token = "123456:TEST"
+    init_data = _sign_with(token, {
+        "auth_date": str(int(time.time())),
+        "start_param": "",
+        "user": json.dumps({"id": 42}),
+    })
+
+    assert user_id_from(init_data, token) == 42
+
+
+def test_init_data_is_accepted_whether_or_not_signature_joins_the_check_string():
+    """<b>جزئیاتی که یک بار عوض شده و ممکن است دوباره عوض شود.</b>
+
+    مستندات می‌گویند «signature» مثل «hash» بیرون می‌ماند. اگر روزی
+    فرق کند، هزینه‌اش این است که هیچ‌کس نمی‌تواند وارد شود — پس هر
+    دو حالت باید پذیرفته شوند.
+    """
+    import json
+    import time
+
+    from telkap.web.miniapp import user_id_from
+
+    token = "123456:TEST"
+    fields = {
+        "auth_date": str(int(time.time())),
+        "signature": "ed25519-thing",
+        "user": json.dumps({"id": 7}),
+    }
+
+    # همان‌طور که مستند شده: بدون signature
+    assert user_id_from(_sign_with(token, fields, skip=("hash", "signature")), token) == 7
+    # و اگر روزی با signature امضا شد، باز هم باید کار کند
+    assert user_id_from(_sign_with(token, fields, skip=("hash",)), token) == 7
+
+
+def test_a_forged_signature_is_still_refused():
+    """پذیرفتن دو رشته نباید به معنی پذیرفتن هر رشته‌ای باشد."""
+    import json
+    import time
+
+    from telkap.web.miniapp import user_id_from
+
+    forged = _sign_with("999:SOMEONE-ELSE", {
+        "auth_date": str(int(time.time())),
+        "user": json.dumps({"id": 42}),
+    })
+
+    assert user_id_from(forged, "123456:TEST") is None
