@@ -333,6 +333,12 @@ input.find { margin: 18px 0 12px; }
       options.method = options.method || 'POST';
       options.headers['Content-Type'] = 'application/json';
       options.body = JSON.stringify(options.body);
+    } else if (options.rawBody !== undefined) {
+      // FormData خودش Content-Type را با مرزِ درست می‌سازد؛ اگر
+      // دستی بگذاریمش، مرز جا می‌ماند و سرور چیزی نمی‌بیند.
+      options.method = options.method || 'POST';
+      options.body = options.rawBody;
+      delete options.rawBody;
     }
     return fetch('/app/api' + path, options).then(function (r) {
       // اگر جواب JSON نبود، یعنی چیزی جز رابطِ ما جواب داده — مثلاً
@@ -865,6 +871,8 @@ input.find { margin: 18px 0 12px; }
         ['top-right', 'بالا راست'], ['top-left', 'بالا چپ'],
         ['center', 'وسط']
       ]},
+      { t: 'logo', n: 'فایل لوگو',
+        w: 'یک عکس یا PNG شفاف؛ تا ۳ مگابایت' },
       { k: 'watermark_opacity', t: 'num', n: 'شفافیت', u: 'درصد' },
       { k: 'watermark_size', t: 'num', n: 'اندازه', u: 'درصدِ عرض عکس' }
     ]],
@@ -1061,13 +1069,28 @@ input.find { margin: 18px 0 12px; }
           inner.appendChild(node);
           rows.push({
             node: node, section: index,
-            hay: ((item.n || '') + ' ' + (item.w || '') + ' ' + item.k).toLowerCase()
+            hay: ((item.n || '') + ' ' + (item.w || '') + ' ' + (item.k || '')).toLowerCase()
           });
         });
         det.appendChild(inner);
         sectionBoxes.push(det);
         body.appendChild(det);
       });
+
+      // این سه، برخلاف بالایی‌ها، فهرست دارند نه یک مقدار — پس
+      // نمی‌شد در همان جدول داده‌ای گذاشتشان و هرکدام کارگردانِ
+      // خودش را دارد. محتوایشان موقع باز شدن خوانده می‌شود، نه
+      // موقع باز شدن صفحه: کسی که فقط آمدهسوئیچی را بزند نباید
+      // منتظر سه درخواست اضافه بماند.
+      body.appendChild(lazySection('📜 قواعد متنی', function (inner) {
+        rulesPane(inner, taskId);
+      }));
+      body.appendChild(lazySection('📤 کانال‌های مقصد', function (inner) {
+        destsPane(inner, taskId);
+      }));
+      body.appendChild(lazySection('📋 کپی تنظیمات از کار دیگر', function (inner) {
+        clonePane(inner, taskId);
+      }));
 
       var actions = el('div', 'tail');
       var remove = el('button', 'btn ghost danger', '🗑 حذف این کار');
@@ -1145,6 +1168,40 @@ input.find { margin: 18px 0 12px; }
         save(taskId, patch);
       };
       return wrap;
+    }
+
+    // فایل، نه مقدار: این یکی به‌جای /settings به مسیر آپلود می‌رود.
+    if (item.t === 'logo') {
+      var logoWrap = el('div', 'field');
+      logoWrap.appendChild(el('div', 'cap', item.n));
+      if (item.w) logoWrap.appendChild(el('div', 'hint', item.w));
+      var current = el('div', 'mini',
+        cfg.watermark_logo ? '✅ لوگویی ذخیره شده است' : 'هنوز لوگویی ندارید');
+      logoWrap.appendChild(current);
+
+      var file = document.createElement('input');
+      file.type = 'file';
+      file.accept = 'image/*';
+      file.style.marginTop = '8px';
+      file.onchange = function () {
+        if (!file.files || !file.files[0]) return;
+        var form = new FormData();
+        form.append('logo', file.files[0]);
+        current.textContent = '⏳ در حال فرستادن…';
+        // بدنه‌ی FormData است، پس Content-Type را نباید خودمان
+        // بگذاریم؛ مرورگر باید مرزِ multipart را هم به آن اضافه کند.
+        api('/tasks/' + taskId + '/logo', { method: 'POST', rawBody: form })
+          .then(function () {
+            buzz('success');
+            current.textContent = '✅ لوگو ذخیره شد و واترمارک روشن شد.';
+          })
+          .catch(function (e) {
+            buzz('error');
+            current.textContent = '⚠️ ' + e.message;
+          });
+      };
+      logoWrap.appendChild(file);
+      return logoWrap;
     }
 
     if (item.t === 'chips') {
@@ -1234,6 +1291,221 @@ input.find { margin: 18px 0 12px; }
     return label;
   }
 
+  // بخشی که محتوایش را تازه موقع باز شدن می‌گیرد.
+  function lazySection(title, build) {
+    var det = document.createElement('details');
+    det.className = 'sec';
+    var sum = document.createElement('summary');
+    sum.appendChild(el('span', 'grow', title));
+    sum.appendChild(el('span', 'chev', '▾'));
+    det.appendChild(sum);
+    var inner = el('div', 'inner');
+    det.appendChild(inner);
+    var loaded = false;
+    det.addEventListener('toggle', function () {
+      if (!det.open || loaded) return;
+      loaded = true;
+      build(inner);
+    });
+    return det;
+  }
+
+  // ── قواعد متنی ────────────────────────────────────────────────
+  //
+  // چهار نوع‌اند و کار هرکدام کاملاً فرق می‌کند؛ برچسبشان باید
+  // خودش توضیح باشد، چون «allow» و «block» برای کسی که اولین بار
+  // می‌بیند هیچ معنایی ندارند.
+  var RULE_KINDS = [
+    ['replace', 'جایگزینی', 'این را پیدا کن، با آن عوض کن'],
+    ['regex', 'جایگزینی با الگو', 'برای حالت‌های پیشرفته (regex)'],
+    ['block', 'کلمه‌ی ممنوع', 'پستی که این را داشته باشد اصلاً کپی نمی‌شود'],
+    ['allow', 'فقط اگر داشت', 'فقط پستی کپی می‌شود که این را داشته باشد']
+  ];
+
+  function rulesPane(box, taskId) {
+    box.textContent = '';
+    skeleton(box, 2);
+
+    api('/tasks/' + taskId + '/rules').then(function (data) {
+      box.textContent = '';
+
+      if (!data.rules.length) {
+        box.appendChild(el('div', 'mini', 'هنوز قاعده‌ای ندارید.'));
+      }
+      data.rules.forEach(function (rule) {
+        var opt = el('div', 'opt');
+        var grow = el('div', 'grow');
+        var label = '';
+        RULE_KINDS.forEach(function (k) { if (k[0] === rule.kind) label = k[1]; });
+        grow.appendChild(el('div', 'name', rule.pattern));
+        grow.appendChild(el('div', 'why', rule.replacement
+          ? label + ' ← ' + rule.replacement
+          : label));
+        var kill = el('button', 'btn ghost small danger', '🗑');
+        kill.onclick = function () {
+          kill.disabled = true;
+          api('/tasks/' + taskId + '/rules/' + rule.id + '/delete', { method: 'POST' })
+            .then(function () { buzz('success'); rulesPane(box, taskId); })
+            .catch(function (e) {
+              kill.disabled = false; buzz('error'); say(e.message);
+            });
+        };
+        opt.appendChild(grow); opt.appendChild(kill);
+        box.appendChild(opt);
+      });
+
+      // ── فرم افزودن ──
+      var form = el('div', 'field');
+      var kindLabel = el('label', 'f');
+      kindLabel.appendChild(el('span', 'cap', 'نوع قاعده'));
+      var kind = document.createElement('select');
+      RULE_KINDS.forEach(function (item) {
+        var o = document.createElement('option');
+        o.value = item[0]; o.textContent = item[1];
+        kind.appendChild(o);
+      });
+      kindLabel.appendChild(kind);
+      var why = el('div', 'hint', RULE_KINDS[0][2]);
+      kindLabel.appendChild(why);
+      form.appendChild(kindLabel);
+
+      var patternLabel = el('label', 'f');
+      patternLabel.appendChild(el('span', 'cap', 'متن یا الگو'));
+      var pattern = document.createElement('input');
+      pattern.type = 'text';
+      patternLabel.appendChild(pattern);
+      form.appendChild(patternLabel);
+
+      var toLabel = el('label', 'f');
+      toLabel.appendChild(el('span', 'cap', 'جایگزین شود با'));
+      var replacement = document.createElement('input');
+      replacement.type = 'text';
+      toLabel.appendChild(replacement);
+      toLabel.appendChild(el('div', 'hint', 'خالی بگذارید تا فقط حذف شود.'));
+      form.appendChild(toLabel);
+
+      kind.onchange = function () {
+        RULE_KINDS.forEach(function (item) {
+          if (item[0] === kind.value) why.textContent = item[2];
+        });
+        // «جایگزین شود با» فقط برای دو نوعِ جایگزینی معنی دارد؛
+        // نشان دادنش برای «کلمه‌ی ممنوع» فقط گیج می‌کند.
+        toLabel.hidden = kind.value === 'block' || kind.value === 'allow';
+      };
+
+      var add = el('button', 'btn', '➕ افزودن قاعده');
+      add.onclick = function () {
+        var text = pattern.value.trim();
+        if (!text) { say('متن قاعده خالی است.'); return; }
+        add.disabled = true;
+        api('/tasks/' + taskId + '/rules', {
+          body: {
+            kind: kind.value,
+            pattern: text,
+            replacement: toLabel.hidden ? '' : replacement.value
+          }
+        }).then(function () {
+          buzz('success'); rulesPane(box, taskId);
+        }).catch(function (e) {
+          add.disabled = false; buzz('error'); say(e.message);
+        });
+      };
+      form.appendChild(add);
+      box.appendChild(form);
+    }).catch(function (e) {
+      failed(box, e.message, function () { rulesPane(box, taskId); });
+    });
+  }
+
+  // ── مقصدهای بیشتر ─────────────────────────────────────────────
+  function destsPane(box, taskId) {
+    box.textContent = '';
+    skeleton(box, 2);
+
+    api('/tasks/' + taskId).then(function (task) {
+      box.textContent = '';
+
+      var main = el('div', 'opt');
+      var mgrow = el('div', 'grow');
+      mgrow.appendChild(el('div', 'name', task.dest));
+      mgrow.appendChild(el('div', 'why', 'مقصد اصلی — با حذف کار برداشته می‌شود'));
+      main.appendChild(mgrow);
+      box.appendChild(main);
+
+      task.extra_dests.forEach(function (dest) {
+        var opt = el('div', 'opt');
+        var grow = el('div', 'grow');
+        grow.appendChild(el('div', 'name', dest.ref));
+        grow.appendChild(el('div', 'why', dest.enabled ? 'فعال' : 'خاموش'));
+        var kill = el('button', 'btn ghost small danger', '🗑');
+        kill.onclick = function () {
+          kill.disabled = true;
+          api('/tasks/' + taskId + '/dests/' + dest.id + '/delete', { method: 'POST' })
+            .then(function () { buzz('success'); destsPane(box, taskId); })
+            .catch(function (e) {
+              kill.disabled = false; buzz('error'); say(e.message);
+            });
+        };
+        opt.appendChild(grow); opt.appendChild(kill);
+        box.appendChild(opt);
+      });
+
+      var add = el('button', 'btn', '➕ افزودن مقصد');
+      add.style.marginTop = '10px';
+      add.onclick = function () {
+        openOver(function (b) {
+          chooseChat(b, 'dest', function (chat) {
+            api('/tasks/' + taskId + '/dests', { body: { ref: String(chat.id) } })
+              .then(function () {
+                buzz('success'); closeOver(); destsPane(box, taskId);
+              })
+              .catch(function (e) { buzz('error'); say(e.message); });
+          });
+        });
+      };
+      box.appendChild(add);
+    }).catch(function (e) {
+      failed(box, e.message, function () { destsPane(box, taskId); });
+    });
+  }
+
+  // ── کپی تنظیمات ───────────────────────────────────────────────
+  function clonePane(box, taskId) {
+    box.textContent = '';
+    skeleton(box, 2);
+
+    api('/tasks').then(function (data) {
+      box.textContent = '';
+      var others = data.tasks.filter(function (t) { return t.id !== taskId; });
+      if (!others.length) {
+        box.appendChild(el('div', 'mini', 'کار دیگری ندارید که از آن کپی شود.'));
+        return;
+      }
+      box.appendChild(el('div', 'hint',
+        'تنظیمات و قواعدِ آن کار روی این کار می‌نشیند. مبدا و مقصد دست نمی‌خورند.'));
+
+      others.forEach(function (other) {
+        var opt = el('div', 'opt tap');
+        var grow = el('div', 'grow');
+        grow.appendChild(el('div', 'name', other.title));
+        opt.appendChild(grow);
+        opt.appendChild(el('span', 'chev', '‹'));
+        opt.onclick = function () {
+          ask('تنظیمات «' + other.title + '» روی این کار کپی شود؟\n'
+              + 'قواعد فعلیِ این کار جایشان را می‌دهند.', function (yes) {
+            if (!yes) return;
+            api('/tasks/' + taskId + '/clone', { body: { from: other.id } })
+              .then(function () { buzz('success'); refreshOver(); })
+              .catch(function (e) { buzz('error'); say(e.message); });
+          });
+        };
+        box.appendChild(opt);
+      });
+    }).catch(function (e) {
+      failed(box, e.message, function () { clonePane(box, taskId); });
+    });
+  }
+
   function save(taskId, patch, done) {
     api('/tasks/' + taskId + '/settings', { body: patch })
       .then(function () { buzz('success'); if (done) done(); })
@@ -1245,10 +1517,74 @@ input.find { margin: 18px 0 12px; }
 
   function startNewTask() {
     draft = {};
-    openOver(function (box) { chooseChat(box, 'source'); });
+    openOver(chooseSourceKind);
   }
 
-  function chooseChat(box, kind) {
+  // مبدأ همیشه کانال تلگرام نیست. این انتخاب اول می‌آید چون بقیه‌ی
+  // مسیر برای فید فرق می‌کند: به‌جای فهرست کانال‌ها، یک نشانی.
+  function chooseSourceKind(box) {
+    box.textContent = '';
+    var body = el('div', 'view');
+    box.appendChild(body);
+    body.appendChild(el('h1', null, 'مبدا چیست؟'));
+    body.appendChild(el('p', 'sub', 'از کجا مطلب بیاید؟'));
+
+    [['telegram', '📢 کانال تلگرام', 'کپی از یک کانال یا گروه'],
+     ['rss', '📡 فید خبری (RSS)', 'از یک سایت یا خبرگزاری']
+    ].forEach(function (item) {
+      var opt = el('div', 'card tap');
+      var row = el('div', 'row');
+      var grow = el('div', 'grow');
+      grow.appendChild(el('div', 'name', item[1]));
+      grow.appendChild(el('div', 'why', item[2]));
+      row.appendChild(grow);
+      row.appendChild(el('span', 'chev', '‹'));
+      opt.appendChild(row);
+      opt.onclick = function () {
+        tick();
+        draft.source_kind = item[0];
+        openOver(item[0] === 'rss'
+          ? askFeed
+          : function (b) { chooseChat(b, 'source'); });
+      };
+      body.appendChild(opt);
+    });
+  }
+
+  function askFeed(box) {
+    box.textContent = '';
+    var body = el('div', 'view');
+    box.appendChild(body);
+    body.appendChild(el('h1', null, 'نشانی فید'));
+    body.appendChild(el('p', 'sub',
+      'نشانیِ خودِ فید لازم است، نه نشانی سایت — معمولاً به /rss یا /feed ختم می‌شود.'));
+
+    var label = el('label', 'f');
+    var url = document.createElement('input');
+    url.type = 'text';
+    url.placeholder = 'example.com/feed';
+    label.appendChild(url);
+    body.appendChild(label);
+
+    var go = el('button', 'btn', 'بررسی فید');
+    go.onclick = function () {
+      var value = url.value.trim();
+      if (!value) { say('نشانی خالی است.'); return; }
+      // فید همین‌جا خوانده می‌شود. سرور هم دوباره می‌خواندش، ولی
+      // کاربر باید همین لحظه بفهمد نشانی غلط است — نه ساعت‌ها بعد
+      // وقتی می‌بیند هیچ چیزی نیامده.
+      draft.source = value;
+      draft.source_title = value;
+      draft.dest = null;
+      openOver(function (b) { chooseChat(b, 'dest'); });
+    };
+    body.appendChild(go);
+  }
+
+  // onpick اختیاری است. بدون آن، انتخاب واردِ جریانِ ساختِ کار
+  // می‌شود؛ با آن، هرجای دیگری که کانال لازم دارد — مثل افزودن
+  // مقصد به یک کارِ موجود — از همین صفحه استفاده می‌کند.
+  function chooseChat(box, kind, onpick) {
     box.textContent = '';
     var body = el('div', 'view');
     box.appendChild(body);
@@ -1298,6 +1634,7 @@ input.find { margin: 18px 0 12px; }
           item.appendChild(row);
           item.onclick = function () {
             tick();
+            if (onpick) { onpick(chat); return; }
             if (kind === 'source') {
               draft.source = String(chat.id);
               draft.source_title = chat.title;
@@ -1324,7 +1661,7 @@ input.find { margin: 18px 0 12px; }
           'اتصال در ربات', function () { openBot('login'); });
         return;
       }
-      failed(list, e.message, function () { chooseChat(box, kind); });
+      failed(list, e.message, function () { chooseChat(box, kind, onpick); });
     });
   }
 
@@ -1361,6 +1698,7 @@ input.find { margin: 18px 0 12px; }
       api('/tasks', {
         body: {
           source: draft.source, source_title: draft.source_title,
+          source_kind: draft.source_kind || 'telegram',
           dest: draft.dest, dest_title: draft.dest_title,
           title: name.value.trim()
         }

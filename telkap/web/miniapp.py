@@ -34,7 +34,7 @@ from sqlalchemy import func, select
 
 from telkap.config import get_settings
 from telkap.db import get_session, log_activity
-from telkap.models import Destination, Task, User
+from telkap.models import Destination, Rule, Task, User
 from telkap.plans import all_purchasable, get_plan
 from telkap.services import chats, subscription, wallet
 
@@ -501,6 +501,7 @@ async def task_detail(request: web.Request) -> web.Response:
         "id": task.id,
         "title": task.title or task.source_title or f"کار #{task.id}",
         "enabled": bool(task.enabled),
+        "source_kind": task.source_kind,
         "copied": int(task.copied_count or 0),
         "skipped": int(task.skipped_count or 0),
         "source": task.source_title or task.source_ref,
@@ -592,13 +593,35 @@ async def task_create(request: web.Request) -> web.Response:
     if source == dest:
         return _no("مبدا و مقصد نمی‌توانند یکی باشند", status=400)
 
+    kind = str(posted.get("source_kind") or Task.SOURCE_TELEGRAM)
+    if kind not in (Task.SOURCE_TELEGRAM, Task.SOURCE_RSS):
+        return _no("نوع مبدا درست نیست", status=400)
+
+    source_title = str(posted.get("source_title") or "")[:160]
+    if kind == Task.SOURCE_RSS:
+        # <b>فید همین حالا خوانده می‌شود، نه بعداً.</b> اگر آدرس غلط
+        # باشد کاربر باید همین‌جا بفهمد — نه ساعت‌ها بعد وقتی می‌بیند
+        # هیچ چیزی نیامده و نمی‌داند چرا. خودِ fetch جلوی آدرسِ شبکه‌ی
+        # داخلی را هم می‌گیرد.
+        from telkap.services import feeds
+        from telkap.services.feeds import FeedError
+
+        try:
+            items = await feeds.fetch(source)
+        except FeedError as exc:
+            return _no(str(exc), status=400)
+        except Exception:
+            log.exception("خواندن فید «%s» ناموفق بود", source)
+            return _no("این فید خوانده نشد", status=400)
+        source_title = source_title or feeds.clean_html(items[0].title)[:60]
+
     async with get_session() as db:
         task = Task(
             user_id=user_id,
-            title=str(posted.get("title") or "")[:128]
-            or str(posted.get("source_title") or "")[:128],
+            title=str(posted.get("title") or "")[:128] or source_title[:128],
+            source_kind=kind,
             source_ref=source,
-            source_title=str(posted.get("source_title") or "")[:160],
+            source_title=source_title,
             dest_ref=dest,
             dest_title=str(posted.get("dest_title") or "")[:160],
             settings={},
@@ -614,7 +637,13 @@ async def task_create(request: web.Request) -> web.Response:
     client = await manager.ensure_client(user_id)
     if client is not None:
         dest_id = await manager.resolve_chat_id(client, dest)
-        source_id = await manager.resolve_chat_id(client, source)
+        # مبدأ فید یک نشانی اینترنتی است، نه چتِ تلگرام؛ حل کردنش
+        # فقط یک تماس بی‌فایده با تلگرام است
+        source_id = (
+            await manager.resolve_chat_id(client, source)
+            if kind == Task.SOURCE_TELEGRAM
+            else None
+        )
         async with get_session() as db:
             row = await db.get(Task, task_id)
             if row is not None:
@@ -657,6 +686,368 @@ async def task_delete(request: web.Request) -> web.Response:
         user_id=user_id, task_id=task_id, event="task_delete", detail="از مینی‌اپ"
     )
     return _yes({"ok": True})
+
+
+# ------------------------------------------------------------------ قواعد
+#
+# <b>چرا قواعد در اپ لازم بودند.</b> این‌ها همان چیزی هستند که کاربر
+# هر روز عوض می‌کند — نام کانال رقیب را بردار، این کلمه را جایگزین
+# کن، پستِ دارای این عبارت اصلاً نرود. تا امروز فقط در ربات بودند و
+# هر تغییرشان یعنی چند صفحه دکمه.
+RULE_KINDS = ("replace", "regex", "block", "allow")
+MAX_RULES = 100
+
+
+async def rules_list(request: web.Request) -> web.Response:
+    user_id = await _who(request)
+    if user_id is None:
+        return _no()
+
+    task = await _own_task(user_id, int(request.match_info["id"]))
+    if task is None:
+        return _no("این کار پیدا نشد", status=404)
+
+    async with get_session() as db:
+        rows = list(
+            (
+                await db.execute(
+                    select(Rule).where(Rule.task_id == task.id).order_by(Rule.id)
+                )
+            ).scalars()
+        )
+
+    return _yes({
+        "rules": [
+            {
+                "id": row.id,
+                "kind": row.kind,
+                "pattern": row.pattern,
+                "replacement": row.replacement or "",
+                "enabled": bool(row.enabled),
+            }
+            for row in rows
+        ]
+    })
+
+
+async def rule_add(request: web.Request) -> web.Response:
+    user_id = await _who(request)
+    if user_id is None:
+        return _no()
+
+    task = await _own_task(user_id, int(request.match_info["id"]))
+    if task is None:
+        return _no("این کار پیدا نشد", status=404)
+
+    try:
+        posted = await request.json()
+    except Exception:
+        return _no("ورودی درست نبود", status=400)
+    if not isinstance(posted, dict):
+        return _no("ورودی درست نبود", status=400)
+
+    kind = str(posted.get("kind", ""))
+    if kind not in RULE_KINDS:
+        return _no("نوع قاعده درست نیست", status=400)
+
+    pattern = str(posted.get("pattern") or "").strip()[:512]
+    if not pattern:
+        return _no("الگو خالی است", status=400)
+
+    # <b>الگوی regex پیش از ذخیره اجرا می‌شود، نه سرِ اولین پست.</b>
+    # یک الگوی خراب که ذخیره شود، هر بار روی هر پست خطا می‌دهد و
+    # کار را بی‌صدا از کار می‌اندازد. اینجا همان لحظه گفته می‌شود.
+    if kind == "regex":
+        import re
+
+        try:
+            re.compile(pattern)
+        except re.error as exc:
+            return _no(f"الگوی regex درست نیست: {exc}", status=400)
+
+    async with get_session() as db:
+        count = await db.scalar(
+            select(func.count(Rule.id)).where(Rule.task_id == task.id)
+        )
+        if (count or 0) >= MAX_RULES:
+            return _no(f"بیشتر از {MAX_RULES} قاعده برای یک کار نمی‌شود", status=400)
+        row = Rule(
+            task_id=task.id,
+            kind=kind,
+            pattern=pattern,
+            replacement=str(posted.get("replacement") or "")[:512],
+        )
+        db.add(row)
+        await db.commit()
+        await db.refresh(row)
+        rule_id = row.id
+
+    await _touch(user_id, task.id)
+    return _yes({"ok": True, "id": rule_id})
+
+
+async def rule_delete(request: web.Request) -> web.Response:
+    user_id = await _who(request)
+    if user_id is None:
+        return _no()
+
+    task = await _own_task(user_id, int(request.match_info["id"]))
+    if task is None:
+        return _no("این کار پیدا نشد", status=404)
+
+    async with get_session() as db:
+        row = await db.get(Rule, int(request.match_info["rule"]))
+        # قاعده‌ای که مالِ این کار نیست، انگار وجود ندارد
+        if row is None or row.task_id != task.id:
+            return _no("این قاعده پیدا نشد", status=404)
+        await db.delete(row)
+        await db.commit()
+
+    await _touch(user_id, task.id)
+    return _yes({"ok": True})
+
+
+# ------------------------------------------------------------------ مقصدها
+async def dest_add(request: web.Request) -> web.Response:
+    """مقصد دوم به بعد. سقفش همان سقفِ طرح است."""
+    user_id = await _who(request)
+    if user_id is None:
+        return _no()
+
+    task = await _own_task(user_id, int(request.match_info["id"]))
+    if task is None:
+        return _no("این کار پیدا نشد", status=404)
+
+    try:
+        posted = await request.json()
+    except Exception:
+        return _no("ورودی درست نبود", status=400)
+
+    ref = str((posted or {}).get("ref") or "").strip()[:128]
+    if not ref:
+        return _no("کانالی انتخاب نشده", status=400)
+
+    plan = await subscription.active_plan_for(user_id)
+    if plan is None:
+        return _no("اشتراک فعالی ندارید", status=400)
+
+    async with get_session() as db:
+        extras = list(
+            (
+                await db.execute(select(Destination).where(Destination.task_id == task.id))
+            ).scalars()
+        )
+
+    # مقصد اصلی هم یکی از سقف است
+    if len(extras) + 1 >= plan.max_destinations:
+        return _no(
+            f"در طرح «{plan.title}» هر کار تا {plan.max_destinations} مقصد می‌تواند داشته باشد",
+            status=400,
+        )
+
+    from telkap.services.userbot import manager
+
+    client = await manager.ensure_client(user_id)
+    if client is None:
+        return _no("اکانت کاربری وصل نیست", status=400)
+
+    entity = await manager.resolve_entity(client, ref)
+    if entity is None:
+        return _no("کانال پیدا نشد یا اکانت شما به آن دسترسی ندارد", status=400)
+    if not chats._usable_as_destination(entity):
+        return _no("در این کانال اجازه‌ی ارسال ندارید", status=400)
+
+    chat_id = await manager.resolve_chat_id(client, ref)
+    title = (getattr(entity, "title", None) or ref)[:160]
+
+    # همان بررسی‌های تکراری که ربات هم می‌کند — دو مقصدِ یکسان یعنی
+    # هر پست دو بار در همان کانال
+    if str(chat_id) == str(task.dest_id) or ref == task.dest_ref:
+        return _no("این همان کانال مقصد اصلی است", status=400)
+    for row in extras:
+        if str(row.chat_id) == str(chat_id) or row.ref == ref:
+            return _no("این کانال قبلاً اضافه شده است", status=400)
+
+    async with get_session() as db:
+        db.add(Destination(task_id=task.id, chat_id=chat_id, ref=ref, title=title))
+        await db.commit()
+
+    await _touch(user_id, task.id)
+    await log_activity(user_id=user_id, task_id=task.id, event="dest_add", detail=ref)
+    return _yes({"ok": True, "title": title})
+
+
+async def dest_delete(request: web.Request) -> web.Response:
+    user_id = await _who(request)
+    if user_id is None:
+        return _no()
+
+    task = await _own_task(user_id, int(request.match_info["id"]))
+    if task is None:
+        return _no("این کار پیدا نشد", status=404)
+
+    async with get_session() as db:
+        row = await db.get(Destination, int(request.match_info["dest"]))
+        if row is None or row.task_id != task.id:
+            return _no("این مقصد پیدا نشد", status=404)
+        await db.delete(row)
+        await db.commit()
+
+    await _touch(user_id, task.id)
+    return _yes({"ok": True})
+
+
+# -------------------------------------------------------- کپی تنظیمات
+async def task_clone(request: web.Request) -> web.Response:
+    """تنظیمات و قواعدِ یک کار روی کار دیگر می‌نشیند.
+
+    مبدأ و مقصد دست نمی‌خورند — آن‌ها هویتِ کارند، نه تنظیماتش.
+    """
+    user_id = await _who(request)
+    if user_id is None:
+        return _no()
+
+    task = await _own_task(user_id, int(request.match_info["id"]))
+    if task is None:
+        return _no("این کار پیدا نشد", status=404)
+
+    try:
+        posted = await request.json()
+    except Exception:
+        return _no("ورودی درست نبود", status=400)
+
+    source_id = int((posted or {}).get("from") or 0)
+    if source_id == task.id:
+        return _no("مبدأ و مقصدِ کپی یکی است", status=400)
+    other = await _own_task(user_id, source_id)
+    if other is None:
+        return _no("آن کار پیدا نشد", status=404)
+
+    async with get_session() as db:
+        rows = list(
+            (
+                await db.execute(select(Rule).where(Rule.task_id == other.id))
+            ).scalars()
+        )
+        target = await db.get(Task, task.id)
+        target.settings = dict(other.settings or {})
+        # قواعدِ قبلی می‌روند، وگرنه «کپی» می‌شد «ادغام» و کسی
+        # نمی‌فهمید کدام قاعده از کجا آمده
+        for old in (
+            await db.execute(select(Rule).where(Rule.task_id == task.id))
+        ).scalars():
+            await db.delete(old)
+        for row in rows:
+            db.add(
+                Rule(
+                    task_id=task.id,
+                    kind=row.kind,
+                    pattern=row.pattern,
+                    replacement=row.replacement,
+                    enabled=row.enabled,
+                )
+            )
+        await db.commit()
+
+    await _touch(user_id, task.id)
+    await log_activity(
+        user_id=user_id, task_id=task.id, event="clone", detail=f"از کار {other.id}"
+    )
+    return _yes({"ok": True, "rules": len(rows)})
+
+
+# ------------------------------------------------------------ لوگوی واترمارک
+#
+# <b>تنها مسیری که فایل می‌گیرد — و تنها جایی که ورودی باینری است.</b>
+# اینجا هیچ‌چیز از حرفِ فرستنده باور نمی‌شود: نه نامِ فایل، نه
+# Content-Type، نه پسوند. مسیرِ ذخیره از آیدی کار ساخته می‌شود (نه از
+# نام فرستاده‌شده، وگرنه «../../» می‌شد یک راهِ نوشتن روی هر فایلی) و
+# محتوا باید واقعاً با Pillow باز شود.
+MAX_LOGO_BYTES = 3 * 1024 * 1024
+MAX_LOGO_SIDE = 2000
+
+
+async def logo_upload(request: web.Request) -> web.Response:
+    user_id = await _who(request)
+    if user_id is None:
+        return _no()
+
+    task = await _own_task(user_id, int(request.match_info["id"]))
+    if task is None:
+        return _no("این کار پیدا نشد", status=404)
+
+    if request.content_length and request.content_length > MAX_LOGO_BYTES + 4096:
+        return _no("فایل بزرگ‌تر از ۳ مگابایت است", status=400)
+
+    try:
+        posted = await request.post()
+    except Exception:
+        return _no("فایل درست نرسید", status=400)
+
+    field = posted.get("logo")
+    blob = getattr(field, "file", None)
+    if blob is None:
+        return _no("فایلی انتخاب نشده", status=400)
+
+    # سقف را حین خواندن هم نگه می‌داریم؛ Content-Length حرفِ فرستنده است
+    raw = blob.read(MAX_LOGO_BYTES + 1)
+    if len(raw) > MAX_LOGO_BYTES:
+        return _no("فایل بزرگ‌تر از ۳ مگابایت است", status=400)
+    if not raw:
+        return _no("فایل خالی بود", status=400)
+
+    import io
+
+    from PIL import Image
+
+    try:
+        image = Image.open(io.BytesIO(raw))
+        image.verify()                      # واقعاً تصویر است؟
+        image = Image.open(io.BytesIO(raw))  # verify شیء را می‌بندد
+        image = image.convert("RGBA")
+    except Exception:
+        return _no("این فایل تصویر نبود", status=400)
+
+    image.thumbnail((MAX_LOGO_SIDE, MAX_LOGO_SIDE))
+
+    logo_dir = get_settings().download_dir / "logos"
+    logo_dir.mkdir(parents=True, exist_ok=True)
+    # نام از آیدی کار می‌آید، نه از فرستنده — همان‌جایی که ربات هم
+    # می‌گذاردش، تا هر دو راه یک فایل را ببینند
+    target = logo_dir / f"task-{task.id}.png"
+    try:
+        image.save(target, "PNG")
+    except Exception:
+        log.exception("ذخیره‌ی لوگوی کار %s ناموفق بود", task.id)
+        return _no("ذخیره‌ی فایل ناموفق بود", status=500)
+
+    from telkap.services.defaults import merged_settings
+
+    async with get_session() as db:
+        row = await db.get(Task, task.id)
+        cfg = merged_settings(row.settings)
+        cfg["watermark_logo"] = str(target)
+        cfg["watermark_kind"] = "logo"
+        cfg["watermark_enabled"] = True
+        row.settings = cfg
+        await db.commit()
+
+    await _touch(user_id, task.id)
+    await log_activity(user_id=user_id, task_id=task.id, event="watermark", detail="لوگو از مینی‌اپ")
+    return _yes({"ok": True, "width": image.width, "height": image.height})
+
+
+async def _touch(user_id: int, task_id: int) -> None:
+    """کش را دور بریز و هندلرها را دوباره بساز.
+
+    بدون این، تغییر ذخیره می‌شود ولی تا ری‌استارت بعدی روی پست‌ها
+    اثری ندارد — و کاربر فکر می‌کند تنظیمش کار نمی‌کند.
+    """
+    from telkap.services import cache
+    from telkap.services.userbot import manager
+
+    cache.invalidate_task(task_id)
+    await manager.reload_user(user_id)
 
 
 # ------------------------------------------------------------ چت‌ها و آمار
@@ -772,5 +1163,12 @@ def routes() -> list:
         web.post(f"{API_PREFIX}/tasks/{{id}}/toggle", toggle),
         web.post(f"{API_PREFIX}/tasks/{{id}}/settings", task_settings),
         web.post(f"{API_PREFIX}/tasks/{{id}}/delete", task_delete),
+        web.get(f"{API_PREFIX}/tasks/{{id}}/rules", rules_list),
+        web.post(f"{API_PREFIX}/tasks/{{id}}/rules", rule_add),
+        web.post(f"{API_PREFIX}/tasks/{{id}}/rules/{{rule}}/delete", rule_delete),
+        web.post(f"{API_PREFIX}/tasks/{{id}}/dests", dest_add),
+        web.post(f"{API_PREFIX}/tasks/{{id}}/dests/{{dest}}/delete", dest_delete),
+        web.post(f"{API_PREFIX}/tasks/{{id}}/clone", task_clone),
+        web.post(f"{API_PREFIX}/tasks/{{id}}/logo", logo_upload),
         web.get(f"{API_PREFIX}/quote/{{code}}", quote),
     ]

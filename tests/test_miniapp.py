@@ -871,3 +871,224 @@ def test_a_forged_signature_is_still_refused():
     })
 
     assert user_id_from(forged, "123456:TEST") is None
+
+
+def _upload(raw: bytes, filename: str):
+    """یک آپلود multipart واقعی — همان چیزی که مرورگر می‌فرستد."""
+    from aiohttp import FormData
+
+    form = FormData()
+    form.add_field("logo", raw, filename=filename, content_type="image/png")
+    return form
+
+
+async def _own_task(db_module, user_id: int = 7, **kw) -> int:
+    from telkap.models import Task, User
+
+    async with db_module.get_session() as db:
+        if await db.get(User, user_id) is None:
+            db.add(User(id=user_id, first_name="رامین"))
+        fields = {
+            "user_id": user_id, "title": "کار من",
+            "source_ref": "@s", "source_id": -300,
+            "dest_ref": "@d", "dest_id": -301, "enabled": True,
+            "settings": {},
+        }
+        fields.update(kw)
+        task = Task(**fields)
+        db.add(task)
+        await db.commit()
+        await db.refresh(task)
+        return task.id
+
+
+@pytest.mark.asyncio
+async def test_rules_can_be_added_and_removed_from_the_app(tmp_path, monkeypatch):
+    """قواعد متنی همان چیزی‌اند که هر روز عوض می‌شوند."""
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        task_id = await _own_task(db_module)
+        client = await _client(monkeypatch)
+        mine = {"X-Telegram-Init-Data": _fresh(7)}
+
+        added = await client.post(
+            f"/app/api/tasks/{task_id}/rules", headers=mine,
+            json={"kind": "replace", "pattern": "رقیب", "replacement": "ما"},
+        )
+        assert added.status == 200
+        rule_id = (await added.json())["id"]
+
+        listed = await (await client.get(
+            f"/app/api/tasks/{task_id}/rules", headers=mine
+        )).json()
+        assert [r["pattern"] for r in listed["rules"]] == ["رقیب"]
+
+        gone = await client.post(
+            f"/app/api/tasks/{task_id}/rules/{rule_id}/delete", headers=mine
+        )
+        assert gone.status == 200
+        empty = await (await client.get(
+            f"/app/api/tasks/{task_id}/rules", headers=mine
+        )).json()
+        assert empty["rules"] == []
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_a_broken_regex_is_refused_at_the_door(tmp_path, monkeypatch):
+    """<b>وگرنه هر پست روی همان الگو خطا می‌دهد.</b>
+
+    الگوی خرابی که ذخیره شود، کار را بی‌صدا از کار می‌اندازد و علتش
+    فقط در لاگ می‌ماند. همان لحظه باید گفته شود.
+    """
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        task_id = await _own_task(db_module)
+        client = await _client(monkeypatch)
+        mine = {"X-Telegram-Init-Data": _fresh(7)}
+
+        bad = await client.post(
+            f"/app/api/tasks/{task_id}/rules", headers=mine,
+            json={"kind": "regex", "pattern": "([a-z"},
+        )
+        assert bad.status == 400
+        assert "regex" in (await bad.json())["error"]
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_rules_of_someone_elses_task_are_out_of_reach(tmp_path, monkeypatch):
+    """همان قفلی که روی تنظیمات هست باید روی قواعد هم باشد."""
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.models import Rule
+
+        theirs = await _own_task(db_module, user_id=8, title="مالِ او")
+        async with db_module.get_session() as db:
+            rule = Rule(task_id=theirs, kind="block", pattern="خصوصی")
+            db.add(rule)
+            await db.commit()
+            await db.refresh(rule)
+            rule_id = rule.id
+
+        client = await _client(monkeypatch)
+        mine = {"X-Telegram-Init-Data": _fresh(7)}
+
+        assert (await client.get(
+            f"/app/api/tasks/{theirs}/rules", headers=mine
+        )).status == 404
+        assert (await client.post(
+            f"/app/api/tasks/{theirs}/rules", headers=mine,
+            json={"kind": "block", "pattern": "x"},
+        )).status == 404
+        assert (await client.post(
+            f"/app/api/tasks/{theirs}/rules/{rule_id}/delete", headers=mine
+        )).status == 404
+
+        # و قاعده هنوز سر جایش است
+        async with db_module.get_session() as db:
+            assert await db.get(Rule, rule_id) is not None
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_cloning_replaces_rules_instead_of_merging_them(tmp_path, monkeypatch):
+    """اگر ادغام می‌شد، هیچ‌کس نمی‌فهمید کدام قاعده از کجا آمده."""
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.models import Rule
+
+        source = await _own_task(
+            db_module, title="الگو", settings={"remove_links": True}
+        )
+        target = await _own_task(db_module, title="هدف", settings={})
+        async with db_module.get_session() as db:
+            db.add(Rule(task_id=source, kind="block", pattern="تبلیغ"))
+            db.add(Rule(task_id=target, kind="block", pattern="قدیمی"))
+            await db.commit()
+
+        client = await _client(monkeypatch)
+        mine = {"X-Telegram-Init-Data": _fresh(7)}
+
+        done = await client.post(
+            f"/app/api/tasks/{target}/clone", headers=mine, json={"from": source}
+        )
+        assert done.status == 200
+
+        detail = await (await client.get(
+            f"/app/api/tasks/{target}", headers=mine
+        )).json()
+        assert detail["settings"]["remove_links"] is True
+
+        rules = await (await client.get(
+            f"/app/api/tasks/{target}/rules", headers=mine
+        )).json()
+        assert [r["pattern"] for r in rules["rules"]] == ["تبلیغ"]
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_a_file_that_is_not_an_image_is_refused(tmp_path, monkeypatch):
+    """<b>تنها مسیری که ورودی باینری می‌گیرد.</b>
+
+    نه نام فایل باور می‌شود نه Content-Type؛ محتوا باید واقعاً باز شود.
+    """
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        task_id = await _own_task(db_module)
+        client = await _client(monkeypatch)
+
+        response = await client.post(
+            f"/app/api/tasks/{task_id}/logo",
+            headers={"X-Telegram-Init-Data": _fresh(7)},
+            data=_upload(b"<?php echo 1; ?>", "logo.png"),
+        )
+        assert response.status == 400
+        assert "تصویر" in (await response.json())["error"]
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_a_real_image_is_stored_under_the_task_id(tmp_path, monkeypatch):
+    """مسیر از آیدی کار ساخته می‌شود، نه از نامی که فرستنده داده —
+    وگرنه «../../» راهی برای نوشتن روی هر فایلی بود."""
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        import io
+
+        from PIL import Image
+
+        task_id = await _own_task(db_module)
+        client = await _client(monkeypatch)
+        # _client تنظیماتِ ساختگی می‌گذارد؛ این مسیر به پوشه‌ی دانلود
+        # هم نیاز دارد و باید داخل tmp_path بماند
+        monkeypatch.setattr(
+            miniapp, "get_settings",
+            lambda: SimpleNamespace(bot_token=TOKEN, download_dir=tmp_path / "dl"),
+        )
+
+        buffer = io.BytesIO()
+        Image.new("RGBA", (40, 20), (255, 0, 0, 128)).save(buffer, "PNG")
+
+        response = await client.post(
+            f"/app/api/tasks/{task_id}/logo",
+            headers={"X-Telegram-Init-Data": _fresh(7)},
+            data=_upload(buffer.getvalue(), "../../evil.png"),
+        )
+        assert response.status == 200
+
+        from telkap.models import Task
+
+        async with db_module.get_session() as db:
+            task = await db.get(Task, task_id)
+        stored = task.settings["watermark_logo"]
+        assert stored.endswith(f"task-{task_id}.png")
+        assert ".." not in stored
+        assert task.settings["watermark_enabled"] is True
+    finally:
+        await db_module.close_db()
