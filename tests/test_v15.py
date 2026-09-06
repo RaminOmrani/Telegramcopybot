@@ -414,6 +414,11 @@ def test_every_page_but_the_gate_needs_a_session():
         "/resellers/set",
         "/resellers/{id}/keeps",
         "/resellers/{id}/remove",
+        # بخش نماینده‌ها: پشتِ ورود است ولی نگهبانش «نماینده بودن»
+        # است نه «مدیر بودن» — و تست خودش پایین‌تر همان را می‌سنجد.
+        "/agent",
+        "/agent/customers",
+        "/agent/sales",
         "/tasks",
         "/tasks/{id}/toggle",
         "/finance",

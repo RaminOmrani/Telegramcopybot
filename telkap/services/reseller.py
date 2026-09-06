@@ -81,6 +81,13 @@ async def profile(user_id: int) -> tuple[bool, int]:
         return True, max(0, min(int(user.reseller_discount or 0), MAX_DISCOUNT))
 
 
+async def is_reseller(user_id: int) -> bool:
+    """فقط همین یک سؤال — بی‌آنکه درصد تخفیف هم خوانده شود."""
+    async with get_session() as db:
+        user = await db.get(User, user_id)
+    return bool(user is not None and user.is_reseller)
+
+
 async def keeps_customers(user_id: int) -> bool:
     """آیا مشتری‌های این نماینده به نامش بسته می‌شوند.
 

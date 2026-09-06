@@ -28,6 +28,7 @@ from telkap.middlewares import (
 )
 from telkap.models import Task
 from telkap.services import (
+    agentnudge,
     alerts,
     backup,
     cryptocheck,
@@ -221,6 +222,7 @@ async def main() -> None:
         asyncio.create_task(digest.run_forever(notify), name="digest"),
         asyncio.create_task(backup.run_forever(bot), name="backup"),
         asyncio.create_task(renewal.run_forever(notify), name="renewal"),
+        asyncio.create_task(agentnudge.run_forever(notify), name="agentnudge"),
         asyncio.create_task(maintenance.run_forever(), name="maintenance"),
         asyncio.create_task(alerts.run_forever(bot), name="alerts"),
         asyncio.create_task(feedworker.run_forever(), name="feeds"),

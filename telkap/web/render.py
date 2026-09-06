@@ -451,6 +451,17 @@ NAV = (
     )),
 )
 
+# <b>منوی نماینده، نه نسخه‌ی کم‌شده‌ی منوی مدیر.</b> نماینده مشتریِ
+# ماست نه همکارِ ما؛ چیزی که می‌بیند باید کارِ خودش باشد — مشتری‌هایش،
+# فروش‌هایش، پولش — نه فهرستی از بخش‌هایی که اجازه‌شان را ندارد.
+AGENT_NAV = (
+    ("نمایندگی", (
+        ("/agent", "📊", "نمای کلی", ""),
+        ("/agent/customers", "👥", "مشتری‌های من", "expiring"),
+        ("/agent/sales", "🧾", "فروش‌های من", ""),
+    )),
+)
+
 
 def esc(value) -> str:
     return escape(str(value if value is not None else ""), quote=True)
@@ -492,6 +503,9 @@ def page(
     waiting: int = 0,
     theme: str = DARK,
     path: str = "/",
+    nav=None,
+    kind: str = "پنل مدیریت",
+    brand: str = "ادمین پست",
 ) -> str:
     """یک صفحه‌ی کامل.
 
@@ -504,12 +518,15 @@ def page(
     تم بتواند به همین‌جا برگردد.
     """
     groups = []
-    for group, items in NAV:
+    for group, items in (nav or NAV):
         links = []
         for href, icon, label, badge in items:
+            # هر دو نشانگر یک عدد را نشان می‌دهند؛ معنیشان است که فرق
+            # دارد — برای مدیر «رسید منتظر»، برای نماینده «مشتریِ رو
+            # به اتمام». هر دو یک چیز می‌گویند: اینجا کاری هست.
             mark = (
                 f"<span class='dot'>{esc(i18n.num(waiting, 'fa'))}</span>"
-                if badge == "waiting" and waiting
+                if badge in ("waiting", "expiring") and waiting
                 else ""
             )
             cls = "on" if href == active else ""
@@ -534,12 +551,12 @@ def page(
         "<meta charset='utf-8'>"
         "<meta name='viewport' content='width=device-width, initial-scale=1'>"
         "<meta name='robots' content='noindex, nofollow'>"
-        f"<title>{esc(title)} — پنل مدیریت</title>"
+        f"<title>{esc(title)} — {esc(kind)}</title>"
         f"<style>{CSS}</style></head><body><div class='layout'>"
         "<aside><div class='brand'><span class='mark'>⚡</span>"
-        "<span>فورواردبات<small>ادمین پست</small></span></div>"
+        f"<span>فورواردبات<small>{esc(brand)}</small></span></div>"
         f"{''.join(groups)}"
-        "<div class='foot'>فورواردبات (ادمین پست)</div></aside>"
+        f"<div class='foot'>فورواردبات ({esc(brand)})</div></aside>"
         f"<div class='content'><div class='topbar'>"
         f"<b>{esc(title)}</b>{identity}</div>"
         f"<main>{body}</main></div></div></body></html>"

@@ -87,7 +87,51 @@ async def _panel(user_id: int) -> tuple[str, InlineKeyboardBuilder] | None:
         )
     if row:
         kb.row(*row)
+    kb.row(InlineKeyboardButton(text="🖥 پنل وب نمایندگی", callback_data="rs:web"))
     return "\n".join(lines), kb
+
+
+@router.callback_query(F.data == "rs:web")
+async def cb_web(call: CallbackQuery) -> None:
+    """لینک یک‌بارمصرف ورود نماینده به بخش وبِ خودش.
+
+    <b>چرا لینک و نه رمز.</b> نماینده مشتری ماست، نه همکارمان؛ ساختنِ
+    نام کاربری و رمز برای کسی که ماهی یک بار سر می‌زند، یعنی رمزی که
+    فراموش می‌شود و پیامی که به پشتیبانی می‌آید. هویتش را همین چت
+    تلگرام تأیید کرده و همان کافی است.
+    """
+    from telkap.config import get_settings
+    from telkap.web import auth as web_auth
+    from telkap.web.render import url as panel_url
+
+    if not await reseller.is_reseller(call.from_user.id):
+        await call.answer("شما نماینده نیستید.", show_alert=True)
+        return
+
+    cfg = get_settings()
+    if not cfg.web_enabled or not cfg.web_base_url:
+        await call.answer("پنل وب هنوز راه نیفتاده است.", show_alert=True)
+        return
+
+    token = web_auth.issue_login_token(call.from_user.id)
+    # web_base_url به «/panel» ختم می‌شود و panel_url هم همان را
+    # می‌گذارد؛ پس ریشه‌ی دامنه برداشته می‌شود تا دو بار نیاید.
+    base = cfg.web_base_url.rstrip("/")
+    from telkap.web.render import PREFIX
+
+    if PREFIX and base.endswith(PREFIX):
+        base = base[: -len(PREFIX)]
+
+    await call.answer()
+    await call.message.answer(
+        "🖥 <b>پنل وب نمایندگی</b>\n\n"
+        f"{base}{panel_url('/enter')}?t={token}\n\n"
+        "آنجا می‌بینید کدام مشتری‌تان دارد تمام می‌شود، چقدر فروخته‌اید و "
+        "چقدر سود کرده‌اید.\n\n"
+        "⏳ این لینک <b>۵ دقیقه</b> اعتبار دارد و با اولین باز شدن می‌سوزد.\n"
+        "🔒 آن را برای کسی نفرستید — هرکس بازش کند با نام شما وارد می‌شود.",
+        disable_web_page_preview=True,
+    )
 
 
 @router.message(Command("reseller"))

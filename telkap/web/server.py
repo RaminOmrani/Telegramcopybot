@@ -40,6 +40,7 @@ from telkap.services import (
     subscription,
     timings,
     usdtrate,
+    wallet,
     zarinpal,
 )
 from telkap.web import auth, miniapp, render
@@ -236,6 +237,12 @@ APP_PREFIX = miniapp.API_PREFIX + "/"
 STATIC_PREFIX = u("/static") + "/"
 STATIC_DIR = Path(__file__).parent / "static"
 
+# <b>بخش نماینده‌ها.</b> زیر همان پنل می‌نشیند ولی نگهبانِ دیگری دارد:
+# نماینده کارمند ما نیست، مشتریِ ماست. هرچه اینجا هست مالِ خودش است و
+# هیچ مسیرِ مدیریتی از اینجا در دسترس نیست — نه با لینک، نه با حدس
+# زدن نشانی، چون نگهبان روی پیشوند است نه روی تک‌تک صفحه‌ها.
+AGENT_PREFIX = u("/agent")
+
 
 @web.middleware
 async def auth_middleware(request: web.Request, handler):
@@ -252,9 +259,28 @@ async def auth_middleware(request: web.Request, handler):
         # شده باید بتواند همان‌جا دوباره وارد شود.
         raise web.HTTPFound(u("/login"))
 
+    staff = await roles.is_staff(session.user_id)
+
+    # بخش نماینده: نماینده بودن کافی است. مدیر هم می‌تواند ببیندش،
+    # برای وقتی که نماینده می‌گوید «من چیزی نمی‌بینم».
+    if request.path == AGENT_PREFIX or request.path.startswith(AGENT_PREFIX + "/"):
+        if not (staff or await reseller.is_reseller(session.user_id)):
+            return web.Response(
+                text=render.gate("این بخش برای نماینده‌هاست.", bad=True, theme=_theme(request)),
+                content_type="text/html",
+                status=403,
+            )
+        request["session"] = session
+        return await handler(request)
+
     # نقش ممکن است بعد از ورود گرفته شده باشد؛ هر درخواست دوباره سنجیده
     # می‌شود تا کسی با نشستِ باز، بعدِ عزل هم داخل نماند
-    if not await roles.is_staff(session.user_id):
+    if not staff:
+        # <b>ولی نشستش را نمی‌بندیم اگر نماینده باشد.</b> پیش از این،
+        # هر غیرمدیری که وارد می‌شد بی‌درنگ بیرون انداخته می‌شد؛ حالا
+        # نماینده هم حساب دارد و باید بتواند به بخش خودش برود.
+        if await reseller.is_reseller(session.user_id):
+            raise web.HTTPFound(AGENT_PREFIX)
         await auth.end_all(session.user_id)
         return web.Response(
             text=render.gate("دیگر دسترسی مدیریتی ندارید.", bad=True, theme=_theme(request)),
@@ -367,7 +393,11 @@ async def enter(request: web.Request) -> web.Response:
             content_type="text/html",
             status=401,
         )
-    if not await roles.is_staff(user_id):
+    # دو گروه از این در وارد می‌شوند و هرکدام جای دیگری می‌روند:
+    # مدیر به پنل، نماینده به بخش خودش.
+    staff = await roles.is_staff(user_id)
+    agent = False if staff else await reseller.is_reseller(user_id)
+    if not (staff or agent):
         return web.Response(
             text=render.gate("دسترسی مدیریتی ندارید.", bad=True, theme=_theme(request)),
             content_type="text/html",
@@ -377,7 +407,9 @@ async def enter(request: web.Request) -> web.Response:
     sid = await auth.start_session(
         user_id, user_agent=request.headers.get("User-Agent", "")
     )
-    return _set_cookie(web.HTTPFound(u("/")), request, sid)
+    return _set_cookie(
+        web.HTTPFound(AGENT_PREFIX if agent else u("/")), request, sid
+    )
 
 
 async def logout(request: web.Request) -> web.Response:
@@ -2004,6 +2036,156 @@ async def activity_page(request: web.Request) -> web.Response:
 
 
 # ------------------------------------------------------------ حساب من
+# ------------------------------------------------------- بخش نماینده‌ها
+#
+# <b>چرا نماینده صفحه‌ی خودش را لازم دارد.</b> تا امروز نماینده هیچ
+# جایی نداشت: آمارش، مشتری‌هایش و اینکه کدامشان دارد تمام می‌شود، همه
+# فقط در پنلِ ما دیده می‌شد. یعنی برای هر سؤالِ ساده باید از ما
+# می‌پرسید — و مهم‌تر، <b>نمی‌دانست کِی باید سراغ مشتری‌اش برود</b>.
+#
+# ترتیبِ این صفحه‌ها عمدی است: اول کاری که همین حالا باید انجام شود
+# (مشتریِ رو به اتمام)، بعد اعداد. پنلی که با آمار شروع شود، خوانده
+# می‌شود ولی کاری از آن درنمی‌آید.
+async def _agent_shell(
+    request: web.Request, title: str, body: str, *, active: str = ""
+) -> web.Response:
+    session = request["session"]
+    people = await reseller.customers(session.user_id)
+    return web.Response(
+        text=page(
+            title,
+            body,
+            active=active,
+            who=str(session.user_id),
+            waiting=sum(1 for person in people if person.expiring or person.expired),
+            theme=_theme(request),
+            path=_here(request),
+            nav=render.AGENT_NAV,
+            kind="پنل نمایندگی",
+            brand="پنل نمایندگی",
+        ),
+        content_type="text/html",
+        status=200,
+    )
+
+
+def _days_pill(person) -> str:
+    if person.expired:
+        return pill("تمام شده", "bad")
+    if person.expiring:
+        return pill(f"{i18n.num(person.days_left, 'fa')} روز مانده", "warn")
+    return pill(f"{i18n.num(person.days_left, 'fa')} روز مانده", "ok")
+
+
+async def agent_home(request: web.Request) -> web.Response:
+    session = request["session"]
+    user_id = session.user_id
+
+    _, discount = await reseller.profile(user_id)
+    numbers = await reseller.stats(user_id)
+    people = await reseller.customers(user_id)
+    balance = await wallet.balance(user_id)
+
+    soon = [person for person in people if person.expiring or person.expired]
+
+    cards = (
+        card("موجودی کیف پول", money(balance), "ok" if balance > 0 else "warn")
+        + card("تخفیف شما", f"{i18n.num(discount, 'fa')}٪")
+        + card("مشتری‌ها", i18n.num(len(people), "fa"))
+        + card("فروش‌ها", i18n.num(numbers.sales, "fa"))
+        + card("سود شما تا امروز", money(numbers.saved), "ok")
+        + card("پورسانت خرید مستقیم", money(numbers.commission), "ok")
+    )
+
+    rows = []
+    for person in soon[:12]:
+        rows.append(
+            "<tr>"
+            f"<td>{esc(person.name)}</td>"
+            f"<td dir='ltr'>{esc(person.user_id)}</td>"
+            f"<td>{_days_pill(person)}</td>"
+            "</tr>"
+        )
+
+    todo = panel(
+        "همین حالا سراغشان بروید",
+        table(
+            ["مشتری", "شناسه", "وضعیت"], rows,
+            empty="هیچ مشتری‌ای نزدیک به تمام شدن نیست.", icon="✅",
+        ),
+        sub="مشتری‌هایی که اشتراکشان تمام شده یا تا یک هفته تمام می‌شود.",
+    )
+
+    note = panel(
+        "تمدید چطور انجام می‌شود",
+        "<p class='sub' style='margin:0'>"
+        "در ربات، «🤝 نمایندگی» ← «فعال‌سازی برای مشتری» را بزنید و شناسه‌ی "
+        "مشتری را بدهید. مبلغ با تخفیفِ شما از کیف پولتان کم می‌شود و "
+        "اشتراک همان لحظه فعال می‌شود — بدون رسید و بدون انتظار."
+        "</p>",
+    )
+
+    return await _agent_shell(
+        request, "نمای کلی",
+        f"<div class='cards'>{cards}</div>{todo}{note}",
+        active="/agent",
+    )
+
+
+async def agent_customers(request: web.Request) -> web.Response:
+    session = request["session"]
+    people = await reseller.customers(session.user_id)
+
+    rows = []
+    for person in people:
+        plan = get_plan(person.plan_code)
+        rows.append(
+            "<tr>"
+            f"<td>{esc(person.name)}</td>"
+            f"<td dir='ltr'>{esc(person.user_id)}</td>"
+            f"<td>{esc(plan.title if plan else '—')}</td>"
+            f"<td>{_days_pill(person)}</td>"
+            "</tr>"
+        )
+
+    body = panel(
+        "مشتری‌های من",
+        table(
+            ["نام", "شناسه", "طرح", "وضعیت"], rows,
+            empty="هنوز مشتری‌ای به نام شما ثبت نشده.", icon="👥",
+        ),
+        sub="آنکه زودتر تمام می‌شود بالاتر است — چون کاری که باید انجام شود همان است.",
+    )
+    return await _agent_shell(request, "مشتری‌های من", body, active="/agent/customers")
+
+
+async def agent_sales(request: web.Request) -> web.Response:
+    session = request["session"]
+    rows_data = await reseller.sales(session.user_id, limit=60)
+
+    rows = []
+    for sale in rows_data:
+        plan = get_plan(sale.plan_code)
+        rows.append(
+            "<tr>"
+            f"<td>{esc(_when(sale.created_at))}</td>"
+            f"<td dir='ltr'>{esc(sale.customer_id)}</td>"
+            f"<td>{esc(plan.title if plan else sale.plan_code)}</td>"
+            f"<td>{esc(money(sale.paid_toman))}</td>"
+            f"<td>{esc(money(sale.list_toman - sale.paid_toman))}</td>"
+            "</tr>"
+        )
+
+    body = panel(
+        "فروش‌های من",
+        table(
+            ["تاریخ", "مشتری", "طرح", "پرداختی", "سود شما"], rows,
+            empty="هنوز فروشی نداشته‌اید.", icon="🧾",
+        ),
+    )
+    return await _agent_shell(request, "فروش‌های من", body, active="/agent/sales")
+
+
 async def account_page(request: web.Request) -> web.Response:
     """حساب ورود: رمز و نشست‌های باز."""
     session = request["session"]
@@ -2199,6 +2381,9 @@ def build_app(bot) -> web.Application:
             post("/resellers/{id}/keeps", reseller_keeps),
             post("/resellers/{id}/remove", reseller_remove),
             get("/finance", finance_page),
+            get("/agent", agent_home),
+            get("/agent/customers", agent_customers),
+            get("/agent/sales", agent_sales),
             get("/timings", timings_page),
             get("/activity", activity_page),
             get("/account", account_page),
