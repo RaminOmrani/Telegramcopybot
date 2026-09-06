@@ -38,6 +38,7 @@ from telkap.services import (
     planstore,
     reminders,
     renewal,
+    roles,
     usdtrate,
 )
 from telkap.services.copier import Copier
@@ -176,7 +177,37 @@ async def main() -> None:
     # طرح‌ها و قیمت‌های ویرایش‌شده‌ی ادمین باید پیش از هر درخواستی سر جایشان باشند
     await planstore.load()
     await forcejoin.seed_from_env()
-    await manager.restore_all()
+    # <b>بازیابی باید دیده شود، نه فقط انجام.</b> کارِ فعالی که هندلر
+    # ندارد هیچ نشانه‌ای نمی‌دهد — نه خطا، نه لاگ — و از بیرون شبیه
+    # «مبدا پست نزده» است. پس بعد از بازیابی می‌شماریم و اگر چیزی جا
+    # مانده باشد، به ادمین خبر می‌دهیم.
+    restored, failed_users = await manager.restore_all()
+    enabled, armed = await manager.listening_summary()
+    log.info(
+        "پس از راه‌اندازی: %d کاربر بازیابی شد، %d از %d کار فعال گوش داده می‌شود",
+        restored, armed, enabled,
+    )
+    if failed_users or armed < enabled:
+        asyncio.create_task(
+            alerts.send(
+                "⚠️ <b>پس از راه‌اندازی، همه‌ی کارها برنگشتند</b>\n\n"
+                f"کار فعال: <b>{enabled}</b>\n"
+                f"در حال گوش دادن: <b>{armed}</b>\n"
+                + (
+                    f"اکانت‌هایی که وصل نشدند: <code>"
+                    f"{', '.join(str(uid) for uid in failed_users[:10])}</code>\n"
+                    if failed_users
+                    else ""
+                )
+                + "\nربات خودش دوباره تلاش می‌کند. اگر برطرف نشد، لاگ را ببینید:\n"
+                "<code>journalctl -u telkap -n 100</code>",
+                bot=bot,
+                cap=roles.CAP_SYSTEM,
+                key="restore-gap",
+                cooldown=900,
+            ),
+            name="restore-alert",
+        )
 
     background = [
         asyncio.create_task(subscription_watchdog(notify), name="subscriptions"),
@@ -191,6 +222,9 @@ async def main() -> None:
         asyncio.create_task(feedworker.run_forever(), name="feeds"),
         asyncio.create_task(cryptocheck.run_forever(notify), name="usdt"),
         asyncio.create_task(usdtrate.run_forever(), name="usdtrate"),
+        # اکانتی که پس از ری‌استارت برنگشته باشد را خودش پیدا و وصل
+        # می‌کند، به‌جای اینکه تا ری‌استارت بعدی مرده بماند.
+        asyncio.create_task(manager.heal_forever(), name="heal"),
     ]
 
     try:
