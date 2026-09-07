@@ -1140,6 +1140,7 @@ async def health(request: web.Request) -> web.Response:
                 "state": item.state,
                 "problems": item.problems,
                 "fixes": item.fixes,
+                "notes": item.notes,
                 "copied": item.copied,
                 "last_copy": item.last_copy.isoformat() if item.last_copy else None,
             }

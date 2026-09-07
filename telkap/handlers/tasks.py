@@ -185,8 +185,12 @@ async def cb_health(call: CallbackQuery) -> None:
         lines.append(f"\n{mark} <b>{item.title[:40]}</b>")
         lines += [f"• {line}" for line in item.problems]
         lines += [f"  ← {line}" for line in item.fixes]
+        # حقایق همیشه می‌آیند، حتی وقتی مشکلی نیست — چون «سه روز است
+        # چیزی نیامده» فقط کنارِ «مبدأ هم سه روز است ساکت است» معنی
+        # پیدا می‌کند.
+        lines += [f"· {line}" for line in item.notes]
         if item.enabled and item.state == checkup.OK:
-            lines.append(f"• تا حالا {fa_num(item.copied)} پست کپی شده.")
+            lines.append(f"· تا حالا {fa_num(item.copied)} پست کپی شده.")
 
     text = "\n".join(lines)
     # پیام تلگرام سقف دارد و گزارشِ ده کار به آن می‌رسد

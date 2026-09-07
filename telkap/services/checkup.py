@@ -25,7 +25,7 @@ from __future__ import annotations
 import asyncio
 import logging
 from dataclasses import dataclass, field
-from datetime import datetime
+from datetime import UTC, datetime, timedelta
 
 from sqlalchemy import func, select
 
@@ -33,6 +33,7 @@ from telkap.db import get_session
 from telkap.models import Destination, RetryItem, Task, User
 from telkap.services import health, subscription
 from telkap.services.userbot import manager
+from telkap.texts import fa_num
 
 log = logging.getLogger(__name__)
 
@@ -59,6 +60,9 @@ class TaskHealth:
     fixes: list[str] = field(default_factory=list)
     copied: int = 0
     last_copy: datetime | None = None
+    # حقایقِ خنثی — نه مشکل‌اند نه راه‌حل، ولی بدون آن‌ها نمی‌شود
+    # فهمید «چیزی نیامده» یعنی خرابی یا یعنی مبدأ ساکت بوده
+    notes: list[str] = field(default_factory=list)
 
     def fail(self, problem: str, fix: str = "") -> None:
         self.state = BAD
@@ -191,6 +195,70 @@ def _blank(task: Task) -> TaskHealth:
     )
 
 
+def _ago(value) -> str:
+    """«چقدر پیش»، به فارسیِ خوانا."""
+    from telkap.models import utcnow
+
+    if value is None:
+        return "هیچ‌وقت"
+    if value.tzinfo is None:
+        value = value.replace(tzinfo=UTC)
+    seconds = max(0, int((utcnow() - value).total_seconds()))
+    if seconds < 90:
+        return "همین حالا"
+    if seconds < 3600:
+        return f"{fa_num(seconds // 60)} دقیقه پیش"
+    if seconds < 86_400:
+        return f"{fa_num(seconds // 3600)} ساعت پیش"
+    return f"{fa_num(seconds // 86_400)} روز پیش"
+
+
+async def _compare_with_source(health: TaskHealth, task: Task, client, source) -> None:
+    """آخرین پستِ مبدأ را با آخرین کپیِ ما می‌سنجد."""
+    try:
+        recent = await client.get_messages(source, limit=1)
+    except Exception:
+        log.debug("خواندن آخرین پست مبدأ %s نشد", task.source_ref, exc_info=True)
+        return
+
+    latest = (list(recent) or [None])[0]
+    if latest is None or getattr(latest, "date", None) is None:
+        health.notes.append("کانال مبدأ هیچ پستی ندارد.")
+        return
+
+    posted = latest.date
+    if posted.tzinfo is None:
+        posted = posted.replace(tzinfo=UTC)
+    health.notes.append(f"آخرین پست مبدأ: {_ago(posted)}")
+    health.notes.append(f"آخرین کپی ما: {_ago(task.last_copy_at)}")
+
+    copied_at = task.last_copy_at
+    if copied_at is not None and copied_at.tzinfo is None:
+        copied_at = copied_at.replace(tzinfo=UTC)
+
+    # چند دقیقه ارفاق، چون خودِ کپی چند ثانیه طول می‌کشد و ساعتِ
+    # تلگرام و ما دقیقاً یکی نیست
+    if copied_at is not None and posted <= copied_at + timedelta(minutes=2):
+        return
+
+    if copied_at is None:
+        health.fail(
+            "کانال مبدأ پست دارد ولی این کار تا حالا حتی یک پست کپی نکرده.",
+            "با «تست» ببینید فیلترها چه می‌کنند؛ اگر تست هم چیزی نداد،"
+            " کار را خاموش و روشن کنید.",
+        )
+        return
+
+    # <b>این لزوماً خرابی نیست</b> و نباید طوری گفته شود که انگار
+    # هست: فیلترها، تکراری بودن، یا نوع رسانه هم می‌توانند دلیلش
+    # باشند. ولی کاربر باید بداند که فاصله‌ای هست.
+    health.warn(
+        "مبدأ بعد از آخرین کپیِ ما پست گذاشته است.",
+        "اگر آن پست‌ها باید می‌رفتند، «تست» را بزنید تا ببینید کدام"
+        " فیلتر جلویشان را گرفته.",
+    )
+
+
 async def _check_task(
     user_id: int, task: Task, extras: list[Destination], client
 ) -> TaskHealth:
@@ -248,6 +316,16 @@ async def _check_task(
             "روی کانال مبدأ گوش داده نمی‌شود؛ پست‌های تازه اصلاً به ربات نمی‌رسند.",
             "کار را یک بار خاموش و روشن کنید تا دوباره وصل شود.",
         )
+
+    # <b>نیمه‌ی گمشده‌ی هر تشخیصی.</b>
+    #
+    # تا امروز فقط می‌دانستیم آخرین بار کِی <b>کپی</b> کرده‌ایم. ولی
+    # «سه روز است چیزی نیامده» دو معنیِ کاملاً متفاوت دارد: یا مبدأ
+    # ساکت بوده، یا مبدأ پست گذاشته و ما نگرفته‌ایم. این دو از بیرون
+    # یک شکل‌اند و بدون پرسیدن از تلگرام قابل تفکیک نیستند — پس هر
+    # بار به حدس زدن می‌گذشت.
+    if source is not None:
+        await _compare_with_source(health, task, client, source)
 
     # ── مقصدها ──────────────────────────────────────────────────────
     targets = [(task.dest_ref, task.dest_title)]

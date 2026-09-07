@@ -638,9 +638,12 @@ input.find { margin: 18px 0 12px; }
         task.fixes.forEach(function (line) {
           item.appendChild(el('div', 'mini', '← ' + line));
         });
+        (task.notes || []).forEach(function (line) {
+          item.appendChild(el('div', 'mini', '· ' + line));
+        });
         if (task.enabled && task.state === 'ok') {
           item.appendChild(el('div', 'mini',
-            'تا حالا ' + fa(task.copied) + ' پست کپی شده.'));
+            '· تا حالا ' + fa(task.copied) + ' پست کپی شده.'));
         }
 
         item.classList.add('tap');

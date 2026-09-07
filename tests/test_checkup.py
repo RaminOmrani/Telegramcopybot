@@ -227,3 +227,151 @@ async def test_a_vanished_source_is_named(tmp_path, monkeypatch):
     finally:
         manager._runtimes.clear()
         await db_module.close_db()
+
+
+class _WithPosts(_Client):
+    """کلاینتی که آخرین پست مبدأ را در زمان دلخواه برمی‌گرداند."""
+
+    def __init__(self, posted) -> None:
+        self.posted = posted
+
+    async def get_messages(self, entity, limit=1):
+        from types import SimpleNamespace
+
+        if self.posted is None:
+            return []
+        return [SimpleNamespace(date=self.posted)]
+
+
+def _telegram_with_posts(monkeypatch, posted, *, entities=None):
+    from telkap.services.userbot import manager
+
+    client = _WithPosts(posted)
+
+    async def ensure_client(user_id):
+        return client
+
+    async def resolve_entity(c, ref):
+        return (entities or {"@source": _Entity(), "@dest": _Entity()}).get(ref)
+
+    monkeypatch.setattr(manager, "ensure_client", ensure_client)
+    monkeypatch.setattr(manager, "resolve_entity", staticmethod(resolve_entity))
+
+
+async def _ready(db_module, monkeypatch, user_id: int = 5):
+    from telkap.models import User
+
+    async with db_module.get_session() as db:
+        person = await db.get(User, user_id)
+        if person is None:
+            db.add(User(id=user_id, first_name="کاربر", session_enc="x"))
+        else:
+            person.session_enc = "x"
+        await db.commit()
+    await _plan_always_active(monkeypatch)
+
+
+@pytest.mark.asyncio
+async def test_a_quiet_source_is_not_reported_as_broken(tmp_path, monkeypatch):
+    """<b>نیمی از سؤال‌هایی که پرسیده می‌شود همین است.</b>
+
+    «سه روز است چیزی نیامده» اگر مبدأ هم سه روز ساکت بوده باشد، اصلاً
+    خرابی نیست. بدون این مقایسه، هر بار باید حدس می‌زدیم.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.models import Task
+        from telkap.services import checkup
+        from telkap.services.userbot import manager
+
+        manager._runtimes.clear()
+        await _ready(db_module, monkeypatch)
+
+        long_ago = datetime.now(UTC) - timedelta(days=3)
+        task_id = await _make_task(db_module, 5, source_id=-555)
+        async with db_module.get_session() as db:
+            row = await db.get(Task, task_id)
+            row.last_copy_at = long_ago
+            await db.commit()
+
+        _arm(5, -555)
+        # مبدأ هم از همان موقع ساکت بوده
+        _telegram_with_posts(monkeypatch, long_ago - timedelta(minutes=5))
+
+        report = await checkup.check_user(5)
+        mine = [item for item in report.tasks if item.task_id == task_id][0]
+
+        assert mine.state == checkup.OK, mine.problems
+        assert any("آخرین پست مبدأ" in note for note in mine.notes), mine.notes
+    finally:
+        manager._runtimes.clear()
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_a_source_that_posted_after_our_last_copy_is_flagged(tmp_path, monkeypatch):
+    """و نیمه‌ی دیگر: مبدأ پست گذاشته و ما نگرفته‌ایم."""
+    from datetime import UTC, datetime, timedelta
+
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.models import Task
+        from telkap.services import checkup
+        from telkap.services.userbot import manager
+
+        manager._runtimes.clear()
+        await _ready(db_module, monkeypatch)
+
+        now = datetime.now(UTC)
+        task_id = await _make_task(db_module, 5, source_id=-556)
+        async with db_module.get_session() as db:
+            row = await db.get(Task, task_id)
+            row.last_copy_at = now - timedelta(hours=6)
+            await db.commit()
+
+        _arm(5, -556)
+        _telegram_with_posts(monkeypatch, now - timedelta(minutes=20))
+
+        report = await checkup.check_user(5)
+        mine = [item for item in report.tasks if item.task_id == task_id][0]
+
+        assert mine.state == checkup.WARN, mine.problems
+        assert any("بعد از آخرین کپی" in line for line in mine.problems)
+    finally:
+        manager._runtimes.clear()
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_a_task_that_never_copied_while_the_source_posts_is_broken(
+    tmp_path, monkeypatch
+):
+    """<b>دقیقاً حالتی که در سرور واقعی دیدیم.</b>
+
+    copied=0 و last_copy=None، در حالی که مبدأ پست دارد. این دیگر
+    «مبدأ ساکت است» نیست.
+    """
+    from datetime import UTC, datetime, timedelta
+
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import checkup
+        from telkap.services.userbot import manager
+
+        manager._runtimes.clear()
+        await _ready(db_module, monkeypatch)
+
+        task_id = await _make_task(db_module, 5, source_id=-557)
+        _arm(5, -557)
+        _telegram_with_posts(monkeypatch, datetime.now(UTC) - timedelta(minutes=10))
+
+        report = await checkup.check_user(5)
+        mine = [item for item in report.tasks if item.task_id == task_id][0]
+
+        assert mine.state == checkup.BAD, mine.problems
+        assert any("حتی یک پست کپی نکرده" in line for line in mine.problems)
+    finally:
+        manager._runtimes.clear()
+        await db_module.close_db()
