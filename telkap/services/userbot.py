@@ -25,12 +25,28 @@ from telethon.sessions import StringSession
 from telethon.tl.functions.messages import CheckChatInviteRequest
 from telethon.utils import get_peer_id
 
+from telkap import proxy
 from telkap.config import get_settings
 from telkap.crypto import decrypt, encrypt
 from telkap.db import get_session, log_activity
 from telkap.models import Task, User
+from telkap.services import health
 
 log = logging.getLogger(__name__)
+
+# گرفتن پست‌های جامانده می‌تواند کند باشد؛ بدون مهلت، یک کاربرِ
+# گیرکرده جلوی بازیابیِ بقیه را می‌گیرد.
+CATCH_UP_TIMEOUT = 45
+
+# مهلت بازیابیِ هر کاربر در استارتاپ، و چندتا هم‌زمان. وصل کردنِ صد
+# کلاینت در یک لحظه هم شبکه را می‌بندد هم توجه تلگرام را جلب می‌کند.
+RESTORE_TIMEOUT = 90
+RESTORE_CONCURRENCY = 5
+
+# هر چند وقت یک‌بار بگردیم دنبال کارِ فعالی که گوش داده نمی‌شود.
+# پنج دقیقه: آن‌قدر کوتاه که کسی نصفِ روز بی‌خبر نماند، آن‌قدر بلند
+# که خودش باری نشود.
+HEAL_INTERVAL_SECONDS = 300
 
 
 class LoginError(Exception):
@@ -60,21 +76,38 @@ class UserbotManager:
         self._pending: dict[int, PendingLogin] = {}
         self._locks: dict[int, asyncio.Lock] = {}
         self._copier = None  # به‌صورت تنبل ست می‌شود تا وابستگی حلقوی نشود
+        self._notifier = None
 
     def bind_copier(self, copier) -> None:
         self._copier = copier
 
+    def bind_notifier(self, notifier) -> None:
+        """تابعی که پیام به کاربر می‌فرستد، برای هشدارهای سلامت اکانت."""
+        self._notifier = notifier
+
     # ------------------------------------------------------------------ ورود
     def _new_client(self, session: str = "") -> TelegramClient:
         cfg = get_settings()
-        return TelegramClient(
+        client = TelegramClient(
             StringSession(session),
             cfg.api_id,
             cfg.api_hash,
-            device_model="Copy Bot",
-            system_version="1.0",
-            app_version="1.0",
+            # اثر انگشت باید شبیه یک کلاینت معمولی باشد. نام قبلی
+            # («Copy Bot») عملاً خودِ اکانت را به‌عنوان ابزار خودکار معرفی
+            # می‌کرد — هم در فهرست دستگاه‌های کاربر، هم برای تلگرام.
+            device_model=cfg.device_model,
+            system_version=cfg.system_version,
+            app_version=cfg.app_version,
+            lang_code="fa",
+            system_lang_code="fa",
+            proxy=proxy.for_telethon(cfg.proxy_url),
+            connection_retries=5,
+            retry_delay=2,
         )
+        # فرمت‌ها را خودمان با entity می‌فرستیم؛ اگر Telethon متن را دوباره
+        # به‌عنوان markdown تفسیر کند، نویسه‌هایی مثل * و _ متن را خراب می‌کنند
+        client.parse_mode = None
+        return client
 
     async def start_login(self, user_id: int, phone: str) -> None:
         """کد ورود را به شماره‌ی کاربر ارسال می‌کند."""
@@ -138,6 +171,7 @@ class UserbotManager:
             user.phone = pending.phone
             user.account_id = me.id
             user.account_name = " ".join(filter(None, [me.first_name, me.last_name])) or me.username
+            user.account_premium = bool(getattr(me, "premium", False))
             await db.commit()
         self._pending.pop(user_id, None)
         # همان کلاینت متصل را به‌عنوان رانتایم نگه می‌داریم
@@ -185,14 +219,21 @@ class UserbotManager:
                 await client.connect()
                 if not await client.is_user_authorized():
                     raise AuthKeyUnregisteredError(request=None)
-            except (AuthKeyUnregisteredError, SessionRevokedError):
+            except (AuthKeyUnregisteredError, SessionRevokedError) as exc:
+                # تا امروز اینجا بی‌صدا خروج انجام می‌شد و کاربر فقط
+                # می‌دید ربات کار نمی‌کند؛ حالا دلیلش را می‌گوییم
                 log.warning("سشن کاربر %s باطل شده است", user_id)
+                await health.record(user_id, health.classify(exc), notifier=self._notifier)
                 await self.logout(user_id, revoked=True)
                 return None
-            except Exception:
+            except Exception as exc:
                 log.exception("اتصال کلاینت کاربر %s ناموفق بود", user_id)
+                diagnosis = health.classify(exc)
+                if diagnosis.state != health.STATE_OK:
+                    await health.record(user_id, diagnosis, notifier=self._notifier)
                 return None
 
+            await health.clear(user_id)          # اتصال موفق یعنی دوباره سالم است
             self._runtimes[user_id] = UserRuntime(client=client)
             return client
 
@@ -233,6 +274,10 @@ class UserbotManager:
             await runtime.client.disconnect()
         except Exception:
             log.debug("قطع کلاینت ناموفق بود", exc_info=True)
+        # صف‌های ترتیب هم بسته می‌شوند؛ بدون این، هر وصل و قطع یک
+        # کارگرِ بیکار جا می‌گذارد که تا پایان عمر پروسه می‌ماند.
+        if self._copier is not None:
+            self._copier.stop_user(user_id)
 
     # ------------------------------------------------------------- هندلرها
     async def reload_user(self, user_id: int) -> int:
@@ -289,14 +334,66 @@ class UserbotManager:
         client.add_event_handler(delete_handler, events.MessageDeleted(chats=chat_ids))
         runtime.handlers.extend([new_handler, album_handler, edit_handler, delete_handler])
 
+        await self._catch_up(user_id, client)
+
         log.info("کاربر %s: %d کار فعال روی %d کانال", user_id, len(tasks), len(set(chat_ids)))
         return len(tasks)
+
+    async def _catch_up(self, user_id: int, client) -> None:
+        """پست‌هایی که وقتی قطع بودیم منتشر شده‌اند را می‌گیرد.
+
+        <b>این جدی‌ترین ایرادی بود که داشتیم.</b> تلگرام به‌روزرسانی‌ها
+        را فقط به کلاینتِ متصل می‌فرستد. هر بار که ربات ری‌استارت
+        می‌شد — و برای هر به‌روزرسانی می‌شود — پست‌هایی که در همان چند
+        ثانیه منتشر شده بودند <b>برای همیشه</b> گم می‌شدند: نه کپی
+        می‌شدند، نه خطایی می‌دادند، نه ردی در لاگ می‌گذاشتند. از بیرون
+        دقیقاً شبیه «مبدا چیزی منتشر نکرده» بود.
+
+        <b>چرا اینجا و نه با catch_up=True در سازنده.</b> خودِ مستند
+        تلethon می‌گوید این را باید <b>پس از ثبت هندلرها</b> صدا زد،
+        وگرنه به‌روزرسانی‌هایی که می‌آورد هندلری برای پردازش ندارند و
+        دور ریخته می‌شوند. سازنده آن را حین connect اجرا می‌کند، یعنی
+        پیش از هندلرها.
+
+        <b>و چرا مهلت دارد.</b> این کار می‌تواند کند باشد؛ بدون مهلت،
+        یک کاربرِ گیرکرده جلوی بازیابیِ بقیه را می‌گرفت.
+        """
+        try:
+            await asyncio.wait_for(client.catch_up(), CATCH_UP_TIMEOUT)
+        except TimeoutError:
+            log.warning(
+                "گرفتن پست‌های جامانده‌ی کاربر %s بیش از %ds طول کشید؛ رها شد",
+                user_id, CATCH_UP_TIMEOUT,
+            )
+        except Exception:
+            log.exception("گرفتن پست‌های جامانده‌ی کاربر %s ناموفق بود", user_id)
 
     def tasks_for_chat(self, user_id: int, chat_id: int) -> list[int]:
         runtime = self._runtimes.get(user_id)
         if not runtime:
             return []
         return runtime.source_map.get(chat_id, [])
+
+    def is_listening(self, user_id: int, chat_id: int | None) -> bool:
+        """آیا همین حالا روی این کانال گوش می‌دهیم.
+
+        <b>چرا این لازم شد.</b> اگر کانالی در source_map نباشد، پیام‌هایش
+        به هیچ کاری نمی‌رسند و <b>هیچ ردی هم نمی‌گذارند</b> — نه کپی، نه
+        رد، نه خطا. از بیرون دقیقاً شبیه «مبدا چیزی منتشر نکرده» است، و
+        تشخیصشان از هم بدون این تابع ممکن نبود.
+        """
+        if chat_id is None:
+            return False
+        runtime = self._runtimes.get(user_id)
+        return bool(runtime and chat_id in runtime.source_map)
+
+    def is_connected(self, user_id: int) -> bool:
+        runtime = self._runtimes.get(user_id)
+        return bool(runtime and runtime.client.is_connected())
+
+    def listening_chats(self, user_id: int) -> list[int]:
+        runtime = self._runtimes.get(user_id)
+        return list(runtime.source_map) if runtime else []
 
     # ------------------------------------------------------------- کمکی‌ها
     @staticmethod
@@ -341,20 +438,122 @@ class UserbotManager:
             log.debug("resolve نشدن «%s»", ref, exc_info=True)
             return None
 
-    async def restore_all(self) -> None:
-        """در استارتاپ، همه‌ی کاربرانی که سشن دارند را دوباره وصل می‌کند."""
+    async def restore_all(self) -> tuple[int, list[int]]:
+        """در استارتاپ، همه‌ی کاربرانی که سشن دارند را دوباره وصل می‌کند.
+
+        خروجی: (چند کاربر بازیابی شد، فهرست کاربرانی که نشد).
+
+        <b>چرا موازی و با مهلت.</b> قبلاً یکی‌یکی و بی‌مهلت بود: یک
+        کاربر که اتصالش گیر می‌کرد — شبکه، محدودیت تلگرام — جلوی
+        بازیابیِ <b>همه‌ی</b> کاربرانِ بعد از خودش را می‌گرفت، و چون
+        این کار پیش از بالا آمدن ربات انجام می‌شود، کلِ سرویس بالا
+        نمی‌آمد.
+
+        <b>و چرا سقف هم‌زمانی.</b> وصل کردن صد کلاینت در یک لحظه، هم
+        شبکه را می‌بندد هم توجه تلگرام را جلب می‌کند.
+        """
         async with get_session() as db:
             rows = await db.execute(select(User.id).where(User.session_enc.is_not(None)))
             user_ids = [row for row in rows.scalars()]
         if not user_ids:
             log.info("هیچ سشن ذخیره‌شده‌ای برای بازیابی نبود")
-            return
+            return 0, []
+
         log.info("بازیابی %d سشن کاربری...", len(user_ids))
+        gate = asyncio.Semaphore(RESTORE_CONCURRENCY)
+        failed: list[int] = []
+
+        async def one(user_id: int) -> None:
+            async with gate:
+                try:
+                    await asyncio.wait_for(
+                        self.reload_user(user_id), RESTORE_TIMEOUT
+                    )
+                except TimeoutError:
+                    failed.append(user_id)
+                    log.error(
+                        "بازیابی کاربر %s بیش از %ds طول کشید؛ رها شد",
+                        user_id, RESTORE_TIMEOUT,
+                    )
+                except Exception:
+                    failed.append(user_id)
+                    log.exception("بازیابی کاربر %s ناموفق بود", user_id)
+
+        await asyncio.gather(*(one(user_id) for user_id in user_ids))
+
+        done = len(user_ids) - len(failed)
+        log.info("بازیابی تمام شد: %d از %d", done, len(user_ids))
+        return done, failed
+
+    async def listening_summary(self) -> tuple[int, int]:
+        """(چند کارِ فعال در دیتابیس هست، چندتاشان واقعاً گوش داده می‌شوند).
+
+        <b>چرا لازم است.</b> کارِ فعالی که هندلر ندارد هیچ نشانه‌ای
+        نمی‌دهد: نه خطا، نه لاگ. از بیرون شبیه «مبدا پست نزده» است.
+        این تنها راهِ فهمیدنِ اختلاف است.
+        """
+        async with get_session() as db:
+            rows = await db.execute(select(Task).where(Task.enabled.is_(True)))
+            tasks = list(rows.scalars())
+
+        armed = 0
+        for task in tasks:
+            runtime = self._runtimes.get(task.user_id)
+            if runtime and task.id in runtime.source_map.get(task.source_id or 0, []):
+                armed += 1
+        return len(tasks), armed
+
+    async def heal(self) -> int:
+        """کارِ فعالی که گوش داده نمی‌شود را دوباره وصل می‌کند.
+
+        <b>چرا این لازم شد.</b> ری‌استارت — که برای هر به‌روزرسانی
+        اتفاق می‌افتد — گاهی یک اکانت را برنمی‌گرداند: شبکه یک لحظه
+        قطع بوده، تلگرام محدودیت گذاشته، هر چیزی. تا امروز آن اکانت
+        <b>تا ری‌استارت بعدی</b> مرده می‌ماند و هیچ‌کس هم خبردار
+        نمی‌شود، چون کارِ بی‌هندلر نه خطا می‌دهد نه لاگ.
+
+        حالا هر چند دقیقه خودش می‌گردد و وصلشان می‌کند. خروجی: تعداد
+        کاربرانی که برگشتند.
+        """
+        async with get_session() as db:
+            rows = await db.execute(
+                select(Task.user_id).where(Task.enabled.is_(True)).distinct()
+            )
+            user_ids = [uid for uid in rows.scalars()]
+
+        fixed = 0
         for user_id in user_ids:
+            runtime = self._runtimes.get(user_id)
+            healthy = (
+                runtime is not None
+                and runtime.client.is_connected()
+                and bool(runtime.source_map)
+            )
+            if healthy:
+                continue
             try:
-                await self.reload_user(user_id)
+                if await asyncio.wait_for(
+                    self.reload_user(user_id), RESTORE_TIMEOUT
+                ):
+                    fixed += 1
+                    log.info("کاربر %s دوباره وصل شد", user_id)
+            except TimeoutError:
+                log.warning("وصل کردن دوباره‌ی کاربر %s مهلت را رد کرد", user_id)
             except Exception:
-                log.exception("بازیابی کاربر %s ناموفق بود", user_id)
+                log.exception("وصل کردن دوباره‌ی کاربر %s ناموفق بود", user_id)
+        return fixed
+
+    async def heal_forever(self) -> None:
+        while True:
+            try:
+                await asyncio.sleep(HEAL_INTERVAL_SECONDS)
+                fixed = await self.heal()
+                if fixed:
+                    log.info("خوددرمانی: %d اکانت دوباره وصل شد", fixed)
+            except asyncio.CancelledError:
+                raise
+            except Exception:
+                log.exception("خوددرمانی با خطا مواجه شد")
 
     async def shutdown(self) -> None:
         for user_id in list(self._runtimes):

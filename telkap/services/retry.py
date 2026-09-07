@@ -14,7 +14,7 @@ from sqlalchemy import select
 
 from telkap.db import get_session, log_activity
 from telkap.models import RetryItem, Task, utcnow
-from telkap.services.copier import RETRY_BACKOFF
+from telkap.services.copier import RETRY_BACKOFF, SendFailed
 
 log = logging.getLogger(__name__)
 
@@ -86,7 +86,18 @@ class RetryWorker:
             return False
 
         try:
-            sent = await self.copier.process(item.user_id, item.task_id, messages)
+            # <b>retrying=True حیاتی است.</b> بدون آن، شکستِ ارسال یک
+            # آیتمِ تازه در صف می‌ساخت (با شمارنده‌ی صفر) و همین آیتم
+            # بلافاصله دور ریخته می‌شد — یعنی سقفِ تلاش هیچ‌وقت
+            # نمی‌رسید و یک پستِ نرفتنی هر دقیقه، تا ابد، دوباره
+            # فرستاده می‌شد. آماری که این را لو داد: ۶۶ کپی موفق در
+            # برابر ۲۰۲۹ «ناموفق» در یک روز.
+            sent = await self.copier.process(
+                item.user_id, item.task_id, messages, retrying=True
+            )
+        except SendFailed as exc:
+            await self._reschedule(item, str(exc))
+            return False
         except Exception as exc:
             await self._reschedule(item, str(exc))
             return False
@@ -101,7 +112,9 @@ class RetryWorker:
             )
             return True
 
-        # فیلترها یا تکراری بودن جلویش را گرفت؛ تلاش دوباره فایده ندارد
+        # حالا که شکستِ ارسال جداگانه خبر می‌دهد، «False» فقط یک معنی
+        # دارد: فیلترها یا تکراری بودن جلویش را گرفت. تلاش دوباره
+        # فایده ندارد.
         await self._drop(item.id)
         return False
 

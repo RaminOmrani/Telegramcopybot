@@ -5,13 +5,14 @@ import hashlib
 import hmac
 
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import Message, TelegramObject, User as TgUser
+from aiogram.types import Message, TelegramObject
+from aiogram.types import User as TgUser
 
+from telkap import i18n
 from telkap.config import get_settings
 from telkap.db import get_session
 from telkap.models import User
 from telkap.services.subscription import active_plan_for, grant_trial_if_new
-from telkap.texts import NO_LOGIN, NO_SUBSCRIPTION
 
 
 class Flow(StatesGroup):
@@ -36,13 +37,57 @@ class Flow(StatesGroup):
     fwd_value = State()
 
     receipt = State()
+    tx_hash = State()          # هش تراکنش تتر، به‌جای تصویر رسید
+    credit_amount = State()
+    coupon_code = State()
+    gift_code = State()
+    topup_amount = State()
+    admin_gift = State()
     dest_add = State()
+    dest_override = State()
+    dest_route = State()
+    task_route = State()
+    import_settings = State()
 
     pin_set = State()
     pin_verify = State()
 
+    usdt_address = State()
+    usdt_rate = State()
+    usdt_margin = State()
+    card_number = State()
+    card_holder = State()
+    zarinpal_merchant = State()
+    web_username = State()
+    web_password = State()
+
     admin_grant = State()
     admin_broadcast = State()
+    admin_user_find = State()
+    admin_days = State()
+    admin_dm = State()
+    admin_join_add = State()
+    admin_credit = State()
+    admin_plan_value = State()
+    admin_credit_price = State()
+    admin_limit_value = State()
+    admin_referral_value = State()
+    admin_wallet = State()
+    admin_reseller = State()
+    admin_chatid = State()
+    admin_coupon = State()
+    admin_role = State()
+    admin_maint_note = State()
+
+    reseller_customer = State()
+
+    churn_note = State()
+
+    support_message = State()
+    support_reply = State()
+
+    watermark_logo = State()
+    watermark_input = State()
 
 
 async def get_or_create_user(tg_user: TgUser) -> User:
@@ -71,7 +116,7 @@ async def require_login(message: Message) -> User | None:
     """کاربر را برمی‌گرداند اگر اکانت کاربری‌اش متصل باشد، وگرنه هشدار می‌دهد."""
     user = await get_or_create_user(message.from_user)
     if not user.is_logged_in:
-        await message.answer(NO_LOGIN)
+        await message.answer(i18n.t("need.login"))
         return None
     return user
 
@@ -79,7 +124,7 @@ async def require_login(message: Message) -> User | None:
 async def require_subscription(message: Message):
     plan = await active_plan_for(message.from_user.id)
     if plan is None:
-        await message.answer(NO_SUBSCRIPTION)
+        await message.answer(i18n.t("need.subscription"))
     return plan
 
 

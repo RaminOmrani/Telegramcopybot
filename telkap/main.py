@@ -7,22 +7,47 @@ import sys
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
+from aiogram.client.session.aiohttp import AiohttpSession
 from aiogram.enums import ParseMode
+from aiogram.exceptions import TelegramNetworkError
 from aiogram.fsm.storage.memory import MemoryStorage
 from sqlalchemy import select
 
+from telkap import proxy, web
 from telkap.config import get_settings
 from telkap.db import close_db, get_session, init_db
+from telkap.handlers import approvals as approval_handlers
 from telkap.handlers import build_router
 from telkap.handlers import history as history_handlers
-from telkap.handlers import tasks as task_handlers
-from telkap.middlewares import BanMiddleware, ErrorLogMiddleware, ForceJoinMiddleware
+from telkap.middlewares import (
+    BanMiddleware,
+    ErrorLogMiddleware,
+    ForceJoinMiddleware,
+    LanguageMiddleware,
+    MaintenanceMiddleware,
+)
 from telkap.models import Task
-from telkap.services import backup, reminders
+from telkap.services import (
+    agentnudge,
+    alerts,
+    backup,
+    cryptocheck,
+    digest,
+    feedworker,
+    forcejoin,
+    maintenance,
+    planstore,
+    reminders,
+    renewal,
+    roles,
+    usdtrate,
+)
 from telkap.services.copier import Copier
 from telkap.services.history import HistoryCopier
+from telkap.services.pending import ReleaseWorker
 from telkap.services.retry import RetryWorker
 from telkap.services.subscription import active_plan_for
+from telkap.services.sweeper import Sweeper
 from telkap.services.userbot import manager
 
 log = logging.getLogger(__name__)
@@ -41,9 +66,9 @@ def setup_logging(level: str) -> None:
 
 
 def make_notifier(bot: Bot):
-    async def notify(user_id: int, text: str) -> None:
+    async def notify(user_id: int, text: str, markup=None) -> None:
         try:
-            await bot.send_message(user_id, text)
+            await bot.send_message(user_id, text, reply_markup=markup)
         except Exception:
             log.debug("ارسال اعلان به کاربر %s ناموفق بود", user_id, exc_info=True)
 
@@ -94,43 +119,168 @@ async def main() -> None:
     await init_db()
     cfg.download_dir.mkdir(parents=True, exist_ok=True)
 
+    session = None
+    if cfg.proxy_url:
+        try:
+            session = AiohttpSession(proxy=proxy.for_aiogram(cfg.proxy_url))
+            log.info("پروکسی فعال است: %s", proxy.describe(cfg.proxy_url))
+        except proxy.ProxyError as exc:
+            log.error("PROXY_URL نامعتبر است: %s", exc)
+            return
+        except ImportError:
+            log.exception(
+                "کتابخانه‌ی پروکسی socks نصب نیست:\n"
+                "    .venv\\Scripts\\pip install aiohttp-socks python-socks"
+            )
+            return
+        except Exception:
+            # پیام قبلی همیشه می‌گفت «aiohttp-socks را نصب کنید»، حتی وقتی
+            # نصب بود و ایراد از خودِ نشانی می‌آمد — که آدم را دنبال مشکلی
+            # می‌فرستد که وجود ندارد.
+            log.exception(
+                "ساخت اتصال پروکسی ناموفق بود.\n"
+                "PROXY_URL فعلی: %s\n"
+                "نشانی باید شکلی مثل socks5h://127.0.0.1:12334 داشته باشد.\n"
+                "با .\\nettest.bat می‌توانید درستی‌اش را بسنجید.",
+                cfg.proxy_url,
+            )
+            return
+
     bot = Bot(
         token=cfg.bot_token,
+        session=session,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML),
     )
     notify = make_notifier(bot)
+    # تا بخش‌هایی که Bot ندارند (مثل موتور کپی) هم بتوانند به ادمین هشدار بدهند
+    alerts.bind(bot)
 
     copier = Copier(manager, notifier=notify)
     manager.bind_copier(copier)
+    # تا کاربر بفهمد چرا اکانتش قطع یا محدود شده، نه اینکه فقط ببیند کار نمی‌کند
+    manager.bind_notifier(notify)
     history_copier = HistoryCopier(manager, copier, notifier=notify)
     history_handlers.bind(history_copier)
-    task_handlers.bind_history(history_copier)
 
     retry_worker = RetryWorker(manager, copier, notifier=notify)
+    # <b>تور ایمنی.</b> آپدیت‌های تلگرام می‌توانند بی‌صدا قطع شوند —
+    # اتصال برقرار، هندلرها سر جایشان، و هیچ پستی نیاید. این یکی هر
+    # چند دقیقه خودش سراغ مبدأها می‌رود تا آن سکوت بی‌صدا نماند.
+    sweeper = Sweeper(manager, copier)
+    release_worker = ReleaseWorker(manager, copier, notifier=notify)
+    # تا دکمه‌ی «تأیید» بتواند همان لحظه منتشر کند، نه در چرخه‌ی بعدی
+    approval_handlers.bind(release_worker)
 
     dispatcher = Dispatcher(storage=MemoryStorage())
     for observer in (dispatcher.message, dispatcher.callback_query):
         observer.middleware(ErrorLogMiddleware())
+        observer.middleware(LanguageMiddleware())
         observer.middleware(BanMiddleware())
+        observer.middleware(MaintenanceMiddleware())
         observer.middleware(ForceJoinMiddleware())
     dispatcher.include_router(build_router())
 
-    await manager.restore_all()
+    # طرح‌ها و قیمت‌های ویرایش‌شده‌ی ادمین باید پیش از هر درخواستی سر جایشان باشند
+    await planstore.load()
+    await forcejoin.seed_from_env()
+    # <b>بازیابی باید دیده شود، نه فقط انجام.</b> کارِ فعالی که هندلر
+    # ندارد هیچ نشانه‌ای نمی‌دهد — نه خطا، نه لاگ — و از بیرون شبیه
+    # «مبدا پست نزده» است. پس بعد از بازیابی می‌شماریم و اگر چیزی جا
+    # مانده باشد، به ادمین خبر می‌دهیم.
+    restored, failed_users = await manager.restore_all()
+    enabled, armed = await manager.listening_summary()
+    log.info(
+        "پس از راه‌اندازی: %d کاربر بازیابی شد، %d از %d کار فعال گوش داده می‌شود",
+        restored, armed, enabled,
+    )
+    # کنسول VNC هیچ حرف فارسی‌ای را نشان نمی‌دهد — همه را ♦ می‌کند. پس
+    # همان سه عدد یک بار هم لاتین لاگ می‌شوند تا از روی کنسول خواندنی
+    # باشند: journalctl -u telkap | grep startup:
+    log.info("startup: restored=%d armed=%d enabled=%d", restored, armed, enabled)
+    if failed_users or armed < enabled:
+        asyncio.create_task(
+            alerts.send(
+                "⚠️ <b>پس از راه‌اندازی، همه‌ی کارها برنگشتند</b>\n\n"
+                f"کار فعال: <b>{enabled}</b>\n"
+                f"در حال گوش دادن: <b>{armed}</b>\n"
+                + (
+                    f"اکانت‌هایی که وصل نشدند: <code>"
+                    f"{', '.join(str(uid) for uid in failed_users[:10])}</code>\n"
+                    if failed_users
+                    else ""
+                )
+                + "\nربات خودش دوباره تلاش می‌کند. اگر برطرف نشد، لاگ را ببینید:\n"
+                "<code>journalctl -u telkap -n 100</code>",
+                bot=bot,
+                cap=roles.CAP_SYSTEM,
+                key="restore-gap",
+                cooldown=900,
+            ),
+            name="restore-alert",
+        )
 
     background = [
         asyncio.create_task(subscription_watchdog(notify), name="subscriptions"),
         asyncio.create_task(retry_worker.run_forever(), name="retry"),
+        asyncio.create_task(release_worker.run_forever(), name="release"),
         asyncio.create_task(reminders.run_forever(notify), name="reminders"),
-        asyncio.create_task(backup.run_forever(), name="backup"),
+        asyncio.create_task(digest.run_forever(notify), name="digest"),
+        asyncio.create_task(backup.run_forever(bot), name="backup"),
+        asyncio.create_task(renewal.run_forever(notify), name="renewal"),
+        asyncio.create_task(agentnudge.run_forever(notify), name="agentnudge"),
+        asyncio.create_task(maintenance.run_forever(), name="maintenance"),
+        asyncio.create_task(alerts.run_forever(bot), name="alerts"),
+        asyncio.create_task(feedworker.run_forever(), name="feeds"),
+        asyncio.create_task(cryptocheck.run_forever(notify), name="usdt"),
+        asyncio.create_task(usdtrate.run_forever(), name="usdtrate"),
+        # اکانتی که پس از ری‌استارت برنگشته باشد را خودش پیدا و وصل
+        # می‌کند، به‌جای اینکه تا ری‌استارت بعدی مرده بماند.
+        asyncio.create_task(manager.heal_forever(), name="heal"),
+        asyncio.create_task(sweeper.run_forever(), name="sweep"),
     ]
 
-    me = await bot.get_me()
+    try:
+        me = await bot.get_me()
+    except TelegramNetworkError as exc:
+        log.error(
+            "\n"
+            "──────────────────────────────────────────────\n"
+            "❌ اتصال به تلگرام برقرار نشد.\n"
+            "\n"
+            "این خطای کد نیست؛ یعنی شبکه‌ی شما به api.telegram.org راه نمی‌دهد.\n"
+            "\n"
+            "راه‌حل‌ها:\n"
+            "  ۱) VPN را در حالت TUN / Global روشن کنید و دوباره اجرا کنید\n"
+            "  ۲) یا در فایل .env پروکسی خود را بگذارید، مثلاً:\n"
+            "       PROXY_URL=socks5://127.0.0.1:10808\n"
+            "     (برای پروکسی socks این را هم نصب کنید: pip install aiohttp-socks)\n"
+            "\n"
+            "پروکسی فعلی: %s\n"
+            "جزئیات فنی: %s\n"
+            "──────────────────────────────────────────────",
+            proxy.describe(cfg.proxy_url),
+            exc,
+        )
+        for task in background:
+            task.cancel()
+        await asyncio.gather(*background, return_exceptions=True)
+        await bot.session.close()
+        await close_db()
+        return
+
     log.info("ربات @%s آماده است", me.username)
+
+    # پنل وب اگر در .env روشن باشد؛ اگر بالا نیاید ربات نباید زمین بخورد
+    try:
+        await web.start_panel(bot)
+    except Exception:
+        log.exception("پنل وب بالا نیامد؛ ربات بدون آن ادامه می‌دهد")
 
     try:
         await bot.delete_webhook(drop_pending_updates=True)
         await dispatcher.start_polling(bot)
     finally:
+        await web.stop_panel()
         for task in background:
             task.cancel()
         await asyncio.gather(*background, return_exceptions=True)
