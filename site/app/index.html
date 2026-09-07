@@ -1085,6 +1085,19 @@ input.find { margin: 18px 0 12px; }
       // خودش را دارد. محتوایشان موقع باز شدن خوانده می‌شود، نه
       // موقع باز شدن صفحه: کسی که فقط آمدهسوئیچی را بزند نباید
       // منتظر سه درخواست اضافه بماند.
+      // بخش هوش مصنوعی وقتی کلیدش روی سرور نباشد، سوئیچ‌هایش سبز
+      // می‌شوند و هیچ اتفاقی نمی‌افتد. همان «هیچ نشانه‌ای ندارد»ی که
+      // امروز چند بار به آن خوردیم — پس صریح گفته می‌شود.
+      if (!task.ai_ready) {
+        sectionBoxes.forEach(function (det, index) {
+          if (SECTIONS[index][0].indexOf('هوش مصنوعی') === -1) return;
+          var warn = el('div', 'hint');
+          warn.textContent = '⚠️ سرویس هوش مصنوعی روی این سرور فعال نیست؛'
+            + ' تا فعال نشود این گزینه‌ها اثری ندارند.';
+          det.querySelector('.inner').prepend(warn);
+        });
+      }
+
       body.appendChild(lazySection('📜 قواعد متنی', function (inner) {
         rulesPane(inner, taskId);
       }));

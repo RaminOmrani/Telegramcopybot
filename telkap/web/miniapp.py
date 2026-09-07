@@ -470,6 +470,12 @@ def _clean_settings(posted: dict, cfg: dict) -> tuple[dict, list[str]]:
     return cfg, problems
 
 
+def _ai_ready() -> bool:
+    from telkap.services import ai
+
+    return ai.configured()
+
+
 async def _own_task(user_id: int, task_id: int) -> Task | None:
     async with get_session() as db:
         task = await db.get(Task, task_id)
@@ -506,6 +512,10 @@ async def task_detail(request: web.Request) -> web.Response:
         "skipped": int(task.skipped_count or 0),
         "source": task.source_title or task.source_ref,
         "dest": task.dest_title or task.dest_ref,
+        # <b>بدون کلید، هوش مصنوعی بی‌صدا هیچ کاری نمی‌کند.</b> ربات
+        # دکمه‌اش را پنهان می‌کند؛ مینی‌اپ هم باید بداند، وگرنه کاربر
+        # سوئیچ را سبز می‌کند و هیچ‌وقت نمی‌فهمد چرا اثری ندارد.
+        "ai_ready": _ai_ready(),
         "extra_dests": [
             {"id": row.id, "ref": row.ref, "enabled": bool(row.enabled)}
             for row in extra

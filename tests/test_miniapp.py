@@ -1092,3 +1092,37 @@ async def test_a_real_image_is_stored_under_the_task_id(tmp_path, monkeypatch):
         assert task.settings["watermark_enabled"] is True
     finally:
         await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_the_app_is_told_when_ai_is_not_configured(tmp_path, monkeypatch):
+    """<b>همان الگویی که امروز چند بار به آن خوردیم.</b>
+
+    بدون کلید، هوش مصنوعی بی‌صدا هیچ کاری نمی‌کند — متن دست‌نخورده رد
+    می‌شود. ربات دکمه‌اش را پنهان می‌کند؛ مینی‌اپ هم باید بداند، وگرنه
+    کاربر سوئیچ را سبز می‌کند و هیچ‌وقت نمی‌فهمد چرا اثری ندارد.
+    """
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services import ai
+
+        task_id = await _own_task(db_module)
+        client = await _client(monkeypatch)
+        mine = {"X-Telegram-Init-Data": _fresh(7)}
+
+        monkeypatch.setattr(ai, "configured", lambda: False)
+        off = await (await client.get(f"/app/api/tasks/{task_id}", headers=mine)).json()
+        assert off["ai_ready"] is False
+
+        monkeypatch.setattr(ai, "configured", lambda: True)
+        on = await (await client.get(f"/app/api/tasks/{task_id}", headers=mine)).json()
+        assert on["ai_ready"] is True
+    finally:
+        await db_module.close_db()
+
+
+def test_the_app_page_warns_when_ai_is_off():
+    """پرچمِ سرور بدون نمایشش در صفحه، هیچ کاری نمی‌کند."""
+    page = _app_page()
+    assert "ai_ready" in page
+    assert "هوش مصنوعی روی این سرور فعال نیست" in page
