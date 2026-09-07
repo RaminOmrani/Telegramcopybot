@@ -47,6 +47,7 @@ from telkap.services.history import HistoryCopier
 from telkap.services.pending import ReleaseWorker
 from telkap.services.retry import RetryWorker
 from telkap.services.subscription import active_plan_for
+from telkap.services.sweeper import Sweeper
 from telkap.services.userbot import manager
 
 log = logging.getLogger(__name__)
@@ -162,6 +163,10 @@ async def main() -> None:
     history_handlers.bind(history_copier)
 
     retry_worker = RetryWorker(manager, copier, notifier=notify)
+    # <b>تور ایمنی.</b> آپدیت‌های تلگرام می‌توانند بی‌صدا قطع شوند —
+    # اتصال برقرار، هندلرها سر جایشان، و هیچ پستی نیاید. این یکی هر
+    # چند دقیقه خودش سراغ مبدأها می‌رود تا آن سکوت بی‌صدا نماند.
+    sweeper = Sweeper(manager, copier)
     release_worker = ReleaseWorker(manager, copier, notifier=notify)
     # تا دکمه‌ی «تأیید» بتواند همان لحظه منتشر کند، نه در چرخه‌ی بعدی
     approval_handlers.bind(release_worker)
@@ -231,6 +236,7 @@ async def main() -> None:
         # اکانتی که پس از ری‌استارت برنگشته باشد را خودش پیدا و وصل
         # می‌کند، به‌جای اینکه تا ری‌استارت بعدی مرده بماند.
         asyncio.create_task(manager.heal_forever(), name="heal"),
+        asyncio.create_task(sweeper.run_forever(), name="sweep"),
     ]
 
     try:
