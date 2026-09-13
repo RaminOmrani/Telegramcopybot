@@ -46,7 +46,28 @@ class Report:
     days: int = 7
     overall: Bucket = field(default_factory=Bucket)
     by_path: list[Bucket] = field(default_factory=list)
+    by_via: list[Bucket] = field(default_factory=list)
     slowest: list[DeliveryTiming] = field(default_factory=list)
+
+    @property
+    def sweep_share(self) -> int:
+        """چند درصدِ پست‌ها را <b>جارو</b> آورد، نه آپدیتِ لحظه‌ای.
+
+        <b>مهم‌ترین عددِ این گزارش.</b> جارو تور ایمنی است: هر پستی که
+        از آن راه می‌آید یعنی آپدیتِ لحظه‌ای‌اش نرسیده بود. چند درصد
+        طبیعی است؛ اگر این عدد بالا برود یعنی جریانِ آپدیت مرده و تور
+        ایمنی دارد خرابی را پنهان می‌کند — که از بیرون شبیه «سرویس
+        کمی کند است» به نظر می‌رسد، نه شبیه یک خرابی.
+        """
+        live = [b for b in self.by_via if b.label in DeliveryTiming.VIA_LIVE]
+        total = sum(bucket.count for bucket in live)
+        if not total:
+            return 0
+        swept = sum(
+            bucket.count for bucket in live
+            if bucket.label == DeliveryTiming.VIA_SWEEP
+        )
+        return round(swept * 100 / total)
 
 
 def _percentile(values: list[int], share: float) -> int:
@@ -87,18 +108,30 @@ async def report(*, days: int = 7, user_id: int | None = None, task_id: int | No
             statement = statement.where(DeliveryTiming.task_id == task_id)
         rows = list((await db.execute(statement)).scalars())
 
+    # <b>کپیِ آرشیو گذشته در آمارِ تأخیر نمی‌آید.</b> «تأخیر»ش برابرِ
+    # عمرِ خودِ پست است — چند ساعت یا چند ماه — و چیزی درباره‌ی سرعتِ
+    # ما نمی‌گوید. همین چند ردیف بود که «بدترین» را به ۵۸ ساعت می‌برد.
+    live = [row for row in rows if row.via != DeliveryTiming.VIA_HISTORY]
+
     by_path: dict[str, list[DeliveryTiming]] = {}
-    for row in rows:
+    for row in live:
         by_path.setdefault(row.path, []).append(row)
 
     buckets = [_bucket(path, group) for path, group in by_path.items()]
     buckets.sort(key=lambda bucket: -bucket.median)
 
+    by_via: dict[str, list[DeliveryTiming]] = {}
+    for row in rows:
+        by_via.setdefault(row.via or "unknown", []).append(row)
+    via_buckets = [_bucket(name, group) for name, group in by_via.items()]
+    via_buckets.sort(key=lambda bucket: -bucket.count)
+
     return Report(
         days=days,
-        overall=_bucket("همه", rows),
+        overall=_bucket("همه", live),
         by_path=buckets,
-        slowest=sorted(rows, key=lambda row: -row.seconds)[:15],
+        by_via=via_buckets,
+        slowest=sorted(live, key=lambda row: -row.seconds)[:15],
     )
 
 

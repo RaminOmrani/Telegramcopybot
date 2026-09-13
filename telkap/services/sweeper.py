@@ -30,7 +30,8 @@ import logging
 from sqlalchemy import func, select
 
 from telkap.db import get_session
-from telkap.models import MessageMap, Task
+from telkap.models import DeliveryTiming, MessageMap, Task
+from telkap.services import alerts
 
 log = logging.getLogger(__name__)
 
@@ -44,6 +45,20 @@ LOOKBACK = 30
 
 # مکث کوتاه بین مبدأها، تا جاروی دوره‌ای خودش به محدودیت نرخ نخورد
 BREATH = 0.4
+
+# <b>از کجا بفهمیم تور ایمنی تبدیل به جاده‌ی اصلی شده.</b>
+#
+# جارو قرار بود استثنا را بگیرد، نه قاعده را. ولی چون کارش را بی‌صدا و
+# درست انجام می‌دهد، وقتی جریانِ آپدیت‌ها کاملاً بمیرد هیچ‌کس خبردار
+# نمی‌شود: پست‌ها می‌روند، فقط یکی دو دقیقه دیرتر. از بیرون شبیه «کمی
+# کند» است، نه شبیه یک خرابیِ اساسی.
+#
+# دقیقاً همین اتفاق افتاده بود و از روی عدد کشفش کردیم: تأخیرِ دیده‌شده
+# (میانه ۱:۲۵، صدک۹۰ ۲:۴۷) تقریباً همان چیزی بود که یک جاروی سه‌دقیقه‌ای
+# پیش‌بینی می‌کند (۱:۳۰ و ۲:۴۲) — یعنی تقریباً همه‌ی پست‌ها از این راه
+# می‌آمدند. دیگر منتظر نمی‌مانیم کسی آمار را ببیند.
+SILENT_ROUNDS = 5            # این تعداد دور پشت سر هم، جارو چیزی پیدا کند
+SILENCE_COOLDOWN = 6 * 3600
 
 
 async def _already_sent(task_id: int, src_msg_id: int) -> bool:
@@ -97,16 +112,51 @@ class Sweeper:
     def __init__(self, manager, copier) -> None:
         self.manager = manager
         self.copier = copier
+        # چند دورِ پیاپی جارو چیزی پیدا کرده — یعنی آپدیتی نرسیده
+        self.streak = 0
 
     async def run_forever(self) -> None:
         while True:
             try:
                 await asyncio.sleep(SWEEP_INTERVAL)
-                await self.run_once()
+                await self.watch_round()
             except asyncio.CancelledError:
                 raise
             except Exception:
                 log.exception("چرخه‌ی جاروی مبدأها با خطا مواجه شد")
+
+    async def watch_round(self) -> int:
+        """یک دور جارو، به‌علاوه‌ی شمردنِ سکوتِ آپدیت‌ها.
+
+        <b>چرا جدا از `run_once`.</b> آن یکی فقط کارش را می‌کند و در
+        تست‌ها هم مستقیم صدا زده می‌شود. تشخیصِ «این دیگر استثنا نیست»
+        به <b>حافظه‌ی بین دورها</b> نیاز دارد، و آن حافظه جایش اینجاست
+        نه داخل کاری که ممکن است تک‌باره اجرا شود.
+        """
+        picked = await self.run_once()
+        if not picked:
+            self.streak = 0
+            return 0
+
+        self.streak += 1
+        if self.streak < SILENT_ROUNDS:
+            return picked
+
+        minutes = SILENT_ROUNDS * SWEEP_INTERVAL // 60
+        await alerts.send(
+            "📡 <b>آپدیت‌های لحظه‌ای نمی‌رسند.</b>\n\n"
+            f"در {minutes} دقیقه‌ی گذشته، هر بار که جارو سر زده پستِ "
+            "جامانده پیدا کرده — یعنی تلگرام دارد پست‌ها را می‌فرستد ولی "
+            "خبرش به ما نمی‌رسد و <b>جارو دارد سرویس را نگه می‌دارد</b>.\n\n"
+            "پست‌ها می‌روند، ولی با تأخیرِ فاصله‌ی جاروها به‌جای چند ثانیه. "
+            "معمولاً با ورودِ دوباره‌ی اکانت یا راه‌اندازی مجدد سرویس درست "
+            "می‌شود.\n\n"
+            "تفکیکش در پنل: «سرعت انتشار ← چه چیزی خبر داد».",
+            key="sweeper-carrying-service",
+            cooldown=SILENCE_COOLDOWN,
+        )
+        self.streak = 0
+        return picked
 
     async def run_once(self) -> int:
         """تعداد پست‌هایی که آپدیتشان نرسیده بود و اینجا گرفته شدند."""
@@ -180,7 +230,12 @@ class Sweeper:
                 if await _already_sent(task_id, group[0].id):
                     continue
                 try:
-                    if await self.copier.process(user_id, task_id, group):
+                    # برچسبِ «با جارو آمد» — همین یک کلمه فرقِ بین
+                    # «سرویس سالم است» و «تور ایمنی دارد سرویس را
+                    # نگه می‌دارد» را در آمار مشخص می‌کند.
+                    if await self.copier.process(
+                        user_id, task_id, group, via=DeliveryTiming.VIA_SWEEP
+                    ):
                         sent += 1
                 except Exception:
                     log.exception(

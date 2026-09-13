@@ -128,6 +128,15 @@ PATH_LABELS = {
     DeliveryTiming.PATH_REUPLOAD: "دانلود و آپلود مجدد",
 }
 
+VIA_LABELS = {
+    DeliveryTiming.VIA_UPDATE: "آپدیت لحظه‌ای",
+    DeliveryTiming.VIA_SWEEP: "جارو (آپدیتش نرسیده بود)",
+    DeliveryTiming.VIA_RETRY: "تلاش مجدد",
+    DeliveryTiming.VIA_QUEUE: "پس از صف انتظار",
+    DeliveryTiming.VIA_HISTORY: "کپی آرشیو",
+    "unknown": "نامشخص (پیش از این اندازه‌گیری)",
+}
+
 
 class Slot:
     """یک جای رزروشده در صفِ یک مبدا.
@@ -763,6 +772,7 @@ class Copier:
         *,
         released: str = "",
         retrying: bool = False,
+        via: str = DeliveryTiming.VIA_UPDATE,
     ) -> bool:
         """یک پیام یا آلبوم را برای یک کار پردازش و به همه‌ی مقصدها ارسال می‌کند.
 
@@ -779,6 +789,12 @@ class Copier:
         تلاشِ تازه، تا ابد، برای پستی که هرگز نمی‌رفت. با `retrying`،
         به‌جای آیتم تازه یک <code>SendFailed</code> پرتاب می‌شود تا
         همان آیتمِ موجود شمرده و در نهایت رها شود.
+
+        <b>`via` می‌گوید چه چیزی خبر داد که این پست هست.</b> پیش‌فرضش
+        آپدیتِ لحظه‌ای است چون راه اصلی همان است؛ جارو و صف‌ها خودشان
+        مقدار دیگری می‌دهند. این تنها چیزی است که «تأخیرِ واقعی» را از
+        «تأخیرِ جارو» جدا می‌کند، و بدون جدا کردنشان تور ایمنی، خرابیِ
+        زیرش را پنهان می‌کند.
         """
         waited = bool(released)      # هر انتظاری که بوده، تمام شده
         approved = released == PendingPost.REASON_APPROVAL
@@ -1061,7 +1077,7 @@ class Copier:
 
         if any_sent:
             await self._bump(task_id, user_id, skipped=False)
-            await self._record_latency(user_id, task_id, primary)
+            await self._record_latency(user_id, task_id, primary, via)
         elif routed_away or cross_dupes:
             # هیچ مقصدی این پست را نخواست — رد شدن است، نه خطا
             await self._bump(task_id, user_id, skipped=True)
@@ -1077,7 +1093,13 @@ class Copier:
             )
         return any_sent
 
-    async def _record_latency(self, user_id: int, task_id: int, message) -> None:
+    async def _record_latency(
+        self,
+        user_id: int,
+        task_id: int,
+        message,
+        via: str = DeliveryTiming.VIA_UPDATE,
+    ) -> None:
         """چقدر طول کشید تا این پست منتشر شود.
 
         <b>چرا اندازه می‌گیریم.</b> «گاهی یک دقیقه، گاهی بیست دقیقه»
@@ -1087,6 +1109,11 @@ class Copier:
         فاصله از <b>زمان خودِ پست در مبدا</b> حساب می‌شود، نه از زمانی
         که ما دیدیمش؛ وگرنه دیر رسیدنِ خودِ رویداد — که یکی از
         مظنون‌هاست — اصلاً در عدد نمی‌افتد.
+
+        <b>و `via` می‌گوید چه چیزی خبرمان کرد.</b> بدون آن، پستی که
+        جارو دو دقیقه بعد پیدایش کرده از پستی که آپدیت در دو ثانیه
+        آورده قابل تشخیص نیست — و آمارِ کلی فقط می‌گوید «دو دقیقه»،
+        بی‌آنکه بگوید چرا.
         """
         posted = getattr(message, "date", None)
         if posted is None:
@@ -1113,6 +1140,7 @@ class Copier:
                     published_at=posted,
                     seconds=seconds,
                     path=path,
+                    via=via or DeliveryTiming.VIA_UPDATE,
                     media_kind=kind,
                     size_bytes=size,
                 )

@@ -52,9 +52,11 @@ class _FakeManager:
 class _RecordingCopier:
     def __init__(self) -> None:
         self.seen: list[tuple[int, list[int]]] = []
+        self.vias: list[str] = []
 
-    async def process(self, user_id: int, task_id: int, messages) -> bool:
+    async def process(self, user_id: int, task_id: int, messages, **kwargs) -> bool:
         self.seen.append((task_id, [m.id for m in messages]))
+        self.vias.append(kwargs.get("via", ""))
         return True
 
 

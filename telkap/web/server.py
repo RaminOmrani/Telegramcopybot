@@ -1277,6 +1277,26 @@ async def timings_page(request: web.Request) -> web.Response:
             f"<td class='money'>{esc(_bytes(bucket.bytes_median))}</td></tr>"
         )
 
+    via_rows = []
+    for bucket in data.by_via:
+        label = copier.VIA_LABELS.get(bucket.label, bucket.label)
+        note = {
+            DeliveryTiming.VIA_UPDATE: "راه اصلی — تلگرام خودش خبر داد",
+            DeliveryTiming.VIA_SWEEP: "تور ایمنی؛ هر ردیف یعنی یک آپدیتِ نرسیده",
+            DeliveryTiming.VIA_RETRY: "بار اول نرفت و دوباره فرستاده شد",
+            DeliveryTiming.VIA_QUEUE: "انتظارش خواسته‌ی خودتان بود (تأیید/ساعت کاری)",
+            DeliveryTiming.VIA_HISTORY: "پستِ قدیمی؛ تأخیرش برابر عمرِ خودِ پست است",
+        }.get(bucket.label, "")
+        via_rows.append(
+            f"<tr><td>{esc(label)}"
+            + (f"<div class='mini'>{esc(note)}</div>" if note else "")
+            + "</td>"
+            f"<td class='money'>{esc(i18n.num(bucket.count, 'fa'))}</td>"
+            f"<td class='money'>{esc(_seconds(bucket.median))}</td>"
+            f"<td class='money'>{esc(_seconds(bucket.p90))}</td>"
+            f"<td class='money'>{esc(_seconds(bucket.worst))}</td></tr>"
+        )
+
     slow_rows = []
     for row in data.slowest:
         label = copier.PATH_LABELS.get(row.path, row.path)
@@ -1317,6 +1337,28 @@ async def timings_page(request: web.Request) -> web.Response:
             sub=(
                 "«مستقیم» یعنی فایل اصلاً دانلود نشده و حجمش هیچ ربطی به سرعت "
                 "ندارد. بقیه یعنی دانلود و آپلود دوباره — تنها جایی که حجم مهم است."
+            ),
+        )
+        + panel(
+            "چه چیزی خبر داد",
+            table(
+                ["راه", "تعداد", "میانه", "صدک ۹۰", "بدترین"],
+                via_rows,
+                empty="هنوز داده‌ای نیست.",
+                icon="📡",
+            ),
+            sub=(
+                "راه اصلی «آپدیت لحظه‌ای» است: تلگرام همان ثانیه خبر می‌دهد. "
+                "«جارو» تور ایمنی است و هر سه دقیقه مبدأها را خودش نگاه می‌کند — "
+                "پس هر پستی که از آنجا بیاید یعنی آپدیتش نرسیده بوده. سهم جارو "
+                "الان "
+                f"<b>{i18n.num(data.sweep_share, 'fa')}٪</b> است"
+                + (
+                    " — که یعنی جریان آپدیت‌ها سالم نیست و تأخیرِ دیده‌شده "
+                    "در واقع فاصله‌ی جاروهاست، نه کندیِ ارسال."
+                    if data.sweep_share >= 50
+                    else "."
+                )
             ),
         )
         + panel(

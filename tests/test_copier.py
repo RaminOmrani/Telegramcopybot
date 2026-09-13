@@ -18,6 +18,9 @@ class FakeMessage:
     reply_markup: object | None = None
     grouped_id: int | None = None
     entities: list | None = None
+    # زمان انتشار در مبدا. تأخیر از روی همین حساب می‌شود، پس تستی که
+    # به آمار سرعت کار دارد باید مقدارش را بدهد؛ بقیه بی‌تفاوت‌اند.
+    date: object | None = None
 
 
 @dataclass

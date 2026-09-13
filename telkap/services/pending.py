@@ -17,7 +17,7 @@ from sqlalchemy import delete, func, select
 from sqlalchemy.exc import IntegrityError
 
 from telkap.db import get_session, log_activity
-from telkap.models import PendingPost, Task, utcnow
+from telkap.models import DeliveryTiming, PendingPost, Task, utcnow
 
 log = logging.getLogger(__name__)
 
@@ -280,6 +280,7 @@ class ReleaseWorker:
 
         await drop(item.id)
         sent = await self.copier.process(
-            item.user_id, item.task_id, messages, released=item.reason
+            item.user_id, item.task_id, messages,
+            released=item.reason, via=DeliveryTiming.VIA_QUEUE,
         )
         return bool(sent)

@@ -13,7 +13,7 @@ from datetime import timedelta
 from sqlalchemy import select
 
 from telkap.db import get_session, log_activity
-from telkap.models import RetryItem, Task, utcnow
+from telkap.models import DeliveryTiming, RetryItem, Task, utcnow
 from telkap.services.copier import RETRY_BACKOFF, SendFailed
 
 log = logging.getLogger(__name__)
@@ -93,7 +93,8 @@ class RetryWorker:
             # فرستاده می‌شد. آماری که این را لو داد: ۶۶ کپی موفق در
             # برابر ۲۰۲۹ «ناموفق» در یک روز.
             sent = await self.copier.process(
-                item.user_id, item.task_id, messages, retrying=True
+                item.user_id, item.task_id, messages,
+                retrying=True, via=DeliveryTiming.VIA_RETRY,
             )
         except SendFailed as exc:
             await self._reschedule(item, str(exc))

@@ -112,6 +112,13 @@ def _add_missing_columns(conn) -> None:
             ("norm_hash", "VARCHAR(64)"),
             ("simhash", "BIGINT"),
         ],
+        # <b>پیش‌فرضش عمداً خالی است، نه 'update'.</b> ردیف‌های قدیمی
+        # نمی‌دانند از کدام راه آمده‌اند؛ اگر 'update' بگیرند، آمار
+        # می‌گوید «آپدیت‌ها سالم‌اند» — دقیقاً همان ادعایی که این ستون
+        # قرار است بسنجد.
+        "delivery_timings": [
+            ("via", "VARCHAR(16) DEFAULT ''"),
+        ],
         "payment_requests": [
             ("kind", "VARCHAR(16) DEFAULT 'plan'"),
             ("quantity", "INTEGER DEFAULT 0"),
@@ -151,6 +158,10 @@ def _finish_schema(conn, migrated: bool) -> None:
     conn.exec_driver_sql(
         "CREATE INDEX IF NOT EXISTS ix_message_map_norm_dedupe "
         "ON message_map (dest_chat, norm_hash)"
+    )
+    conn.exec_driver_sql(
+        "CREATE INDEX IF NOT EXISTS ix_delivery_timings_via "
+        "ON delivery_timings (via)"
     )
     if not migrated:
         return

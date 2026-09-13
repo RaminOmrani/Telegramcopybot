@@ -112,6 +112,14 @@ async def _speed(out) -> None:
             out(f"    {bucket.label:<12} n={bucket.count:<5} "
                 f"median={_mmss(bucket.median):<7} p90={_mmss(bucket.p90)}")
 
+        # مهم‌ترین تفکیک: چه چیزی خبرمان کرد که پستی هست
+        out("  arrived via:")
+        for bucket in data.by_via:
+            out(f"    {bucket.label:<12} n={bucket.count:<5} "
+                f"median={_mmss(bucket.median):<7} p90={_mmss(bucket.p90)}")
+        out(f"  sweep_share={data.sweep_share}%   "
+            "(high = live updates are not arriving)")
+
 
 async def main() -> int:
     from sqlalchemy import delete, func, select

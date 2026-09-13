@@ -832,6 +832,26 @@ class DeliveryTiming(Base):
     PATH_REWRITE = "rewrite"        # دانلود، بازنویسی فایل، آپلود
     PATH_REUPLOAD = "reupload"      # مبدا محافظت‌شده بود؛ چاره‌ای نبود
 
+    # <b>چه چیزی باعث شد این پست برود.</b> `path` می‌گوید پست چطور
+    # ساخته شد؛ این یکی می‌گوید <b>چه کسی خبر داد که پستی هست</b> — و
+    # همان است که تأخیر را می‌سازد.
+    #
+    # چرا لازم شد: تأخیرِ دیده‌شده (میانه ۱:۲۵، صدک۹۰ ۲:۴۷) تقریباً
+    # دقیقاً همان چیزی است که یک جاروی سه‌دقیقه‌ای پیش‌بینی می‌کند
+    # (۱:۳۰ و ۲:۴۲). یعنی احتمال قوی این است که آپدیت‌های لحظه‌ای
+    # اصلاً نمی‌رسند و جارو دارد پنهانش می‌کند. ولی «احتمال قوی» همان
+    # حدس است، و حدس‌های قبلی‌مان درست از آب درنیامدند. با این ستون
+    # دیگر لازم نیست حدس بزنیم: هر ردیف خودش می‌گوید از کدام راه آمد.
+    VIA_UPDATE = "update"           # آپدیت لحظه‌ای تلگرام — راه اصلی
+    VIA_SWEEP = "sweep"             # جارو پیدایش کرد؛ یعنی آپدیتش نرسیده بود
+    VIA_RETRY = "retry"             # از صف تلاش مجدد
+    VIA_QUEUE = "queue"             # از صف تأیید/تعامل/ساعت کاری آزاد شد
+    VIA_HISTORY = "history"         # کپی آرشیو گذشته — تأخیرش بی‌معناست
+
+    # راه‌هایی که تأخیرشان تجربه‌ی واقعیِ کاربر است. `queue` و `history`
+    # عمداً بیرون‌اند: آنجا انتظار خواسته‌ی خودِ کاربر بوده، نه کندی ما.
+    VIA_LIVE = (VIA_UPDATE, VIA_SWEEP, VIA_RETRY)
+
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     task_id: Mapped[int] = mapped_column(Integer, index=True)
     user_id: Mapped[int] = mapped_column(BigInteger, index=True)
@@ -841,6 +861,7 @@ class DeliveryTiming(Base):
     )
     seconds: Mapped[int] = mapped_column(Integer, default=0, index=True)
     path: Mapped[str] = mapped_column(String(16), default=PATH_DIRECT, index=True)
+    via: Mapped[str] = mapped_column(String(16), default=VIA_UPDATE, index=True)
     media_kind: Mapped[str] = mapped_column(String(16), default="")
     size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
