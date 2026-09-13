@@ -134,11 +134,52 @@ else
     sudo -u "$APP_USER" git log --oneline "$OLD_COMMIT..$NEW_COMMIT" | sed 's/^/  /'
 fi
 
+# ── ۲) هرچه می‌شود، <b>پیش از</b> خاموش کردن ───────────────────────
+#
+# <b>چرا اینجا و نه بعد از توقف.</b> ترتیب قبلی این بود: خاموش کن،
+# بعد کد را بگیر، بعد کتابخانه‌ها را نصب کن، بعد روشن کن — یعنی
+# کندترین بخشِ کار تماماً در همان پنجره‌ای می‌افتاد که ربات پایین بود.
+say "بررسی پیش از توقف"
+
+_STAGE="$(mktemp -d)"
+trap 'rm -rf "$_STAGE"' EXIT
+
+# <b>کامیتی که خطای نحوی دارد نباید ربات را پایین بیاورد.</b> کد تازه
+# در یک پوشه‌ی موقت کامپایل می‌شود؛ اگر نشکند، ادامه می‌دهیم. تا امروز
+# چنین کامیتی ربات را می‌خواباند و بعد اسکریپت باید برش می‌گرداند —
+# یعنی دو قطعی به‌جای صفر.
+if sudo -u "$APP_USER" git archive "$NEW_COMMIT" | tar -x -C "$_STAGE" 2>/dev/null; then
+    if _ERRORS="$("$APP_DIR/.venv/bin/python" -m compileall -q "$_STAGE/telkap" 2>&1)"; then
+        ok "کد تازه سالم است"
+    else
+        printf '%s\n' "$_ERRORS" | head -5 | sed 's/^/    /'
+        die "کد تازه خطای نحوی دارد. ربات دست‌نخورده ماند و هنوز در حال اجراست."
+    fi
+
+    # <b>و نصبِ کتابخانه‌ها معمولاً اصلاً لازم نیست.</b> در بیشترِ
+    # به‌روزرسانی‌ها فقط کدِ خودمان عوض می‌شود و requirements دست‌نخورده
+    # است — ولی تا امروز در هر بار، pip کل فهرست را وارسی می‌کرد، آن هم
+    # وسط قطعی. حالا اول می‌پرسیم آیا اصلاً چیزی عوض شده.
+    if sudo -u "$APP_USER" git diff --quiet "$OLD_COMMIT" "$NEW_COMMIT" \
+        -- requirements.txt 2>/dev/null; then
+        _DEPS_CHANGED=0
+        ok "کتابخانه‌ها عوض نشده‌اند — نصبی لازم نیست"
+    else
+        _DEPS_CHANGED=1
+        warn "requirements عوض شده؛ نصب بعد از توقف انجام می‌شود"
+    fi
+else
+    warn "بررسی پیش از توقف انجام نشد؛ مثل قبل ادامه می‌دهیم"
+    _DEPS_CHANGED=1
+fi
+
+# ── ۳) از اینجا ربات پایین است. هرچه اینجاست باید کوتاه باشد. ───────
+_DOWN_FROM=$(date +%s)
+
 say "توقف ربات"
 systemctl stop "$SERVICE"
 ok "متوقف شد"
 
-# ── ۲) پشتیبان، حالا که دیتابیس آرام است ────────────────────────────
 say "پشتیبان‌گیری از دیتابیس"
 _backup_db
 
@@ -147,15 +188,17 @@ if [ "$OLD_COMMIT" != "$NEW_COMMIT" ]; then
     ok "کد به‌روز شد → $(sudo -u "$APP_USER" git rev-parse --short HEAD)"
 fi
 
-say "نصب کتابخانه‌های تازه"
-sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install -q -r requirements.txt
-ok "انجام شد"
+if [ "${_DEPS_CHANGED:-1}" = "1" ]; then
+    say "نصب کتابخانه‌های تازه"
+    sudo -u "$APP_USER" "$APP_DIR/.venv/bin/pip" install -q -r requirements.txt
+    ok "انجام شد"
+fi
 
-# ── ۳) کلیدهای تازه‌ی .env ──────────────────────────────────────────
+# ── ۴) کلیدهای تازه‌ی .env ──────────────────────────────────────────
 say "بررسی .env"
 sudo -u "$APP_USER" "$APP_DIR/.venv/bin/python" tools/envsync.py || true
 
-# ── ۴) روشن کردن و مطمئن شدن ────────────────────────────────────────
+# ── ۵) روشن کردن و مطمئن شدن ────────────────────────────────────────
 say "روشن کردن ربات"
 # شمارنده‌ی راه‌اندازی مجدد صفر شود، وگرنه خرابیِ دفعه‌ی قبل به حساب
 # این نسخه نوشته می‌شود
@@ -175,6 +218,10 @@ if systemctl is-active --quiet "$SERVICE" \
    && [ "$(systemctl show -p NRestarts --value "$SERVICE")" = "0" ]; then
     _mark_deployed "$NEW_COMMIT"
     printf '\n%s✓ نسخه‌ی تازه بالا آمد.%s\n' "$C_G" "$C_0"
+    # <b>عددی که تا امروز اندازه گرفته نمی‌شد.</b> بدون آن «قطعی کم شد»
+    # یک ادعاست نه یک واقعیت، و دفعه‌ی بعد هم نمی‌شود فهمید بهتر شده
+    # یا بدتر.
+    printf '  مدت قطعی: %s ثانیه\n' "$(( $(date +%s) - _DOWN_FROM ))"
     printf '  لاگ زنده:  journalctl -u %s -f\n' "$SERVICE"
     exit 0
 fi
