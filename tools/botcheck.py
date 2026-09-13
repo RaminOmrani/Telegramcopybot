@@ -25,6 +25,13 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parent.parent))
 
+# <b>این ابزار باید از هر پوشه‌ای کار کند.</b> مسیر دیتابیس در تنظیمات
+# نسبی است ("data/telkap.db")، پس اجرای همین اسکریپت از پوشه‌ای دیگر
+# — که کاملاً طبیعی است، چون مسیرش را کامل می‌نویسیم — به خطای
+# «unable to open database file» می‌خورد و شبیه خرابیِ دیتابیس به
+# نظر می‌رسد، نه یک اشتباهِ ساده در پوشه‌ی جاری.
+os.chdir(Path(__file__).resolve().parent.parent)
+
 
 def fingerprint(token: str) -> str:
     """اثر انگشتِ توکن — قابل مقایسه، غیرقابل بازگشت."""

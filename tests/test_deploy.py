@@ -74,3 +74,34 @@ def test_a_failed_start_rolls_back(script: str):
     خوابیده بماند تا کسی سر بزند."""
     assert "git reset --hard" in script
     assert script.index('systemctl start "$SERVICE"') < script.index("git reset --hard")
+
+
+# ------------------------------------------------------------ ابزارها
+TOOLS = Path(__file__).parent.parent / "tools"
+
+
+@pytest.mark.parametrize("name", ["why.py", "botcheck.py"])
+def test_the_tools_work_from_any_directory(name: str):
+    """<b>تله‌ای که یک بار گرفتارش شدیم.</b>
+
+    مسیر دیتابیس در تنظیمات نسبی است. اجرای این ابزارها از پوشه‌ای
+    دیگر — که کاملاً طبیعی است، چون مسیرشان را کامل می‌نویسیم — به
+    «unable to open database file» می‌خورد، و آن پیام شبیه خرابیِ
+    دیتابیس به نظر می‌رسد نه یک اشتباه ساده در پوشه‌ی جاری.
+    """
+    source = (TOOLS / name).read_text(encoding="utf-8")
+    assert "os.chdir(" in source, f"{name} به پوشه‌ی جاری وابسته است"
+
+
+def test_the_database_path_in_settings_is_still_relative():
+    """<b>نگهبانِ فرضی که تستِ بالا رویش بنا شده.</b>
+
+    اگر روزی مسیر دیتابیس مطلق شود، آن chdirها دیگر لازم نیستند و
+    این تست یادآوری می‌کند که می‌شود برشان داشت.
+    """
+    import inspect
+
+    from telkap.config import Settings
+
+    default = inspect.signature(Settings).parameters["database_url"].default
+    assert not str(default).startswith("sqlite+aiosqlite:////")
