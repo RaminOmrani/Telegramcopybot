@@ -136,9 +136,12 @@ h1, h2, h3, .display { font-family: var(--display); text-wrap: balance; }
 .top .wrap { display: flex; align-items: center; gap: 16px; height: 64px; }
 .brand { font-family: var(--display); font-weight: 800; font-size: 20px; letter-spacing: -.01em; }
 .brand span { color: var(--dest); }
-.top nav { margin-inline-start: auto; display: flex; gap: 26px; }
-.top nav a { color: var(--muted); text-decoration: none; font-size: 15px; }
+.top nav { margin-inline-start: auto; display: flex; gap: 22px; }
+.top nav a { color: var(--muted); text-decoration: none; font-size: 15px; white-space: nowrap; }
 .top nav a:hover { color: var(--ink); }
+/* بین ۷۸۰ تا ۱۰۴۰ پیکسل، هشت آیتم منو در یک خط جا نمی‌شوند */
+@media (max-width: 1040px) { .top nav { gap: 15px; } .top nav a { font-size: 14px; } }
+@media (max-width: 900px) { .top nav a[href="#login"], .top nav a[href="#agents"] { display: none; } }
 @media (max-width: 780px) { .top nav { display: none; } }
 
 .btn {
@@ -175,7 +178,12 @@ a:focus-visible, button:focus-visible, summary:focus-visible {
 .hero h1 em { font-style: normal; color: var(--dest); }
 .lede { font-size: clamp(17px, 2vw, 20px); color: var(--muted); max-width: 60ch; margin: 0 0 32px; }
 .cta-row { display: flex; flex-wrap: wrap; gap: 12px; align-items: center; }
-.cta-note { font-size: 14px; color: var(--muted); }
+.cta-note { font-size: 14px; color: var(--muted); text-decoration: none; }
+a.cta-note {
+  border: 1px solid var(--line); border-radius: 100px; padding: 9px 15px;
+  transition: border-color .15s ease, color .15s ease;
+}
+a.cta-note:hover { border-color: var(--dest); color: var(--dest); }
 
 /* ── نمایش تبدیل پست ─────────────────────────────────────────────── */
 .demo { margin: 60px 0 0; }
@@ -303,6 +311,35 @@ section { padding: 84px 0; }
 }
 .wire b { display: block; font-weight: 600; font-size: 15px; }
 .wire span { font-size: 14px; color: var(--muted); }
+
+/* بدون کد ورود */
+.why .path {
+  background: var(--dest-weak); color: var(--dest);
+  border-radius: 6px; padding: 2px 7px; font-weight: 500; white-space: nowrap;
+}
+.why .foot { font-size: 14.5px; padding-top: 4px; border-top: 1px solid var(--line-soft); }
+.qr-demo { display: flex; flex-direction: column; gap: 14px; }
+.qr-card {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 14px; overflow: hidden; box-shadow: var(--shadow);
+}
+.qr-head {
+  display: flex; align-items: center; gap: 10px;
+  padding: 13px 16px; border-bottom: 1px solid var(--line-soft);
+}
+.qr-head .avatar { background: var(--dest); }
+.qr-head .who { font-weight: 500; }
+.qr-head .tag { background: var(--dest-weak); color: var(--dest); }
+.qr-body { padding: 22px 16px 18px; text-align: center; }
+/* کد QR همیشه روی زمینه‌ی روشن می‌ماند — دوربین نسخه‌ی وارونه را
+   سخت‌تر می‌خواند و بعضی گوشی‌ها اصلاً نمی‌خوانند. */
+.qr-body img {
+  width: 200px; height: 200px; max-width: 100%;
+  background: #fff; border-radius: 10px; padding: 10px;
+  border: 1px solid var(--line-soft);
+}
+.qr-body p { margin: 14px 0 0; font-size: 14.5px; color: var(--ink); line-height: 1.8; }
+.qr-body p span { color: var(--muted); font-size: 13.5px; }
 
 /* برای چه کسانی */
 .uses { display: grid; grid-template-columns: repeat(2, 1fr); gap: 16px; }
@@ -433,6 +470,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space
     <div class="brand">فوروارد<span>بات</span><em>ادمین پست</em></div>
     <nav>
       <a href="#how">چطور کار می‌کند</a>
+      <a href="#login">بدون کد ورود</a>
       <a href="#features">امکانات</a>
       <a href="#who">برای چه کسانی</a>
       <a href="#plans">تعرفه</a>
@@ -456,6 +494,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space
     <div class="cta-row">
       <a class="btn lg" href="https://t.me/AdvancedForwardBot">رایگان امتحان کنید</a>
       <a class="btn lg ghost" href="#how">اول ببینم چطور کار می‌کند</a>
+      <a class="cta-note" href="#login">🔒 بدون دادنِ کد ورود تلگرام</a>
     </div>
 
     <div class="demo" id="demo">
@@ -518,8 +557,8 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space
           ربات هم می‌تواند — از جمله کانال‌های خصوصی و پست‌های قدیمی.
         </p>
         <p>
-          نشست اکانتتان با کلید اختصاصی سرور رمز می‌شود و هر وقت بخواهید با یک
-          دکمه قطع می‌شود.
+          و برای وصل کردنش <strong>کد ورود تلگرامتان را نمی‌خواهیم</strong> —
+          یک کد QR اسکن می‌کنید و تمام. <a href="#login">چرا و چطور</a>.
         </p>
       </div>
       <div class="wires">
@@ -527,7 +566,7 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space
           <div class="num">۱</div>
           <div>
             <b>اکانت خود را وصل کنید</b>
-            <span>با شماره‌ی تلفن، یک بار برای همیشه</span>
+            <span>با اسکن یک کد QR — بدون دادنِ کد ورود</span>
           </div>
         </div>
         <div class="wire">
@@ -542,6 +581,82 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space
           <div>
             <b>قواعد را تنظیم کنید</b>
             <span>یا یک قالب آماده بزنید و تمام</span>
+          </div>
+        </div>
+      </div>
+    </div>
+  </section>
+
+  <!-- ── بدون کد ورود ───────────────────────────────────────────── -->
+  <section id="login">
+    <div class="wrap why">
+      <div>
+        <p class="kicker">اتصال اکانت</p>
+        <h2>کد ورود تلگرامتان را از شما نمی‌خواهیم</h2>
+        <p>
+          وقتی جایی کد ورود تلگرام را می‌خواهد، حق دارید بترسید. آن کد تقریباً
+          همیشه برای دزدیدن اکانت خواسته می‌شود، و همه هم همین را یاد گرفته‌اند.
+        </p>
+        <p>
+          برای همین نمی‌پرسیمش. ربات یک <strong>کد QR</strong> نشانتان می‌دهد و
+          شما با اپ تلگرام خودتان اسکنش می‌کنید — دقیقاً همان کاری که برای ورود
+          به تلگرام دسکتاپ می‌کنید. نه شماره‌ای، نه کدی، نه رمزی.
+        </p>
+        <p>
+          و صادق باشیم: اسکن QR <strong>همان دسترسی</strong> را می‌دهد که کد ورود
+          می‌داد — جادویی در کار نیست. فرقش این است که چیزی از دست شما خارج
+          نمی‌شود: کدی جایی تایپ نمی‌کنید که بشود ازتان گرفت، و اتصال را
+          <strong>خودتان</strong> برقرار می‌کنید.
+        </p>
+        <p>
+          کنترلش هم دست خودتان می‌ماند: بدون اینکه از ما اجازه بگیرید یا حتی خبر
+          بدهید، هر لحظه می‌توانید در خود تلگرام قطعش کنید —
+          <span class="path">تنظیمات ← دستگاه‌ها ← پایان نشست</span>
+        </p>
+        <p>
+          و تا وقتی وصل است، نشست اکانتتان با کلید اختصاصی سرور رمزنگاری می‌شود.
+        </p>
+        <p class="foot">
+          روش قبلی — ورود با شماره و کد — هنوز هست، برای کسی که ترجیح می‌دهد.
+          ولی پیش‌فرض دیگر آن نیست.
+        </p>
+      </div>
+
+      <div class="qr-demo">
+        <div class="qr-card">
+          <div class="qr-head">
+            <div class="avatar">ف</div>
+            <div class="who">فورواردبات</div>
+            <div class="tag">نمونه</div>
+          </div>
+          <div class="qr-body">
+            <img src="/brand/qr-bot.png" alt="کد QR برای باز کردن ربات در تلگرام"
+                 width="240" height="240" loading="lazy">
+            <p>این چیزی است که در ربات می‌بینید.<br>
+              <span>همین یکی را هم می‌شود اسکن کرد — ربات باز می‌شود.</span></p>
+          </div>
+        </div>
+        <div class="wires">
+          <div class="wire">
+            <div class="num">۱</div>
+            <div>
+              <b>در تلگرام: تنظیمات ← دستگاه‌ها</b>
+              <span>همان‌جایی که بعداً هم می‌توانید قطعش کنید</span>
+            </div>
+          </div>
+          <div class="wire">
+            <div class="num">۲</div>
+            <div>
+              <b>«اتصال دستگاه» را بزنید</b>
+              <span>دوربین باز می‌شود</span>
+            </div>
+          </div>
+          <div class="wire">
+            <div class="num">۳</div>
+            <div>
+              <b>کد را اسکن کنید</b>
+              <span>تمام. هیچ عددی جایی وارد نمی‌شود.</span>
+            </div>
           </div>
         </div>
       </div>
@@ -817,14 +932,28 @@ footer .wrap { display: flex; flex-wrap: wrap; gap: 12px; justify-content: space
             کانال خصوصی که عضوش هستید.
           </p>
         </details>
+        <details open>
+          <summary>باید کد ورود تلگرامم را به ربات بدهم؟</summary>
+          <p>
+            نه. یک کد QR نشانتان می‌دهد و با اپ تلگرام خودتان اسکنش می‌کنید —
+            همان کاری که برای ورود به تلگرام دسکتاپ می‌کنید. هیچ عددی جایی وارد
+            نمی‌شود.
+          </p>
+          <p>
+            و بی‌تعارف: اسکن QR همان دسترسی را می‌دهد که کد ورود می‌داد. فرقش این
+            است که کدتان از دستتان خارج نمی‌شود، و قطع کردنش هر لحظه دست خودتان
+            است: <span style="color:var(--dest)">تنظیمات ← دستگاه‌ها ← پایان نشست</span>.
+            ورود با شماره و کد هم هنوز هست، برای کسی که ترجیح می‌دهد.
+          </p>
+        </details>
         <details>
           <summary>اکانت من امن است؟</summary>
           <p>
             نشست اکانت با کلید اختصاصیِ سرور رمزنگاری و ذخیره می‌شود، و هر وقت
-            بخواهید با یک دکمه قطع می‌شود. ربات خودش را به تلگرام مثل یک کلاینت
-            معمولی معرفی می‌کند و سرعت ارسال را کنترل می‌کند تا اکانتتان محدود نشود.
-            اگر تلگرام محدودیتی اعمال کند، کارها خودکار متوقف می‌شوند تا وضعیت
-            بدتر نشود و به خودتان خبر می‌رسد.
+            بخواهید — از خود تلگرام، بدون نیاز به ما — قطع می‌شود. ربات خودش را
+            به تلگرام مثل یک کلاینت معمولی معرفی می‌کند و سرعت ارسال را کنترل
+            می‌کند تا اکانتتان محدود نشود. اگر تلگرام محدودیتی اعمال کند، کارها
+            خودکار متوقف می‌شوند تا وضعیت بدتر نشود و به خودتان خبر می‌رسد.
           </p>
         </details>
         <details>

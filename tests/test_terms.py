@@ -299,3 +299,76 @@ def test_the_new_sections_are_reachable_from_the_menu():
     for anchor in ("#who", "#agents", "#plans", "#faq"):
         assert f'href="{anchor}"' in page, anchor
         assert f'id="{anchor[1:]}"' in page, anchor
+
+
+# ----------------------------------------- «بدون کد ورود» روی صفحه‌ی فروش
+
+
+def _login_section() -> str:
+    page = _landing()
+    assert 'id="login"' in page, "بخشِ «بدون کد ورود» اصلاً نیست"
+    return page.split('id="login"', 1)[1].split("</section>", 1)[0]
+
+
+def test_the_landing_leads_with_the_objection_that_blocks_the_sale():
+    """<b>چرا این بخش مهم‌ترین بخش صفحه است.</b>
+
+    کاربرها برای تست نکردن یک دلیل می‌آورند و همیشه همان یکی است:
+    «کد ورود تلگرامم را به یک ربات بدهم؟». آن تردید <b>پیش از</b> هر
+    تستی فروش را می‌بندد — یعنی بهترین امکانات هم هیچ‌وقت دیده
+    نمی‌شوند.
+
+    جوابش هست (ورود با QR) ولی اگر روی صفحه‌ی فروش نباشد، کسی که
+    هنوز وارد ربات نشده هیچ‌وقت نمی‌فهمدش. پس هم باید بالای صفحه
+    اشاره‌ای باشد، هم بخشی که کامل توضیحش بدهد، هم در پرسش‌ها.
+    """
+    page = _landing()
+
+    # بالای صفحه، کنار دکمه‌ها — جایی که پیش از اسکرول دیده می‌شود
+    hero = page.split("cta-row", 1)[1].split("</div>", 1)[0]
+    assert "کد ورود" in hero, "در بالای صفحه هیچ اشاره‌ای نیست"
+
+    # و در پرسش‌های پرتکرار، نه ته فهرست
+    faq = page.split('id="faq"', 1)[1]
+    assert "کد ورود تلگرامم" in faq
+
+
+def test_the_landing_never_claims_the_qr_gives_less_access():
+    """<b>همان قاعده‌ای که برای متنِ داخل ربات گذاشتیم.</b>
+
+    QR دقیقاً همان دسترسی را می‌دهد که کد ورود می‌داد. یک «فقط
+    خواندن» یا «دسترسی محدود» روی صفحه‌ی فروش، اعتمادی را که این
+    بخش قرار است بسازد بدتر از اول خراب می‌کند — چون دروغی است که
+    اولین کاربر فنی رویش دست می‌گذارد.
+    """
+    section = _login_section()
+
+    for false_claim in (
+        "فقط خواندن", "دسترسی محدود", "بدون دسترسی",
+        "نمی‌تواند بخواند", "امن‌تر است",
+    ):
+        assert false_claim not in section, false_claim
+
+    # و صراحتاً می‌گوید دسترسی همان است
+    assert "همان دسترسی" in section
+
+
+def test_the_landing_says_how_to_cut_the_access_off():
+    """<b>«هر وقت خواستید قطعش کنید» بدون آدرس، یک شعار است.</b>
+
+    اعتماد از «می‌توانید قطعش کنید» نمی‌آید؛ از این می‌آید که کاربر
+    <b>پیش از</b> وصل کردن ببیند دکمه‌اش کجاست — و آن دکمه جای ماست
+    نیست، داخل خود تلگرام است.
+    """
+    section = _login_section()
+
+    assert "دستگاه‌ها" in section
+    assert "پایان نشست" in section
+
+
+def test_the_old_way_in_is_still_offered():
+    """ورود با شماره و کد هنوز در ربات هست. اگر صفحه طوری بنویسد که
+    انگار برداشته شده، کسی که QR برایش کار نکند فکر می‌کند راهی
+    ندارد."""
+    section = _login_section()
+    assert "شماره" in section
