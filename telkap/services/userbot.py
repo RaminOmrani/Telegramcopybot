@@ -59,6 +59,9 @@ class PendingLogin:
     phone: str
     phone_code_hash: str = ""
     needs_password: bool = False
+    # فقط در ورودِ QR پر می‌شود. شماره‌ی تلفن آنجا اصلاً پرسیده نمی‌شود
+    # و بعد از ورود از خودِ اکانت خوانده می‌شود.
+    qr: object | None = None
 
 
 @dataclass
@@ -126,6 +129,75 @@ class UserbotManager:
             client=client, phone=phone, phone_code_hash=sent.phone_code_hash
         )
 
+    # ------------------------------------------------------- ورود با QR
+    #
+    # <b>چرا این راه اضافه شد.</b> مشتری‌ها می‌گویند «کد ورود تلگرامم را
+    # به یک ربات بدهم؟» — و حق دارند: در فرهنگِ عمومی، خواستنِ کد ورود
+    # نشانه‌ی کلاهبرداری است. همان تردید، پیش از هر تستی، فروش را
+    # می‌بندد.
+    #
+    # <b>QR همان کاری را می‌کند، ولی از راهی که کاربر به آن عادت
+    # دارد.</b> دقیقاً همان جریانی است که برای ورود به تلگرام دسکتاپ و
+    # وب استفاده می‌شود: «دستگاه‌ها ← اتصال دستگاه ← اسکن». هیچ کدی
+    # تایپ نمی‌شود، هیچ کدی جایی فرستاده نمی‌شود، و تصمیم تا آخرین
+    # لحظه در خودِ اپلیکیشن تلگرامِ کاربر می‌ماند.
+    #
+    # <b>و صادقانه: از نظر فنی دسترسیِ یکسانی می‌دهد.</b> این را پنهان
+    # نمی‌کنیم — متنِ کنارش همین را می‌گوید و راه قطع کردنش را هم
+    # نشان می‌دهد. چیزی که عوض می‌شود «چقدر دسترسی» نیست، «چقدر
+    # آشناست» است.
+    async def start_qr_login(self, user_id: int) -> str:
+        """ورود با QR را شروع می‌کند و نشانیِ کد را برمی‌گرداند."""
+        await self.cancel_login(user_id)
+        client = self._new_client()
+        await client.connect()
+        try:
+            qr = await client.qr_login()
+        except Exception as exc:
+            await client.disconnect()
+            raise LoginError(f"ساخت کد QR ناموفق بود: {exc}") from exc
+        self._pending[user_id] = PendingLogin(client=client, phone="", qr=qr)
+        return qr.url
+
+    async def refresh_qr(self, user_id: int) -> str | None:
+        """<b>کد QR چند ده ثانیه بیشتر اعتبار ندارد.</b>
+
+        بدون تازه‌سازی، کاربری که برود گوشی‌اش را بردارد برمی‌گردد و
+        کدی را اسکن می‌کند که دیگر کار نمی‌کند — و هیچ خطایی هم
+        نمی‌بیند، فقط هیچ اتفاقی نمی‌افتد.
+        """
+        pending = self._pending.get(user_id)
+        if not pending or pending.qr is None:
+            return None
+        try:
+            await pending.qr.recreate()
+        except Exception:
+            log.debug("تازه‌سازی کد QR نشد", exc_info=True)
+            return None
+        return pending.qr.url
+
+    async def qr_result(self, user_id: int, timeout: float) -> str:
+        """منتظر اسکن می‌ماند.
+
+        خروجی: «done» ورود کامل شد · «password» رمز دو مرحله‌ای لازم
+        است · «wait» هنوز اسکن نشده · «gone» جریان ورود از بین رفته.
+        """
+        pending = self._pending.get(user_id)
+        if not pending or pending.qr is None:
+            return "gone"
+        try:
+            await pending.qr.wait(timeout)
+        except SessionPasswordNeededError:
+            pending.needs_password = True
+            return "password"
+        except TimeoutError:
+            return "wait"
+        except Exception:
+            log.debug("انتظار کد QR با خطا تمام شد", exc_info=True)
+            return "wait"
+        await self._finish_login(user_id, pending)
+        return "done"
+
     def pending(self, user_id: int) -> PendingLogin | None:
         return self._pending.get(user_id)
 
@@ -168,7 +240,9 @@ class UserbotManager:
             if user is None:
                 raise LoginError("کاربر یافت نشد.")
             user.session_enc = encrypt(session_string)
-            user.phone = pending.phone
+            # در ورودِ QR شماره‌ای پرسیده نشده؛ از خودِ اکانت برمی‌داریم
+            # به‌جای اینکه شماره‌ی قبلی را با رشته‌ی خالی پاک کنیم.
+            user.phone = pending.phone or getattr(me, "phone", "") or user.phone
             user.account_id = me.id
             user.account_name = " ".join(filter(None, [me.first_name, me.last_name])) or me.username
             user.account_premium = bool(getattr(me, "premium", False))

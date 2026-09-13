@@ -16,6 +16,10 @@
 می‌فرستد. آنجا هم می‌ماند و هم می‌شود کپی‌اش کرد:
     sudo -u telkap /opt/telkap/.venv/bin/python tools/why.py --send
 
+و آمار سرعت انتشار — همان چیزی که در پنل هست، ولی اینجا هم می‌آید
+تا بشود فرستادش:
+    sudo -u telkap /opt/telkap/.venv/bin/python tools/why.py --speed --send
+
 و اگر صف تلاش مجدد پر شده باشد و بخواهیم از صفر شروع کنیم:
     sudo -u telkap /opt/telkap/.venv/bin/python tools/why.py --clear-retries
 """
@@ -69,6 +73,36 @@ async def deliver(report: str) -> None:
         print(f"sent to telegram chat {raw[0]} as why.txt")
     else:
         print(f"telegram refused: {body.get('description')}")
+
+
+def _mmss(seconds: int) -> str:
+    return f"{seconds // 60}:{seconds % 60:02d}"
+
+
+async def _speed(out) -> None:
+    """آمار «از انتشار در مبدا تا رسیدن به مقصد».
+
+    <b>چرا میانه و نه میانگین.</b> یک ویدئوی ده‌دقیقه‌ای میانگین را
+    می‌برد بالا و تصویری می‌سازد که هیچ کاربری تجربه‌اش نکرده.
+    """
+    from telkap.services import timings
+
+    for days in (1, 7):
+        data = await timings.report(days=days)
+        out()
+        out("=" * 68)
+        out(f"speed, last {days} day(s): samples={data.overall.count}")
+        out("=" * 68)
+        if not data.overall.count:
+            out("  no data yet")
+            continue
+        out(f"  median={_mmss(data.overall.median)}  "
+            f"p90={_mmss(data.overall.p90)}  "
+            f"worst={_mmss(data.overall.worst)}  "
+            f"over_1min={data.overall.over_minute_percent}%")
+        for bucket in data.by_path:
+            out(f"    {bucket.label:<12} n={bucket.count:<5} "
+                f"median={_mmss(bucket.median):<7} p90={_mmss(bucket.p90)}")
 
 
 async def main() -> int:
@@ -138,6 +172,9 @@ async def main() -> int:
             # خطا ممکن است فارسی باشد و کنسول نشانش ندهد؛ ولی در فایلی
             # که به تلگرام می‌رود کامل و خوانا می‌آید
             out(f"       last_error: {task.last_error}")
+
+    if "--speed" in sys.argv:
+        await _speed(out)
 
     out()
     out("-" * 68)

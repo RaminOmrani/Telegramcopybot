@@ -1,15 +1,19 @@
-"""حساب کاربری: ورود با شماره تلفن، خروج، پین امنیتی."""
+"""حساب کاربری: ورود با QR یا شماره تلفن، خروج، پین امنیتی."""
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.types import (
+    BufferedInputFile,
     CallbackQuery,
     InlineKeyboardButton,
     InlineKeyboardMarkup,
+    InputMediaPhoto,
     Message,
 )
 from aiogram.utils.keyboard import InlineKeyboardBuilder
@@ -40,15 +44,23 @@ from telkap.services.userbot import LoginError, manager
 from telkap.texts import (
     ASK_PIN,
     ASK_PIN_VERIFY,
+    LOGIN_CHOICE,
     LOGIN_CODE,
     LOGIN_INTRO,
     LOGIN_OK,
     LOGIN_PASSWORD,
+    LOGIN_QR,
     PIN_WRONG,
     fa_num,
 )
 
 log = logging.getLogger(__name__)
+
+# کد QR چند ده ثانیه اعتبار دارد؛ هر بار تا این مدت منتظر می‌مانیم و
+# بعد تازه‌اش می‌کنیم. سه دقیقه کل مهلت است — بیشتر از آن یعنی کاربر
+# رفته و ما بی‌جهت یک اتصال باز نگه داشته‌ایم.
+QR_STEP_SECONDS = 25
+QR_TOTAL_SECONDS = 180
 router = Router(name="account")
 
 
@@ -188,8 +200,122 @@ async def _begin_login(message: Message, state: FSMContext, user_id: int | None 
         )
         return
 
+    # <b>انتخاب، نه یک راهِ تحمیلی.</b> QR اول می‌آید چون تردیدِ
+    # «کد ورودم را بدهم؟» همان چیزی است که جلوی تست کردن را می‌گیرد،
+    # ولی راه قدیمی هم می‌ماند: QR روی بعضی نسخه‌های قدیمی تلگرام
+    # نیست و بن‌بست بدتر از یک دکمه‌ی اضافه است.
+    await state.clear()
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="📷 اسکن کد QR (پیشنهاد ما)", callback_data="acc:qr"))
+    kb.row(InlineKeyboardButton(text="📱 با شماره و کد", callback_data="acc:sms"))
+    await message.answer(LOGIN_CHOICE, reply_markup=kb.as_markup())
+
+
+@router.callback_query(F.data == "acc:sms")
+async def cb_login_sms(call: CallbackQuery, state: FSMContext) -> None:
+    await call.answer()
     await state.set_state(Flow.phone)
-    await message.answer(LOGIN_INTRO)
+    await call.message.answer(LOGIN_INTRO)
+
+
+@router.callback_query(F.data == "acc:qr")
+async def cb_login_qr(call: CallbackQuery, state: FSMContext) -> None:
+    """کد QR را می‌فرستد و تا اسکن شدن، تازه‌اش نگه می‌دارد."""
+    await call.answer()
+    await state.clear()
+    try:
+        url = await manager.start_qr_login(call.from_user.id)
+    except LoginError as exc:
+        await call.message.answer(f"⚠️ {exc}")
+        return
+
+    photo = BufferedInputFile(_qr_png(url), filename="login-qr.png")
+    sent = await call.message.answer_photo(photo, caption=LOGIN_QR)
+    asyncio.create_task(
+        _watch_qr(call.bot, call.from_user.id, sent.chat.id, sent.message_id),
+        name=f"qr-{call.from_user.id}",
+    )
+
+
+@router.callback_query(F.data == "acc:pass")
+async def cb_qr_password(call: CallbackQuery, state: FSMContext) -> None:
+    """بعد از اسکن QR، اگر رمز دو مرحله‌ای لازم بود."""
+    await call.answer()
+    if manager.pending(call.from_user.id) is None:
+        await call.message.answer("جریان ورود منقضی شده. دوباره «اتصال اکانت» را بزنید.")
+        return
+    await state.set_state(Flow.password)
+    await call.message.answer(LOGIN_PASSWORD)
+
+
+def _qr_png(url: str) -> bytes:
+    """<b>چرا تصویر و نه متن.</b> نشانیِ خام را نمی‌شود اسکن کرد، و
+    کپی کردنش در گوشی همان دردسری است که می‌خواستیم برداریم."""
+    import io
+
+    import segno
+
+    buffer = io.BytesIO()
+    segno.make(url, error="m").save(
+        buffer, kind="png", scale=10, border=3, dark="#000000", light="#ffffff"
+    )
+    return buffer.getvalue()
+
+
+async def _watch_qr(bot, user_id: int, chat_id: int, message_id: int) -> None:
+    """<b>کد QR چند ده ثانیه بیشتر اعتبار ندارد.</b>
+
+    بدون تازه‌سازی، کاربری که برود گوشی‌اش را بردارد برمی‌گردد و کدی را
+    اسکن می‌کند که دیگر کار نمی‌کند — و هیچ خطایی هم نمی‌بیند، فقط
+    هیچ اتفاقی نمی‌افتد. این حلقه تا سه دقیقه کد را زنده نگه می‌دارد.
+    """
+    deadline = time.monotonic() + QR_TOTAL_SECONDS
+    while time.monotonic() < deadline:
+        outcome = await manager.qr_result(user_id, QR_STEP_SECONDS)
+
+        if outcome == "done":
+            await bot.send_message(chat_id, LOGIN_OK, reply_markup=main_menu())
+            await manager.reload_user(user_id)
+            return
+        if outcome == "password":
+            # <b>چرا دکمه و نه ست کردن مستقیمِ وضعیت.</b> این تابع در
+            # پس‌زمینه اجرا می‌شود و FSMContext ندارد؛ ساختنِ دستی‌اش
+            # به کلیدِ داخلیِ aiogram گره می‌خورد و با هر نسخه‌ی تازه
+            # بی‌صدا می‌شکند. دکمه از مسیر عادی می‌رود.
+            kb = InlineKeyboardBuilder()
+            kb.row(
+                InlineKeyboardButton(
+                    text="🔑 وارد کردن رمز دو مرحله‌ای", callback_data="acc:pass"
+                )
+            )
+            await bot.send_message(chat_id, LOGIN_PASSWORD, reply_markup=kb.as_markup())
+            return
+        if outcome == "gone":
+            return
+
+        fresh = await manager.refresh_qr(user_id)
+        if fresh is None:
+            return
+        try:
+            await bot.edit_message_media(
+                chat_id=chat_id,
+                message_id=message_id,
+                media=InputMediaPhoto(
+                    media=BufferedInputFile(_qr_png(fresh), filename="login-qr.png"),
+                    caption=LOGIN_QR,
+                ),
+            )
+        except Exception:
+            log.debug("تازه‌سازی تصویر QR نشد", exc_info=True)
+
+    await manager.cancel_login(user_id)
+    try:
+        await bot.edit_message_caption(
+            chat_id=chat_id, message_id=message_id,
+            caption="⌛️ مهلت اسکن تمام شد. دوباره «اتصال اکانت» را بزنید.",
+        )
+    except Exception:
+        log.debug("پیام پایان مهلت QR ویرایش نشد", exc_info=True)
 
 
 def terms_keyboard() -> InlineKeyboardMarkup:
