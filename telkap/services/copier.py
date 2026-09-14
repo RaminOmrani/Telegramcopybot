@@ -808,6 +808,8 @@ class Copier:
         targets = list(snapshot.targets)
         src_ids = [m.id for m in messages]
         src_chat_id = snapshot.source_id
+        # حالت ساده: فرستنده خودِ ربات است و مشتری اکانتی وصل نکرده
+        simple = snapshot.mode == Task.MODE_SIMPLE
 
         if not within_active_hours(cfg):
             # نگه داشتن، فقط اگر کاربر خواسته باشد؛ وگرنه رفتار قبلی
@@ -1010,6 +1012,7 @@ class Copier:
                         dest_cfg,
                         allow_watermark=allow_watermark,
                         entities=dest_entities,
+                        simple=simple,
                     )
                 except PremiumAccountRequiredError:
                     # اکانت پریمیوم نیست؛ همان پیام بدون ایموجی پریمیوم می‌رود
@@ -1025,6 +1028,7 @@ class Copier:
                         dest_cfg,
                         allow_watermark=allow_watermark,
                         entities=plain or None,
+                        simple=simple,
                     )
             except ChatWriteForbiddenError:
                 await entitlement.release(user_id, grant, sub_id)
@@ -1159,6 +1163,52 @@ class Copier:
                 task_id, getattr(message, "id", "?"), seconds, path,
             )
 
+    async def _send_by_bot(
+        self,
+        target,
+        messages: Sequence,
+        text: str,
+        cfg: dict[str, Any],
+        entities,
+    ) -> list[int]:
+        """مسیر حالت ساده: خودِ ربات در مقصد پست می‌گذارد.
+
+        <b>رسانه هنوز از اینجا نمی‌رود.</b> فایلی که اکانت سرویس دیده
+        برای ربات `file_id` قابل استفاده ندارد؛ یا باید دانلود و دوباره
+        آپلود شود یا از کانال واسط رد شود. آن تصمیم جداست.
+
+        تا آن موقع، پستِ رسانه‌دار <b>رد می‌شود، نه نصفه می‌رود</b>:
+        فرستادنِ کپشنِ تنها به‌جای عکس، پستی می‌سازد که بی‌معناست و
+        کاربر هم نمی‌فهمد چرا — و بدتر، در جدول نگاشت «فرستاده شد»
+        ثبت می‌شود و دیگر هیچ‌وقت درست فرستاده نمی‌شود.
+        """
+        from telkap.services import botsend
+
+        bot = alerts.bot()
+        if bot is None:
+            raise RuntimeError("ربات در دسترس نیست؛ ارسال حالت ساده ممکن نشد")
+
+        media_kind = classify_media(messages[0])
+        if media_kind != "text" and not cfg.get("caption_only"):
+            log.info(
+                "حالت ساده هنوز رسانه نمی‌فرستد؛ پست %s رد شد",
+                getattr(messages[0], "id", "?"),
+            )
+            return []
+
+        self._last_path = DeliveryTiming.PATH_TEXT
+        result = await botsend.send_text(
+            bot,
+            target,
+            text,
+            entities=entities,
+            buttons=(
+                botsend.to_bot_buttons(messages[0]) if cfg.get("copy_buttons") else None
+            ),
+            silent=bool(cfg.get("silent")),
+        )
+        return result.ids
+
     async def _send(
         self,
         client,
@@ -1169,8 +1219,22 @@ class Copier:
         *,
         allow_watermark: bool,
         entities=None,
+        simple: bool = False,
     ) -> list[int]:
-        """ارسال واقعی به مقصد؛ آیدی پیام‌های ارسالی را برمی‌گرداند."""
+        """ارسال واقعی به مقصد؛ آیدی پیام‌های ارسالی را برمی‌گرداند.
+
+        <b>`simple` یعنی فرستنده خودِ ربات است، نه اکانت مشتری.</b>
+
+        درزِ دو مسیر عمداً <b>اینجا</b>ست و نه بالاتر: هرچه پیش از این
+        نقطه است — قواعد، فیلترها، امضا، تشخیص تکراری — برای هر دو
+        حالت یکی است، و هرچه بعدش می‌آید — نگاشت پیام، آمار، اندازه‌ی
+        تأخیر — هم. اگر درز را بالاتر می‌گذاشتیم، حالت ساده کم‌کم
+        نسخه‌ی دومی از همه‌ی آن‌ها می‌شد و هر امکانِ تازه باید دو بار
+        نوشته می‌شد؛ همان‌جاست که دو مسیر از هم دور می‌افتند.
+        """
+        if simple:
+            return await self._send_by_bot(target, messages, text, cfg, entities)
+
         # حالت فوروارد ساده: برچسب «فورواردشده از» حفظ می‌شود
         if cfg.get("mode") == "forward":
             result = await client.forward_messages(target, list(messages))

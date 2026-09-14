@@ -61,6 +61,10 @@ class TaskSnapshot:
     targets: list[TargetSpec]
     cfg: dict[str, Any]
     rules: list[RuleSnapshot] = field(default_factory=list)
+    # `full` یعنی با اکانت خودِ مشتری، `simple` یعنی با خودِ ربات.
+    # پیش‌فرضش عمداً همان رفتار امروز است: عکسِ فوریِ کارِ قدیمی که این
+    # ستون را نداشته باشد، نباید ناگهان مسیر تازه را بگیرد.
+    mode: str = "full"
 
 
 @dataclass(slots=True)
@@ -105,6 +109,7 @@ async def get_task(task_id: int) -> TaskSnapshot | None:
             enabled=task.enabled,
             source_id=task.source_id,
             source_ref=task.source_ref,
+            mode=task.mode or Task.MODE_FULL,
             targets=targets,
             cfg=merged_settings(task.settings),
             rules=[
