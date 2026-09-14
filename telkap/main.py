@@ -45,6 +45,7 @@ from telkap.services import (
 from telkap.services.copier import Copier
 from telkap.services.history import HistoryCopier
 from telkap.services.pending import ReleaseWorker
+from telkap.services.pubpoll import PublicPoller
 from telkap.services.retry import RetryWorker
 from telkap.services.subscription import active_plan_for
 from telkap.services.sweeper import Sweeper
@@ -167,6 +168,9 @@ async def main() -> None:
     # اتصال برقرار، هندلرها سر جایشان، و هیچ پستی نیاید. این یکی هر
     # چند دقیقه خودش سراغ مبدأها می‌رود تا آن سکوت بی‌صدا نماند.
     sweeper = Sweeper(manager, copier)
+    # موتورِ حالت ساده: مبدأهای عمومی را با اکانت‌های خودمان می‌خواند.
+    # بدون اکانت سرویس بی‌کار می‌ماند و چیزی خراب نمی‌کند.
+    poller = PublicPoller(copier)
     release_worker = ReleaseWorker(manager, copier, notifier=notify)
     # تا دکمه‌ی «تأیید» بتواند همان لحظه منتشر کند، نه در چرخه‌ی بعدی
     approval_handlers.bind(release_worker)
@@ -237,6 +241,7 @@ async def main() -> None:
         # می‌کند، به‌جای اینکه تا ری‌استارت بعدی مرده بماند.
         asyncio.create_task(manager.heal_forever(), name="heal"),
         asyncio.create_task(sweeper.run_forever(), name="sweep"),
+        asyncio.create_task(poller.run_forever(), name="pubpoll"),
     ]
 
     try:

@@ -343,15 +343,35 @@ async def test_a_flood_wait_parks_the_account_instead_of_hammering_it(
 
 
 @pytest.mark.asyncio
-async def test_with_no_service_account_nothing_explodes(tmp_path, monkeypatch):
-    """بدون خواننده، کارها ساکت می‌مانند — ولی حلقه نباید بمیرد،
-    وگرنه اضافه کردنِ اکانت هم دیگر کمکی نمی‌کند."""
+async def test_with_no_service_account_the_admin_is_told(tmp_path, monkeypatch):
+    """<b>ساکت‌ترین خرابیِ ممکن.</b>
+
+    بدون خواننده، کارهای حالت ساده هیچ پستی نمی‌فرستند — و مشتری هیچ
+    خطایی نمی‌بیند، فقط کانالش خالی می‌ماند. از بیرون شبیه «سرویس کند
+    است» به نظر می‌رسد، نه شبیه «زیرساخت نداریم». لاگ کافی نیست: کسی
+    دنبال لاگ نمی‌گردد وقتی نمی‌داند چیزی خراب است.
+
+    و حلقه هم نباید بمیرد، وگرنه اضافه کردنِ اکانت هم دیگر کمکی
+    نمی‌کند.
+    """
     db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
     try:
+        from telkap.services import alerts
         from telkap.services.pubpoll import PublicPoller
 
         await _simple(db_module, task_id)
+        alerts.reset()
+        said: list[str] = []
+
+        async def fake_send(text, **kwargs):
+            said.append(text)
+            return 1
+
+        monkeypatch.setattr(alerts, "send", fake_send)
+
         copier = _RecordingCopier()
         assert await PublicPoller(copier).run_once() == 0
+        assert said, "هیچ‌کس خبردار نشد که خواننده‌ای نداریم"
+        assert "/pool" in said[0], "گفته نشد چه کار باید کرد"
     finally:
         await db_module.close_db()

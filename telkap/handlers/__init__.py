@@ -8,6 +8,7 @@ from telkap.handlers import (
     admin_coupons,
     admin_limits,
     admin_plans,
+    admin_pool,
     admin_referral,
     admin_reports,
     admin_system,
@@ -46,6 +47,7 @@ LOCKED: tuple[tuple[Router, str], ...] = (
     (admin_coupons.router, roles.CAP_MONEY),
     (admin_reports.router, roles.CAP_REPORTS),
     (admin_system.router, roles.CAP_SYSTEM),
+    (admin_pool.router, roles.CAP_SYSTEM),
 )
 
 
@@ -69,6 +71,7 @@ def build_router() -> Router:
     root.include_router(admin_coupons.router)
     root.include_router(admin_reports.router)
     root.include_router(admin_system.router)
+    root.include_router(admin_pool.router)
     root.include_router(support.router)
     root.include_router(account.router)
     root.include_router(tasks.router)

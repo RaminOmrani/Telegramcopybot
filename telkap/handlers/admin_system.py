@@ -39,6 +39,9 @@ def _menu_kb() -> InlineKeyboardBuilder:
         InlineKeyboardButton(text="🛠 حالت تعمیر", callback_data="sys:maint"),
     )
     kb.row(InlineKeyboardButton(text="🆔 گرفتن شناسه‌ی کانال", callback_data="sys:chatid"))
+    # اکانت‌های سرویس زیرساختِ حالت ساده‌اند: اگر همه‌شان بخوابند هر کارِ
+    # ساده‌ای ساکت می‌شود، بی‌آنکه سمت مشتری خطایی دیده شود.
+    kb.row(InlineKeyboardButton(text="👥 اکانت‌های سرویس", callback_data="pool:home"))
     if get_settings().web_enabled:
         kb.row(InlineKeyboardButton(text="🖥 پنل وب", callback_data="sys:web"))
     kb.row(InlineKeyboardButton(text="🤖 هوش مصنوعی", callback_data="sys:ai"))

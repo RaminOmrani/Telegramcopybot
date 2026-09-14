@@ -89,6 +89,10 @@ class Flow(StatesGroup):
     watermark_logo = State()
     watermark_input = State()
 
+    # اکانت‌های سرویس (خواننده‌های مبدأ عمومی در حالت ساده)
+    pool_label = State()
+    pool_password = State()
+
 
 async def get_or_create_user(tg_user: TgUser) -> User:
     async with get_session() as db:
