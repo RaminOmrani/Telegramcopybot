@@ -8,6 +8,7 @@ from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, timedelta
 from pathlib import Path
+from types import SimpleNamespace
 from typing import Any
 
 from sqlalchemy import delete, func, select
@@ -1247,22 +1248,24 @@ class Copier:
         return result.ids
 
     async def _reader_for(self, messages: Sequence):
-        """کلاینتِ اکانت سرویسی که این مبدأ را می‌خواند.
+        """کلاینتی که می‌تواند رسانه‌ی این پست را دانلود کند.
 
-        از همان اجاره‌ی استخر می‌آید تا فایل از دیدِ همان اکانتی دانلود
-        شود که پست را دیده — اکانت دیگری ممکن است اصلاً به آن کانال
-        دسترسی نداشته باشد.
+        جوابِ «چه کسی این مبدأ را می‌خواند» یک جا داده می‌شود — در
+        `reader` — تا با اضافه شدنِ حالتِ تازه، هر جا جداگانه اشتباه
+        نشود. همین سؤال در صف تلاش مجدد و صف تأیید هم پرسیده می‌شود و
+        هر سه تا دیروز جوابِ قدیمی را می‌دادند.
         """
-        from telkap.services import pool
+        from telkap.services import reader
 
         chat_id = getattr(messages[0], "chat_id", None)
-        try:
-            if chat_id:
-                account = await pool.lease(int(chat_id))
-                return await pool.client_for(account)
-            return await pool.any_client()
-        except pool.NoAccount:
-            return None
+        return await reader.for_task(
+            SimpleNamespace(
+                mode=Task.MODE_SIMPLE,
+                source_id=int(chat_id) if chat_id else None,
+                user_id=0,
+            ),
+            self.manager,
+        )
 
     async def _send(
         self,

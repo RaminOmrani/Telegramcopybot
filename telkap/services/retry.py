@@ -14,6 +14,7 @@ from sqlalchemy import select
 
 from telkap.db import get_session, log_activity
 from telkap.models import DeliveryTiming, RetryItem, Task, utcnow
+from telkap.services import reader
 from telkap.services.copier import RETRY_BACKOFF, SendFailed
 
 log = logging.getLogger(__name__)
@@ -62,9 +63,13 @@ class RetryWorker:
             await self._drop(item.id)
             return False
 
-        client = await self.manager.ensure_client(item.user_id)
+        # <b>کدام اکانت این مبدأ را می‌خواند</b> — به حالتِ کار بستگی
+        # دارد. تا دیروز همیشه اکانتِ مشتری پرسیده می‌شد، و برای مشتریِ
+        # حالت ساده که اکانتی ندارد، هر تلاشِ مجدد به همین دیوار
+        # می‌خورد تا سقف تمام شود و پست بی‌صدا دور ریخته شود.
+        client = await reader.for_task(task, self.manager)
         if client is None:
-            await self._reschedule(item, "اکانت کاربری متصل نیست")
+            await self._reschedule(item, reader.why_missing(task))
             return False
 
         try:

@@ -18,6 +18,7 @@ from sqlalchemy.exc import IntegrityError
 
 from telkap.db import get_session, log_activity
 from telkap.models import DeliveryTiming, PendingPost, Task, utcnow
+from telkap.services import reader
 
 log = logging.getLogger(__name__)
 
@@ -254,9 +255,11 @@ class ReleaseWorker:
             await drop(item.id)
             return False
 
-        client = await self.manager.ensure_client(item.user_id)
+        # مثل صف تلاش مجدد: خواننده به حالتِ کار بستگی دارد، نه همیشه
+        # اکانتِ مشتری. برای کارِ ساده، پست وگرنه تا ابد در صف می‌ماند.
+        client = await reader.for_task(task, self.manager)
         if client is None:
-            return False      # اکانت وصل نیست؛ دفعه‌ی بعد دوباره تلاش می‌شود
+            return False      # خواننده در دسترس نیست؛ دفعه‌ی بعد دوباره
 
         try:
             messages = await client.get_messages(
