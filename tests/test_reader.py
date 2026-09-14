@@ -155,9 +155,9 @@ async def test_a_simple_customers_retry_actually_retries(tmp_path, monkeypatch):
     """
     db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
     try:
-        from tests.test_copier import FakeMessage
         from telkap.models import RetryItem
         from telkap.services.retry import RetryWorker
+        from tests.test_copier import FakeMessage
 
         await _simple(db_module, task_id)
         _service_account(monkeypatch, _Messages([FakeMessage(id=5, message="سلام")]))
@@ -187,9 +187,9 @@ async def test_a_simple_customers_approval_queue_actually_releases(
     می‌شد نه می‌رفت — تا ابد در صف."""
     db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
     try:
-        from tests.test_copier import FakeMessage
         from telkap.models import PendingPost
         from telkap.services.pending import ReleaseWorker
+        from tests.test_copier import FakeMessage
 
         await _simple(db_module, task_id)
         _service_account(monkeypatch, _Messages([FakeMessage(id=5, message="سلام")]))
