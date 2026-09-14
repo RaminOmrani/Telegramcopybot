@@ -226,9 +226,7 @@ async def got_title(message: Message, state: FSMContext) -> None:
     await message.answer(
         f"✅ کار «{title}» ساخته شد.\n\n"
         "پست‌های <b>تازه</b>ی کانال مبدأ از این پس در کانال شما منتشر "
-        "می‌شوند. پست‌های قبلی منتشر نمی‌شوند.\n\n"
-        "<i>در این حالت فعلاً فقط پست‌های متنی کپی می‌شوند؛ پست‌های "
-        "عکس و ویدیو به‌زودی اضافه می‌شوند.</i>",
+        "می‌شوند — متن، عکس، ویدیو و آلبوم. پست‌های قبلی منتشر نمی‌شوند.",
         reply_markup=main_menu(),
     )
     await show_task(message, task_id)

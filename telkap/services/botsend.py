@@ -265,3 +265,95 @@ async def send_text(
         link_preview_options={"is_disabled": True},
     )
     return Sent(ids=[int(message.message_id)])
+
+
+# ------------------------------------------------------------------ رسانه
+
+# کدام تابعِ ربات برای کدام نوع. `document` پیش‌فرض است چون همیشه
+# می‌رود؛ بقیه فقط شکلِ نمایش را بهتر می‌کنند.
+_SENDERS = {
+    "photo": ("send_photo", "photo"),
+    "video": ("send_video", "video"),
+    "audio": ("send_audio", "audio"),
+    "voice": ("send_voice", "voice"),
+    "animation": ("send_animation", "animation"),
+    "document": ("send_document", "document"),
+}
+
+_ALBUM_MEDIA = {
+    "photo": "InputMediaPhoto",
+    "video": "InputMediaVideo",
+    "audio": "InputMediaAudio",
+    "document": "InputMediaDocument",
+}
+
+
+async def send_media(
+    bot,
+    chat_id,
+    kind: str,
+    paths: list[str],
+    *,
+    caption: str = "",
+    entities=None,
+    buttons=None,
+    silent: bool = False,
+) -> Sent:
+    """فایل‌های دانلودشده را با ربات می‌فرستد.
+
+    <b>چرا دانلود و آپلود، و نه ارجاع به فایل.</b> `file_id` در تلگرام
+    به همان رباتی گره خورده که آن را دیده. فایلی که اکانت سرویس در
+    کانال مبدأ می‌بیند، برای ربات ما شناسه‌ی قابل استفاده‌ای ندارد —
+    پس چاره‌ای جز رد کردنِ خودِ بایت‌ها نیست.
+
+    هزینه‌اش برای متن و عکس ناچیز است و برای ویدیوی سنگین محسوس. اگر
+    روزی به چشم آمد، راهِ بهترش کانالِ واسط است؛ ولی آن چند تکه‌ی
+    متحرکِ بیشتر دارد و اول باید این درست کار کند.
+    """
+    from aiogram.types import FSInputFile
+
+    if not paths:
+        return Sent()
+
+    body = trim(caption, MAX_CAPTION)
+    shared = {
+        "chat_id": chat_id,
+        "disable_notification": silent,
+    }
+
+    if len(paths) == 1:
+        name, field = _SENDERS.get(kind, _SENDERS["document"])
+        sender = getattr(bot, name, None)
+        if sender is None:                       # نسخه‌ای که این نوع را ندارد
+            sender, field = bot.send_document, "document"
+        message = await sender(
+            **shared,
+            **{field: FSInputFile(paths[0])},
+            caption=body or None,
+            caption_entities=to_bot_entities(entities) or None if body else None,
+            reply_markup=buttons,
+        )
+        return Sent(ids=[int(message.message_id)])
+
+    # <b>آلبوم.</b> تلگرام کپشن را فقط از اولین آیتم می‌خواند؛ گذاشتنش
+    # روی همه یعنی متن زیر هر عکس تکرار شود.
+    import aiogram.types as tg
+
+    cls = getattr(tg, _ALBUM_MEDIA.get(kind, "InputMediaDocument"))
+    group = []
+    for index, path in enumerate(paths[:10]):
+        if index == 0 and body:
+            group.append(
+                cls(
+                    media=FSInputFile(path),
+                    caption=body,
+                    caption_entities=to_bot_entities(entities) or None,
+                )
+            )
+        else:
+            group.append(cls(media=FSInputFile(path)))
+
+    # <b>آلبوم دکمه نمی‌گیرد.</b> تلگرام روی send_media_group صفحه‌کلید
+    # قبول نمی‌کند؛ فرستادنش خطا می‌دهد و کلِ پست را می‌اندازد.
+    sent = await bot.send_media_group(**shared, media=group)
+    return Sent(ids=[int(m.message_id) for m in sent])

@@ -1184,14 +1184,10 @@ class Copier:
     ) -> list[int]:
         """مسیر حالت ساده: خودِ ربات در مقصد پست می‌گذارد.
 
-        <b>رسانه هنوز از اینجا نمی‌رود.</b> فایلی که اکانت سرویس دیده
-        برای ربات `file_id` قابل استفاده ندارد؛ یا باید دانلود و دوباره
-        آپلود شود یا از کانال واسط رد شود. آن تصمیم جداست.
-
-        تا آن موقع، پستِ رسانه‌دار <b>رد می‌شود، نه نصفه می‌رود</b>:
-        فرستادنِ کپشنِ تنها به‌جای عکس، پستی می‌سازد که بی‌معناست و
-        کاربر هم نمی‌فهمد چرا — و بدتر، در جدول نگاشت «فرستاده شد»
-        ثبت می‌شود و دیگر هیچ‌وقت درست فرستاده نمی‌شود.
+        <b>رسانه از راهِ دانلود و آپلود می‌رود.</b> `file_id` در تلگرام
+        به همان رباتی گره خورده که آن را دیده؛ فایلی که اکانت سرویس در
+        مبدأ می‌بیند برای ربات ما شناسه‌ی قابل استفاده‌ای ندارد. پس
+        چاره‌ای جز رد کردنِ خودِ بایت‌ها نیست.
         """
         from telkap.services import botsend
 
@@ -1199,26 +1195,74 @@ class Copier:
         if bot is None:
             raise RuntimeError("ربات در دسترس نیست؛ ارسال حالت ساده ممکن نشد")
 
+        buttons = (
+            botsend.to_bot_buttons(messages[0]) if cfg.get("copy_buttons") else None
+        )
         media_kind = classify_media(messages[0])
-        if media_kind != "text" and not cfg.get("caption_only"):
-            log.info(
-                "حالت ساده هنوز رسانه نمی‌فرستد؛ پست %s رد شد",
-                getattr(messages[0], "id", "?"),
+
+        if media_kind == "text" or cfg.get("caption_only"):
+            self._last_path = DeliveryTiming.PATH_TEXT
+            result = await botsend.send_text(
+                bot, target, text,
+                entities=entities, buttons=buttons,
+                silent=bool(cfg.get("silent")),
             )
+            return result.ids
+
+        if media_kind == "poll":
+            # نظرسنجی محتوای فایلی ندارد و باید از نو ساخته شود. تا
+            # وقتی نساخته‌ایم، رد کردنش از فرستادنِ یک پستِ بی‌ربط بهتر
+            # است.
+            log.info("حالت ساده هنوز نظرسنجی نمی‌سازد؛ پست رد شد")
             return []
 
-        self._last_path = DeliveryTiming.PATH_TEXT
-        result = await botsend.send_text(
-            bot,
-            target,
-            text,
-            entities=entities,
-            buttons=(
-                botsend.to_bot_buttons(messages[0]) if cfg.get("copy_buttons") else None
-            ),
-            silent=bool(cfg.get("silent")),
-        )
+        client = await self._reader_for(messages)
+        if client is None:
+            raise RuntimeError("خواننده‌ای برای دانلود رسانه نبود")
+
+        # <b>همان مسیرِ دانلودِ همیشگی.</b> تنها فرقش این است که با
+        # کلاینتِ اکانت سرویس انجام می‌شود، نه اکانتِ مشتری.
+        self._last_path = DeliveryTiming.PATH_REUPLOAD
+        files = await self._download_all(client, messages)
+        if not files:
+            # <b>نه نصفه.</b> فرستادنِ کپشنِ تنها به‌جای عکس، پستی
+            # می‌سازد که بی‌معناست — و بدتر، در نگاشت «فرستاده شد» ثبت
+            # می‌شود و دیگر هیچ‌وقت درست فرستاده نمی‌شود.
+            log.warning("دانلود رسانه‌ی پست %s نشد", getattr(messages[0], "id", "?"))
+            return []
+
+        try:
+            result = await botsend.send_media(
+                bot, target, media_kind, files,
+                caption=text, entities=entities,
+                # تصمیمِ «آلبوم دکمه نمی‌گیرد» یک‌جا گرفته می‌شود، داخل
+                # botsend. تکرارش اینجا فقط این توهم را می‌سازد که
+                # نگهبانِ واقعی همین‌جاست.
+                buttons=buttons,
+                silent=bool(cfg.get("silent")),
+            )
+        finally:
+            for path in files:
+                Path(path).unlink(missing_ok=True)
         return result.ids
+
+    async def _reader_for(self, messages: Sequence):
+        """کلاینتِ اکانت سرویسی که این مبدأ را می‌خواند.
+
+        از همان اجاره‌ی استخر می‌آید تا فایل از دیدِ همان اکانتی دانلود
+        شود که پست را دیده — اکانت دیگری ممکن است اصلاً به آن کانال
+        دسترسی نداشته باشد.
+        """
+        from telkap.services import pool
+
+        chat_id = getattr(messages[0], "chat_id", None)
+        try:
+            if chat_id:
+                account = await pool.lease(int(chat_id))
+                return await pool.client_for(account)
+            return await pool.any_client()
+        except pool.NoAccount:
+            return None
 
     async def _send(
         self,

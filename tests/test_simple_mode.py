@@ -17,19 +17,80 @@ import pytest
 from tests.test_copier import FakeClient, FakeManager, FakeMessage, _setup
 
 
+class _Result:
+    def __init__(self, message_id: int = 900) -> None:
+        self.message_id = message_id
+
+
 class _Bot:
     """رباتی که فقط یادداشت می‌کند چه چیزی از آن خواسته شد."""
 
     def __init__(self) -> None:
         self.sent: list[dict] = []
+        self.photos: list[dict] = []
+        self.documents: list[dict] = []
+        self.videos: list[dict] = []
+        self.groups: list[dict] = []
 
     async def send_message(self, **kwargs):
         self.sent.append(kwargs)
+        return _Result(900 + len(self.sent))
 
-        class _Result:
-            message_id = 900 + len(self.sent)
+    async def send_photo(self, **kwargs):
+        self.photos.append(kwargs)
+        return _Result(950 + len(self.photos))
 
-        return _Result()
+    async def send_document(self, **kwargs):
+        self.documents.append(kwargs)
+        return _Result(960 + len(self.documents))
+
+    async def send_video(self, **kwargs):
+        self.videos.append(kwargs)
+        return _Result(970 + len(self.videos))
+
+    @property
+    def any_media(self) -> list[dict]:
+        return self.photos + self.documents + self.videos
+
+    async def send_media_group(self, **kwargs):
+        self.groups.append(kwargs)
+        return [_Result(980 + i) for i in range(len(kwargs["media"]))]
+
+
+def _photo_media():
+    """رسانه‌ی واقعیِ «عکس» — نه یک شیء دلخواه.
+
+    `classify_media` روی شیء ناشناخته <b>document</b> برمی‌گرداند، پس
+    تستی که با `object()` نوشته شود مسیرِ فایل را می‌سنجد نه مسیرِ عکس.
+    """
+    from telethon.tl.types import MessageMediaPhoto
+
+    return MessageMediaPhoto(photo=None)
+
+
+def _reader(monkeypatch, tmp_path, names: list[str]) -> list[str]:
+    """<b>اکانت سرویسی که فایل را دانلود می‌کند.</b>
+
+    فایل‌های واقعی روی دیسک ساخته می‌شوند تا هم آپلود معنا داشته باشد
+    و هم بشود سنجید که بعدش پاک می‌شوند.
+    """
+    from telkap.services import copier as copier_module
+
+    made: list[str] = []
+    for name in names:
+        path = tmp_path / name
+        path.write_bytes(b"\x89PNG\r\n\x1a\n" + b"0" * 64)
+        made.append(str(path))
+
+    async def fake_reader(self, messages):
+        return object()
+
+    async def fake_download(self, client, messages):
+        return list(made)
+
+    monkeypatch.setattr(copier_module.Copier, "_reader_for", fake_reader)
+    monkeypatch.setattr(copier_module.Copier, "_download_all", fake_download)
+    return made
 
 
 async def _simple_task(db_module, task_id: int) -> None:
@@ -194,18 +255,51 @@ async def test_the_rules_still_run_in_simple_mode(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_a_media_post_is_skipped_whole_not_sent_as_bare_text(
+async def test_a_photo_really_goes_as_a_photo(tmp_path, monkeypatch):
+    """<b>رسانه از راهِ دانلود و آپلود می‌رود — و به شکلِ درست.</b>
+
+    `file_id` در تلگرام به همان رباتی گره خورده که آن را دیده؛ فایلی
+    که اکانت سرویس در مبدأ می‌بیند برای ربات ما شناسه‌ی قابل
+    استفاده‌ای ندارد. پس خودِ بایت‌ها رد می‌شوند.
+
+    و نوعش باید حفظ شود: عکسی که به‌صورت «فایل» برود، در کانال مشتری
+    به‌جای تصویر یک پیوستِ قابل دانلود دیده می‌شود.
+
+    (نسخه‌ی اولِ این تست `object()` را رسانه می‌داد، که <b>document</b>
+    دسته‌بندی می‌شود — یعنی اسمش «عکس» بود و مسیرِ فایل را می‌سنجید.)
+    """
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services.copier import Copier
+
+        await _simple_task(db_module, task_id)
+        bot = _install(monkeypatch)
+        _reader(monkeypatch, tmp_path, ["shot.jpg"])
+
+        photo = FakeMessage(id=5, message="کپشن عکس", media=_photo_media())
+        copier = Copier(FakeManager(FakeClient()))
+        assert await copier.process(7, task_id, [photo])
+
+        assert bot.photos, f"عکس به‌شکل عکس نرفت (documents={len(bot.documents)})"
+        assert bot.photos[0]["caption"] == "کپشن عکس"
+        assert bot.sent == [], "به‌جای عکس، متنِ تنها رفت"
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_a_failed_download_sends_nothing_and_locks_nothing(
     tmp_path, monkeypatch
 ):
-    """<b>مهم‌ترین تستِ این مرحله.</b>
+    """<b>نه نصفه.</b>
 
-    مسیر رسانه هنوز ساخته نشده. وسوسه‌ی طبیعی این است که «فعلاً
-    کپشن را بفرستیم» — ولی آن پست، عکسِ بدونِ عکس است: برای مخاطب
-    بی‌معناست و برای مشتری هم معلوم نیست چرا.
+    وسوسه‌ی طبیعی وقتی دانلود شکست می‌خورد این است که «حداقل کپشن را
+    بفرستیم» — ولی آن پست، عکسِ بدونِ عکس است: برای مخاطب بی‌معناست و
+    برای مشتری هم معلوم نیست چرا.
 
-    بدتر از آن: در جدول نگاشت «فرستاده شد» ثبت می‌شود، یعنی وقتی
-    مسیر رسانه ساخته شد، این پست‌ها <b>هیچ‌وقت</b> درست فرستاده
-    نمی‌شوند. یک نیمه‌کاری که خودش را برای همیشه قفل می‌کند.
+    بدتر از آن: در جدول نگاشت «فرستاده شد» ثبت می‌شود، یعنی همان پست
+    <b>هیچ‌وقت</b> دیگر درست فرستاده نمی‌شود. یک نیمه‌کاری که خودش را
+    برای همیشه قفل می‌کند.
     """
     db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
     try:
@@ -216,16 +310,111 @@ async def test_a_media_post_is_skipped_whole_not_sent_as_bare_text(
 
         await _simple_task(db_module, task_id)
         bot = _install(monkeypatch)
+        _reader(monkeypatch, tmp_path, [])          # دانلود چیزی برنگرداند
 
-        photo = FakeMessage(id=5, message="کپشن عکس", media=object())
+        photo = FakeMessage(id=5, message="کپشن عکس", media=_photo_media())
         copier = Copier(FakeManager(FakeClient()))
         await copier.process(7, task_id, [photo])
 
-        assert bot.sent == [], "کپشنِ تنها به‌جای عکس رفت"
+        assert bot.sent == [] and bot.any_media == [], "کپشنِ تنها به‌جای عکس رفت"
 
         async with db_module.get_session() as db:
             rows = list((await db.execute(select(MessageMap))).scalars())
         assert rows == [], "پستِ نرفته «فرستاده شد» ثبت شد و برای همیشه قفل می‌شود"
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_an_album_keeps_its_caption_on_the_first_item_only(
+    tmp_path, monkeypatch
+):
+    """تلگرام کپشن را فقط از اولین آیتم می‌خواند؛ گذاشتنش روی همه یعنی
+    متن زیر هر عکس تکرار شود."""
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services.copier import Copier
+
+        await _simple_task(db_module, task_id)
+        bot = _install(monkeypatch)
+        _reader(monkeypatch, tmp_path, ["a.jpg", "b.jpg", "c.jpg"])
+
+        album = [
+            FakeMessage(id=5, message="کپشن آلبوم", media=_photo_media(), grouped_id=1),
+            FakeMessage(id=6, media=_photo_media(), grouped_id=1),
+            FakeMessage(id=7, media=_photo_media(), grouped_id=1),
+        ]
+        copier = Copier(FakeManager(FakeClient()))
+        assert await copier.process(7, task_id, album)
+
+        assert len(bot.groups) == 1
+        media = bot.groups[0]["media"]
+        assert len(media) == 3
+        captions = [getattr(item, "caption", None) for item in media]
+        assert captions[0] == "کپشن آلبوم"
+        assert captions[1:] == [None, None], "کپشن زیر هر عکس تکرار شد"
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_an_album_is_sent_without_buttons(tmp_path, monkeypatch):
+    """<b>نگهبانِ آینده، نه اشکالِ امروز.</b>
+
+    تلگرام روی `send_media_group` صفحه‌کلید قبول نمی‌کند: فرستادنِ
+    دکمه‌ها همراه آلبوم یعنی خطا، و خطا یعنی <b>هیچ‌کدام</b> از عکس‌ها
+    نروند.
+
+    کدِ امروز اصلاً دکمه‌ای به آن مسیر نمی‌دهد، پس این تست همین حالا
+    قرمز نمی‌شود — کارش این است که اگر روزی کسی «برای کامل بودن»
+    `reply_markup` را اضافه کرد، همان‌جا جلویش را بگیرد. کار با
+    دکمه‌های روشن اجرا می‌شود تا مسیر واقعاً از همان‌جا رد شود.
+    """
+    db_module, task_id = await _setup(
+        tmp_path, monkeypatch, settings={"copy_buttons": True}
+    )
+    try:
+        from telkap.services.copier import Copier
+
+        await _simple_task(db_module, task_id)
+        bot = _install(monkeypatch)
+        _reader(monkeypatch, tmp_path, ["a.jpg", "b.jpg"])
+
+        album = [
+            FakeMessage(id=5, message="متن", media=_photo_media(), grouped_id=1),
+            FakeMessage(id=6, media=_photo_media(), grouped_id=1),
+        ]
+        copier = Copier(FakeManager(FakeClient()))
+        assert await copier.process(7, task_id, album)
+
+        assert "reply_markup" not in bot.groups[0]
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_downloaded_files_are_cleaned_up(tmp_path, monkeypatch):
+    """<b>دیسکِ سرور بی‌نهایت نیست.</b>
+
+    هر پستِ رسانه‌دار یک فایل روی دیسک می‌گذارد. با چند ده کار و چند
+    صد پست در روز، فایل‌های جامانده دیسک را پر می‌کنند — و وقتی پر
+    شود، <b>همه‌چیز</b> می‌خوابد، نه فقط حالت ساده.
+    """
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services.copier import Copier
+
+        await _simple_task(db_module, task_id)
+        _install(monkeypatch)
+        paths = _reader(monkeypatch, tmp_path, ["shot.jpg"])
+
+        photo = FakeMessage(id=5, message="کپشن", media=_photo_media())
+        copier = Copier(FakeManager(FakeClient()))
+        await copier.process(7, task_id, [photo])
+
+        from pathlib import Path
+
+        assert not Path(paths[0]).exists(), "فایل دانلودشده روی دیسک ماند"
     finally:
         await db_module.close_db()
 

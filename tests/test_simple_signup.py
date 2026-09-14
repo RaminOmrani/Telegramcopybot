@@ -328,12 +328,12 @@ async def test_the_task_is_created_in_simple_mode(tmp_path, monkeypatch):
 
 
 @pytest.mark.asyncio
-async def test_the_customer_is_told_media_is_not_copied_yet(tmp_path, monkeypatch):
-    """<b>محدودیتی که باید <i>پیش</i> از اولین پست گفته شود.</b>
+async def test_the_customer_is_told_the_archive_is_not_copied(tmp_path, monkeypatch):
+    """<b>انتظاری که باید <i>پیش</i> از اولین پست تنظیم شود.</b>
 
-    مسیر رسانه هنوز نیست. اگر همین حالا گفته نشود، اولین چیزی که
-    مشتری می‌بیند این است که عکس‌ها نیامده‌اند — و آن را خرابی
-    می‌فهمد، نه محدودیتِ اعلام‌شده.
+    آرشیو کپی نمی‌شود. اگر همین حالا گفته نشود، مشتری کانالش را نگاه
+    می‌کند، خالی می‌بیند و فکر می‌کند کار نمی‌کند — در حالی که فقط
+    هنوز پستِ تازه‌ای در مبدأ نیامده.
     """
     db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
     try:
@@ -349,7 +349,6 @@ async def test_the_customer_is_told_media_is_not_copied_yet(tmp_path, monkeypatc
         await simple_task.got_title(message, state)
 
         said = " ".join(message.replies)
-        assert "متنی" in said, "محدودیت رسانه گفته نشد"
         assert "قبلی منتشر نمی‌شوند" in said, "درباره‌ی آرشیو چیزی گفته نشد"
     finally:
         await db_module.close_db()
