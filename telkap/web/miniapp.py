@@ -237,6 +237,13 @@ async def me(request: web.Request) -> web.Response:
         "name": (person.first_name or "").strip(),
         "banned": bool(person.is_banned),
         "connected": bool(person.session_enc),
+        # <b>آیا راهِ «بدون اکانت» همین حالا باز است.</b>
+        #
+        # بدون این، مینی‌اپ به کسی که اکانت وصل نکرده می‌گوید «ربات
+        # نمی‌تواند کانال مبدا را بخواند» — جمله‌ای که با آمدنِ حالت
+        # ساده دیگر درست نیست، و او را از تنها راهی که برایش کار
+        # می‌کند دور می‌کند.
+        "simple_ready": await _simple_ready(),
         "wallet": await wallet.balance(user_id),
         "plan": (
             {"code": plan.code, "title": plan.title, "days_left": days}
@@ -476,6 +483,23 @@ def _ai_ready() -> bool:
     return ai.configured()
 
 
+async def _simple_ready() -> bool:
+    """آیا خواننده‌ای برای کانال‌های عمومی داریم.
+
+    <b>چرا پیش از پیشنهاد دادن پرسیده می‌شود.</b> اگر ظرفیت پر باشد یا
+    هیچ اکانت سرویسی نباشد، پیشنهادِ حالت ساده یعنی فرستادنِ کاربر به
+    بن‌بستی دیگر — و بن‌بستِ دوم بدتر از اولی است، چون این بار امید
+    هم داده‌ایم.
+    """
+    try:
+        from telkap.services import pool
+
+        used, total = await pool.capacity()
+    except Exception:
+        return False
+    return total > used
+
+
 async def _own_task(user_id: int, task_id: int) -> Task | None:
     async with get_session() as db:
         task = await db.get(Task, task_id)
@@ -580,6 +604,15 @@ async def task_create(request: web.Request) -> web.Response:
     async with get_session() as db:
         person = await db.get(User, user_id)
     if person is None or not person.is_logged_in:
+        # <b>بن‌بست نباشد.</b> اگر راهی هست که اکانت نمی‌خواهد، همان
+        # گفته شود؛ وگرنه کاربر فقط می‌فهمد «نمی‌شود».
+        if await _simple_ready():
+            return _no(
+                "برای کانال مبدأ عمومی لازم نیست اکانتتان را وصل کنید. "
+                "در خودِ ربات «کار جدید» را بزنید و «بدون وصل کردن اکانت» "
+                "را انتخاب کنید.",
+                status=409,
+            )
         return _no("اول باید اکانت کاربری‌تان را در ربات وصل کنید", status=409)
 
     plan = await subscription.active_plan_for(user_id)

@@ -1126,3 +1126,55 @@ def test_the_app_page_warns_when_ai_is_off():
     page = _app_page()
     assert "ai_ready" in page
     assert "هوش مصنوعی روی این سرور فعال نیست" in page
+
+
+# ------------------------------- مینی‌اپ و مشتریِ بدونِ اکانت (حالت ساده)
+
+
+@pytest.mark.asyncio
+async def test_the_mini_app_says_whether_the_no_account_route_is_open(
+    tmp_path, monkeypatch
+):
+    """<b>بدون این، مینی‌اپ چیزی می‌گوید که دیگر درست نیست.</b>
+
+    تا امروز به هر کسی که اکانت وصل نکرده می‌گفت «ربات نمی‌تواند
+    کانال مبدا را بخواند» — جمله‌ای که با آمدنِ حالت ساده غلط شد، و
+    او را از تنها راهی که برایش کار می‌کند دور می‌کرد.
+    """
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.web import miniapp
+
+        async with db_module.get_session() as db:
+            from telkap.models import ServiceAccount
+
+            db.add(ServiceAccount(label="svc", session_enc="enc"))
+            await db.commit()
+
+        assert await miniapp._simple_ready() is True
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_with_no_reader_the_mini_app_does_not_promise_it(tmp_path, monkeypatch):
+    """<b>بن‌بستِ دوم بدتر از اولی است</b>، چون این بار امید هم داده‌ایم."""
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.web import miniapp
+
+        assert await miniapp._simple_ready() is False
+    finally:
+        await db_module.close_db()
+
+
+def test_the_mini_app_banner_is_not_a_dead_end():
+    """صفحه‌ی مینی‌اپ باید هر دو حالت را بشناسد، نه فقط یکی."""
+    from pathlib import Path
+
+    page = (
+        Path(__file__).parent.parent / "site" / "app" / "index.html"
+    ).read_text(encoding="utf-8")
+
+    assert "me.simple_ready" in page, "مینی‌اپ اصلاً از این خبر ندارد"
+    assert "ادمین کنید" in page, "راهِ بدون اکانت توضیح داده نشده"
