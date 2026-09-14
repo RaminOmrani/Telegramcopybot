@@ -374,7 +374,23 @@ class UserbotManager:
 
         async with get_session() as db:
             rows = await db.execute(
-                select(Task).where(Task.user_id == user_id, Task.enabled.is_(True))
+                select(Task).where(
+                    Task.user_id == user_id,
+                    Task.enabled.is_(True),
+                    # <b>کارِ حالت ساده خواننده‌ی خودش را دارد.</b>
+                    #
+                    # اگر اینجا هم ثبت شود، مشتری‌ای که <i>هم</i> اکانت
+                    # وصل کرده <i>هم</i> کارِ ساده دارد، همان کار را از
+                    # دو راه می‌گیرد — و رفتارِ حالت ساده به این بند
+                    # می‌شود که طرف تصادفاً اکانت دارد یا نه.
+                    #
+                    # و بدتر از دوگانگی: جارو هم همان مبدأ را برمی‌دارد
+                    # و پست‌ها با برچسب «sweep» ثبت می‌شوند به‌جای
+                    # «simple». آن‌وقت `sweep_share` — که تنها نشانه‌ی
+                    # خرابیِ آپدیت‌هاست — با رشدِ حالت ساده بالا می‌رود
+                    # و هشدارش بی‌معنا می‌شود.
+                    Task.mode != Task.MODE_SIMPLE,
+                )
             )
             tasks = list(rows.scalars())
 

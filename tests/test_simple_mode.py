@@ -472,3 +472,58 @@ async def test_without_a_running_bot_the_failure_is_loud(tmp_path, monkeypatch):
         assert queued, "پست نه رفت و نه در صف تلاش مجدد نشست"
     finally:
         await db_module.close_db()
+
+
+# ------------------------------------- جدایی کاملِ دو مسیر در سمتِ اکانت
+
+
+@pytest.mark.asyncio
+async def test_a_simple_task_is_never_wired_to_the_customers_account(
+    tmp_path, monkeypatch
+):
+    """<b>مشتری‌ای که هم اکانت دارد هم کارِ ساده.</b>
+
+    این حالت کاملاً عادی است: کسی که قبلاً اکانتش را وصل کرده، بعداً
+    یک کارِ ساده هم می‌سازد. اگر آن کار روی اکانتش هم ثبت شود، دو چیز
+    خراب می‌شود:
+
+    ۱) رفتارِ حالت ساده به این بند می‌شود که طرف تصادفاً اکانت دارد
+       یا نه — یعنی دو مشتری با یک تنظیمات، دو تجربه‌ی متفاوت.
+
+    ۲) <b>و مهم‌تر:</b> جارو همان مبدأ را برمی‌دارد و پست‌ها با برچسب
+       «sweep» ثبت می‌شوند به‌جای «simple». آن‌وقت `sweep_share` — که
+       تنها نشانه‌ی خرابیِ آپدیت‌هاست و دیروز ۹۲٪ بودنش خرابی را لو
+       داد — با رشدِ حالت ساده بالا می‌رود و هشدارش بی‌معنا می‌شود.
+    """
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services.userbot import manager
+
+        await _simple_task(db_module, task_id)
+
+        class _Runtime:
+            def __init__(self) -> None:
+                self.handlers: list = []
+                self.source_map: dict = {}
+
+        client = FakeClient()
+        monkeypatch.setattr(
+            manager, "ensure_client", lambda user_id: _returns(client)
+        )
+        manager._runtimes[7] = _Runtime()
+        manager.bind_copier(object())
+
+        active = await manager.reload_user(7)
+
+        assert active == 0, "کارِ ساده روی اکانت مشتری ثبت شد"
+        assert manager.tasks_for_chat(7, -1001) == []
+    finally:
+        manager._runtimes.pop(7, None)
+        await db_module.close_db()
+
+
+def _returns(value):
+    async def _inner():
+        return value
+
+    return _inner()
