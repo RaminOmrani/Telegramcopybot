@@ -166,6 +166,21 @@ class Task(Base):
     SOURCE_TELEGRAM = "telegram"
     SOURCE_RSS = "rss"
 
+    # <b>چه کسی این کار را انجام می‌دهد.</b>
+    #
+    # `full` — اکانت خودِ مشتری می‌خواند و می‌فرستد. همه‌کاره است:
+    #   مبدأ خصوصی، پست‌های قدیمی، هر امکانی.
+    # `simple` — اکانت سرویسِ ما مبدأ <b>عمومی</b> را می‌خواند و خودِ
+    #   ربات در مقصد پست می‌گذارد. مشتری هیچ اکانتی وصل نمی‌کند و فقط
+    #   ربات را در کانالش ادمین می‌کند.
+    #
+    # پیش‌فرض عمداً `full` است: هر کارِ موجودی امروز همین است و
+    # پیش‌فرضِ دیگر یعنی خواباندنِ همه‌شان سرِ اولین به‌روزرسانی.
+    MODE_FULL = "full"
+    MODE_SIMPLE = "simple"
+
+    mode: Mapped[str] = mapped_column(String(8), default=MODE_FULL, index=True)
+
     source_kind: Mapped[str] = mapped_column(String(16), default=SOURCE_TELEGRAM)
     source_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
     # ۴۰۰ نویسه چون آدرس فید می‌تواند بلند باشد؛ آیدی کانال کوتاه است.
@@ -864,4 +879,89 @@ class DeliveryTiming(Base):
     via: Mapped[str] = mapped_column(String(16), default=VIA_UPDATE, index=True)
     media_kind: Mapped[str] = mapped_column(String(16), default="")
     size_bytes: Mapped[int] = mapped_column(BigInteger, default=0)
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+
+class ServiceAccount(Base):
+    """اکانت‌های <b>خودمان</b> که مبدأهای عمومی را می‌خوانند.
+
+    <b>چرا این جدول لازم شد.</b> بزرگ‌ترین مانعِ فروش یک جمله است:
+    «اکانتم را به یک ربات وصل کنم؟». برای مبدأ عمومی این کار اصلاً
+    لازم نیست — اکانت سرویسِ ما می‌تواند کانال عمومی را <b>بدون عضو
+    شدن</b> بخواند (سنجیده شد، جواب داد)، و ربات — که مشتری ادمینش
+    کرده — پست را می‌گذارد. مشتری هیچ اکانتی وصل نمی‌کند.
+
+    <b>و چرا استخر، نه یک اکانت.</b> با یک اکانت، بن شدنش یعنی توقفِ
+    همه‌ی مشتری‌هایی که در حالت ساده‌اند — همزمان. سرنوشتِ مشترک از
+    بین نمی‌رود ولی با پخش کردن مبدأها روی چند اکانت، دامنه‌اش محدود
+    می‌شود. ساختنِ این انتزاع از همین اول تقریباً مجانی است؛ اضافه
+    کردنش بعداً یعنی بازنویسی.
+
+    <b>سشن اینجا هم رمزنگاری‌شده می‌ماند</b>، با همان کلیدِ .env. این
+    اکانت‌ها مالِ خودمان‌اند ولی همان ارزش را دارند: هرکس سشن را
+    داشته باشد، اکانت را دارد.
+    """
+
+    __tablename__ = "service_accounts"
+
+    STATE_OK = "ok"
+    STATE_FLOOD = "flood"        # محدودیت موقت نرخ
+    STATE_BANNED = "banned"      # تلگرام اکانت را بسته
+    STATE_OFF = "off"            # خودمان خاموشش کرده‌ایم
+
+    # سقفِ خودِ تلگرام برای عضویت در کانال/گروه. ما برای مبدأ عمومی
+    # عضو نمی‌شویم، ولی اگر روزی لازم شد این عدد دیوارِ سخت است.
+    JOIN_LIMIT = 450             # کمی زیر ۵۰۰ واقعی، برای حاشیه‌ی امن
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    label: Mapped[str] = mapped_column(String(64), default="")
+    phone: Mapped[str] = mapped_column(String(32), default="")
+    session_enc: Mapped[str | None] = mapped_column(Text, nullable=True)
+    account_id: Mapped[int | None] = mapped_column(BigInteger, nullable=True)
+    account_name: Mapped[str | None] = mapped_column(String(128), nullable=True)
+
+    enabled: Mapped[bool] = mapped_column(Boolean, default=True, index=True)
+    state: Mapped[str] = mapped_column(String(16), default=STATE_OK, index=True)
+    note: Mapped[str] = mapped_column(String(200), default="")
+
+    # چند مبدأ روی این اکانت نشسته — برای پخش کردنِ بار
+    sources: Mapped[int] = mapped_column(Integer, default=0)
+    # تا این لحظه نباید سراغش رفت (بعد از FloodWait)
+    quiet_until: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    last_used_at: Mapped[datetime | None] = mapped_column(
+        DateTime(timezone=True), nullable=True
+    )
+    created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
+
+    @property
+    def linked(self) -> bool:
+        return bool(self.session_enc)
+
+
+class SourceLease(Base):
+    """کدام مبدأ عمومی روی کدام اکانت سرویس خوانده می‌شود.
+
+    <b>چرا ثابت می‌ماند و هر بار از نو انتخاب نمی‌شود.</b> اگر یک مبدأ
+    هر بار از اکانت دیگری خوانده شود، هر اکانت باید جداگانه آن کانال
+    را resolve کند و شمارشِ بار بی‌معنا می‌شود. مهم‌تر: چند اکانتِ
+    مختلف که پشت سر هم سراغ یک کانال می‌روند، الگویی می‌سازد که از
+    یک خواننده‌ی ثابت مشکوک‌تر است.
+
+    <b>و چرا جدول جدا و نه یک ستون روی کار.</b> چند کار می‌توانند یک
+    مبدأ مشترک داشته باشند — همین الان هم دارند. اجاره مالِ <b>مبدأ</b>
+    است، نه مالِ کار؛ وگرنه یک کانال از دو اکانت خوانده می‌شود.
+    """
+
+    __tablename__ = "source_leases"
+    __table_args__ = (UniqueConstraint("source_id", name="uq_lease_source"),)
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    source_id: Mapped[int] = mapped_column(BigInteger, index=True)
+    source_ref: Mapped[str] = mapped_column(String(128), default="")
+    account_id: Mapped[int] = mapped_column(Integer, index=True)
+    # بزرگ‌ترین آیدی پستی که از این مبدأ دیده‌ایم — نشانه‌ی جارو
+    seen_msg_id: Mapped[int] = mapped_column(BigInteger, default=0)
+    joined: Mapped[bool] = mapped_column(Boolean, default=False)
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)

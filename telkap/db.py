@@ -82,6 +82,11 @@ def _add_missing_columns(conn) -> None:
         "destinations": [("overrides", "JSON DEFAULT '{}'")],
         "tasks": [
             ("source_kind", "VARCHAR(16) DEFAULT 'telegram'"),
+            # <b>پیش‌فرضش عمداً «کامل» است.</b> همه‌ی کارهای موجود با
+            # اکانت خودِ مشتری کار می‌کنند؛ اگر مهاجرت آن‌ها را «ساده»
+            # علامت بزند، کارهای سالمِ امروز فردا سراغ رباتی می‌روند
+            # که در مقصدشان ادمین نیست و همه با هم می‌خوابند.
+            ("mode", "VARCHAR(8) DEFAULT 'full'"),
         ],
         "users": [
             ("watermark_credits", "INTEGER DEFAULT 0"),
