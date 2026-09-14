@@ -93,6 +93,11 @@ class Flow(StatesGroup):
     pool_label = State()
     pool_password = State()
 
+    # ساختِ کار در حالت ساده — بدون وصل کردن اکانت
+    simple_source = State()
+    simple_dest = State()
+    simple_title = State()
+
 
 async def get_or_create_user(tg_user: TgUser) -> User:
     async with get_session() as db:

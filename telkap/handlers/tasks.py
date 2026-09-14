@@ -404,6 +404,14 @@ async def _start_new_task(message: Message, state: FSMContext, user_id: int) -> 
     async with get_session() as db:
         user = await db.get(User, user_id)
     if user is None or not user.is_logged_in:
+        # <b>بن‌بستِ قدیمی.</b> اینجا تنها جواب «اول اکانتت را وصل کن»
+        # بود — دقیقاً همان جمله‌ای که مشتری‌ها می‌گویند به‌خاطرش تست
+        # نمی‌کنند. حالا اگر راهی هست که اکانت نخواهد، همان پیشنهاد
+        # می‌شود.
+        from telkap.handlers.simple_task import offer
+
+        if await offer(message, user_id):
+            return
         await message.answer(NO_LOGIN)
         return
 

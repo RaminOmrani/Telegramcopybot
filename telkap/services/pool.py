@@ -152,6 +152,23 @@ async def lease(source_id: int, source_ref: str = "") -> ServiceAccount:
     return chosen
 
 
+async def any_client():
+    """کلاینتِ هر اکانتِ سالمی — برای کارهایی که به مبدأ خاصی بند نیستند.
+
+    <b>چرا جدا از `lease`.</b> اجاره بر اساس آیدیِ مبدأ داده می‌شود، ولی
+    برای <b>پیدا کردنِ</b> همان آیدی هم به یک کلاینت نیاز داریم. بدون
+    این، ساختنِ هر کارِ تازه به مرغ و تخم‌مرغ می‌خورد.
+
+    عمداً اجاره‌ای ثبت نمی‌کند: یک resolve، خواننده‌ی دائمیِ آن کانال
+    نمی‌سازد.
+    """
+    ready = await _usable()
+    if not ready:
+        raise NoAccount("هیچ اکانت سرویسِ سالمی در دسترس نیست")
+    ready.sort(key=lambda a: (a.sources, a.id))
+    return await client_for(ready[0])
+
+
 async def release(source_id: int) -> None:
     """اجاره را پس می‌گیرد — وقتی آخرین کارِ این مبدأ حذف شد."""
     async with get_session() as db:
