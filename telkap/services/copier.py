@@ -920,10 +920,21 @@ class Copier:
             )
             return False
 
-        client = await self.manager.ensure_client(user_id)
-        if client is None:
-            await self._pause_task(task_id, "اکانت کاربری متصل نیست")
-            return False
+        # <b>در حالت ساده مشتری اصلاً اکانتی ندارد — و نباید داشته باشد.</b>
+        #
+        # این خط تا دیروز بی‌قید‌وشرط بود و همان یعنی: اولین کارِ حالت
+        # ساده، سرِ اولین پست، با پیامِ «اکانت کاربری متصل نیست» متوقف
+        # می‌شد. یعنی کلِ حالتی که برای «اکانت نمی‌خواهیم» ساخته شد،
+        # دقیقاً به نبودنِ اکانت گیر می‌کرد.
+        #
+        # تست‌های خودم هم نگرفته بودندش، چون مدیرِ ساختگی همیشه یک
+        # کلاینت برمی‌گرداند.
+        client = None
+        if not simple:
+            client = await self.manager.ensure_client(user_id)
+            if client is None:
+                await self._pause_task(task_id, "اکانت کاربری متصل نیست")
+                return False
 
         # مرحله‌ی هوش مصنوعی یک بار روی متن خام اجرا می‌شود و نتیجه‌اش
         # ورودی همه‌ی مقصدها می‌گردد؛ وگرنه کاری که یک بار لازم است به

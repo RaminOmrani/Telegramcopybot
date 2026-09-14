@@ -72,6 +72,74 @@ async def test_a_simple_task_posts_with_the_bot_not_the_account(tmp_path, monkey
         await db_module.close_db()
 
 
+class _NoAccountManager:
+    """مدیری که هیچ کلاینتی ندارد — یعنی وضعیتِ <b>واقعیِ</b> هر مشتریِ
+    حالت ساده، که اصلاً اکانتی وصل نکرده."""
+
+    async def ensure_client(self, user_id):
+        return None
+
+    def tasks_for_chat(self, user_id, chat_id):
+        return []
+
+    async def reload_user(self, user_id):
+        return 0
+
+
+@pytest.mark.asyncio
+async def test_a_customer_with_no_account_at_all_still_gets_their_posts(
+    tmp_path, monkeypatch
+):
+    """<b>اشکالی که تست‌های خودم نگرفته بودند.</b>
+
+    موتور پیش از هر کاری کلاینتِ مشتری را می‌گرفت و اگر نبود، کار را
+    با «اکانت کاربری متصل نیست» متوقف می‌کرد. یعنی اولین کارِ حالت
+    ساده، سرِ اولین پست، خاموش می‌شد — کلِ حالتی که برای «اکانت
+    نمی‌خواهیم» ساخته شد، دقیقاً به نبودنِ اکانت گیر می‌کرد.
+
+    تست‌های قبلی‌ام نگرفتندش چون مدیرِ ساختگی‌شان همیشه یک کلاینت
+    برمی‌گرداند — یعنی شرطی را می‌سنجیدند که در واقعیت هیچ‌وقت
+    برقرار نیست.
+    """
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.models import Task
+        from telkap.services.copier import Copier
+
+        await _simple_task(db_module, task_id)
+        bot = _install(monkeypatch)
+
+        copier = Copier(_NoAccountManager())
+        assert await copier.process(7, task_id, [FakeMessage(id=5, message="سلام")])
+        assert len(bot.sent) == 1
+
+        async with db_module.get_session() as db:
+            task = await db.get(Task, task_id)
+        assert task.enabled, f"کار متوقف شد: {task.last_error}"
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_a_full_task_without_an_account_is_still_paused(tmp_path, monkeypatch):
+    """و نگهبانِ طرفِ دیگر: در حالت کامل، نبودنِ اکانت واقعاً یک خرابی
+    است و باید همان‌طور که بود گزارش شود."""
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.models import Task
+        from telkap.services.copier import Copier
+
+        copier = Copier(_NoAccountManager())
+        assert not await copier.process(7, task_id, [FakeMessage(id=5, message="سلام")])
+
+        async with db_module.get_session() as db:
+            task = await db.get(Task, task_id)
+        assert not task.enabled
+        assert "اکانت" in (task.last_error or "")
+    finally:
+        await db_module.close_db()
+
+
 @pytest.mark.asyncio
 async def test_a_full_task_still_goes_through_the_account(tmp_path, monkeypatch):
     """<b>نگهبانِ کارهای امروز.</b>
