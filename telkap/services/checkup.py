@@ -31,7 +31,7 @@ from sqlalchemy import func, select
 
 from telkap.db import get_session
 from telkap.models import Destination, RetryItem, Task, User
-from telkap.services import health, subscription
+from telkap.services import health, reader, subscription
 from telkap.services.userbot import manager
 from telkap.texts import fa_num
 
@@ -119,7 +119,15 @@ async def check_user(user_id: int) -> Report:
             for row in found.scalars():
                 extras.setdefault(row.task_id, []).append(row)
 
-    if person is None or not person.session_enc:
+    # <b>«اکانتت وصل نیست» فقط وقتی خبرِ بدی است که کاری به آن نیاز
+    # داشته باشد.</b>
+    #
+    # مشتریِ حالت ساده عمداً اکانتی وصل نکرده — همان چیزی که برایش
+    # آمده. گفتنِ این جمله به او، اولین چیزی است که در گزارش سلامتش
+    # می‌بیند و او را دنبال کاری می‌فرستد که لازم نیست انجام دهد؛
+    # بدتر، این تصور را می‌سازد که سرویس خراب است.
+    needs_account = any(task.mode != Task.MODE_SIMPLE for task in tasks)
+    if (person is None or not person.session_enc) and (needs_account or not tasks):
         report.account.append("اکانت کاربری وصل نیست؛ بدون آن هیچ کاری اجرا نمی‌شود.")
         report.fixes.append("در ربات «👤 حساب کاربری» ← «اتصال اکانت» را بزنید.")
 
@@ -164,8 +172,14 @@ async def check_user(user_id: int) -> Report:
     async def one(task: Task) -> TaskHealth:
         async with gate:
             try:
+                # کارِ ساده با خواننده‌ی خودش بررسی می‌شود، وگرنه
+                # همیشه «قابل بررسی نبود» می‌گیرد و کاربر فکر می‌کند
+                # خراب است.
+                reading = client
+                if task.mode == Task.MODE_SIMPLE:
+                    reading = await reader.for_task(task, manager)
                 return await asyncio.wait_for(
-                    _check_task(user_id, task, extras.get(task.id, []), client),
+                    _check_task(user_id, task, extras.get(task.id, []), reading),
                     TASK_TIMEOUT,
                 )
             except TimeoutError:

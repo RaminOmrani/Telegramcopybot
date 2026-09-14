@@ -375,3 +375,58 @@ async def test_a_task_that_never_copied_while_the_source_posts_is_broken(
     finally:
         manager._runtimes.clear()
         await db_module.close_db()
+
+
+# --------------------------------------- گزارش سلامت برای مشتریِ حالت ساده
+
+
+@pytest.mark.asyncio
+async def test_a_simple_customer_is_not_told_to_connect_an_account(
+    tmp_path, monkeypatch
+):
+    """<b>«اکانتت وصل نیست» فقط وقتی خبرِ بدی است که کاری به آن نیاز
+    داشته باشد.</b>
+
+    مشتریِ حالت ساده عمداً اکانتی وصل نکرده — همان چیزی که برایش آمده.
+    این جمله اولین چیزی است که در گزارش سلامتش می‌بیند و او را دنبال
+    کاری می‌فرستد که لازم نیست انجام دهد؛ بدتر، این تصور را می‌سازد
+    که سرویس خراب است.
+    """
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.models import Task, User
+        from telkap.services import checkup
+
+        async with db_module.get_session() as db:
+            task = await db.get(Task, task_id)
+            task.mode = Task.MODE_SIMPLE
+            person = await db.get(User, 7)
+            person.session_enc = None      # هیچ اکانتی وصل نکرده
+            await db.commit()
+
+        report = await checkup.check_user(7)
+        said = " ".join(report.account) + " " + " ".join(report.fixes)
+        assert "اتصال اکانت" not in said, "به مشتری گفته شد اکانت وصل کند"
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_a_full_customer_without_an_account_is_still_told(tmp_path, monkeypatch):
+    """و نگهبانِ طرفِ دیگر: برای کارِ کامل، این واقعاً علتِ کار نکردن
+    است و باید همان اول گفته شود."""
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.models import User
+        from telkap.services import checkup
+
+        async with db_module.get_session() as db:
+            person = await db.get(User, 7)
+            person.session_enc = None
+            await db.commit()
+
+        report = await checkup.check_user(7)
+        said = " ".join(report.account) + " " + " ".join(report.fixes)
+        assert "اتصال اکانت" in said
+    finally:
+        await db_module.close_db()
