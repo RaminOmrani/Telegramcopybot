@@ -1,16 +1,24 @@
-"""حساب کاربری: ورود با شماره تلفن، خروج، پین امنیتی."""
+"""حساب کاربری: ورود با QR یا شماره تلفن، خروج، پین امنیتی."""
 from __future__ import annotations
 
+import asyncio
 import logging
+import time
 
 from aiogram import F, Router
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, Message
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    InputMediaPhoto,
+    Message,
+)
+from aiogram.utils.keyboard import InlineKeyboardBuilder
 
 from telkap.db import get_session
-from telkap.keyboards import BTN_ACCOUNT, account_menu, main_menu
-from telkap.models import User
 from telkap.handlers.common import (
     Flow,
     check_pin,
@@ -18,49 +26,154 @@ from telkap.handlers.common import (
     get_or_create_user,
     hash_pin,
 )
-from telkap.services.subscription import active_plan_for, remaining_days
+from telkap.keyboards import account_menu, main_menu, menu_texts, quota_menu
+from telkap.models import User
+from telkap.plans import (
+    CREDIT_HISTORY,
+    CREDIT_WATERMARK,
+    FEAT_HISTORY,
+    FEAT_MESSAGES,
+    FEAT_PRIVATE,
+    FEAT_VIP,
+    FEAT_WATERMARK,
+    UNLIMITED,
+)
+from telkap.services import credits, entitlement, terms
+from telkap.services.subscription import active_entitlement, remaining_days
 from telkap.services.userbot import LoginError, manager
 from telkap.texts import (
     ASK_PIN,
     ASK_PIN_VERIFY,
+    LOGIN_CHOICE,
     LOGIN_CODE,
     LOGIN_INTRO,
     LOGIN_OK,
     LOGIN_PASSWORD,
+    LOGIN_QR,
     PIN_WRONG,
     fa_num,
 )
 
 log = logging.getLogger(__name__)
+
+# کد QR چند ده ثانیه اعتبار دارد؛ هر بار تا این مدت منتظر می‌مانیم و
+# بعد تازه‌اش می‌کنیم. سه دقیقه کل مهلت است — بیشتر از آن یعنی کاربر
+# رفته و ما بی‌جهت یک اتصال باز نگه داشته‌ایم.
+QR_STEP_SECONDS = 25
+QR_TOTAL_SECONDS = 180
 router = Router(name="account")
 
 
 async def _account_text(user: User) -> str:
-    plan = await active_plan_for(user.id)
+    plan, sub_id = await active_entitlement(user.id)
     days = await remaining_days(user.id)
-    lines = ["👤 <b>حساب کاربری</b>\n"]
+    lines = ["👤 <b>حساب کاربری</b>", "━━━━━━━━━━━━━━━━━━", ""]
     if user.is_logged_in:
-        lines.append(f"وضعیت اتصال: ✅ متصل ({user.account_name or user.phone or '—'})")
+        lines.append(f"🔗 اتصال اکانت: ✅ متصل ({user.account_name or user.phone or '—'})")
     else:
-        lines.append("وضعیت اتصال: ❌ متصل نیست")
+        lines.append("🔗 اتصال اکانت: ❌ متصل نیست")
+    lines.append(f"🔒 پین امنیتی: {'✅ فعال' if user.pin_hash else '❌ غیرفعال'}")
+    lines.append("")
+
     if plan:
-        lines.append(f"اشتراک: <b>{plan.title}</b>")
-        lines.append(f"باقی‌مانده: {fa_num(days)} روز")
-        lines.append(f"سقف کارهای کپی: {fa_num(plan.max_tasks)}")
+        msg_used = await entitlement.used(sub_id, FEAT_MESSAGES) if sub_id else 0
+        wm_used = await entitlement.used(sub_id, FEAT_WATERMARK) if sub_id else 0
+        hist_used = await entitlement.used(sub_id, FEAT_HISTORY) if sub_id else 0
+        lines += [
+            f"💎 طرح: <b>{plan.title}</b>",
+            f"📅 باقی‌مانده: <b>{fa_num(days)} روز</b>",
+            f"📋 سقف کار کپی: {fa_num(plan.max_tasks)}",
+            f"📤 سقف مقصد هر کار: {fa_num(plan.max_destinations)}",
+            "",
+            "<b>سهمیه‌های این دوره</b>",
+            f"  📨 پیام: {_usage(msg_used, plan.period_messages)}",
+            f"  💧 واترمارک: {_usage(wm_used, plan.watermark_quota)}",
+            f"  🕓 پیام گذشته: {_usage(hist_used, plan.history_quota)}",
+            "",
+            "<b>امکانات طرح شما</b>",
+            f"  {_mark(plan.has(FEAT_PRIVATE))} کپی از کانال خصوصی",
+            f"  {_mark(plan.has(FEAT_VIP))} پشتیبانی ویژه",
+            "",
+            "<i>سهمیه‌ها برای کل دوره‌اند و با تمدید از نو پر می‌شوند.</i>",
+        ]
     else:
-        lines.append("اشتراک: ⛔️ فعال نیست")
-    lines.append(f"پین امنیتی: {'✅ فعال' if user.pin_hash else '❌ غیرفعال'}")
+        lines.append("💎 طرح: ⛔️ اشتراک فعالی ندارید")
+
+    balances = await credits.balances(user.id)
+    wm, hist = balances.get(CREDIT_WATERMARK, 0), balances.get(CREDIT_HISTORY, 0)
+    if wm or hist:
+        lines += [
+            "",
+            "🎫 <b>اعتبار شما</b>",
+            f"  💧 واترمارک: {fa_num(wm)} واحد",
+            f"  🕓 پیام گذشته: {fa_num(hist)} واحد",
+        ]
     return "\n".join(lines)
 
 
+def _mark(flag: bool) -> str:
+    return "✅" if flag else "➖"
+
+
+def _usage(spent: int, limit: int) -> str:
+    """مصرف این دوره از سهمیه، به شکل «۳ از ۲۰»."""
+    if limit == UNLIMITED:
+        return f"{fa_num(spent)} (نامحدود)"
+    if limit == 0:
+        return "در طرح شما نیست"
+    return f"{fa_num(spent)} از {fa_num(limit)} (مانده: {fa_num(max(0, limit - spent))})"
+
+
+def _account_markup(user: User):
+    return account_menu(
+        user.is_logged_in,
+        bool(user.pin_hash),
+        pro=user.display_level == "pro",
+        digest=bool(user.daily_digest),
+    )
+
+
 @router.message(Command("account"))
-@router.message(F.text == BTN_ACCOUNT)
+@router.message(F.text.in_(menu_texts("menu.account")))
 async def show_account(message: Message) -> None:
     user = await get_or_create_user(message.from_user)
-    await message.answer(
-        await _account_text(user),
-        reply_markup=account_menu(user.is_logged_in, bool(user.pin_hash)),
-    )
+    await message.answer(await _account_text(user), reply_markup=_account_markup(user))
+
+
+@router.callback_query(F.data.in_({"acc:level", "acc:digest"}))
+async def cb_preference(call: CallbackQuery) -> None:
+    """دو تنظیم شخصی: سطح نمایش منوها و خلاصه‌ی روزانه."""
+    async with get_session() as db:
+        user = await db.get(User, call.from_user.id)
+        if user is None:
+            await call.answer()
+            return
+        if call.data == "acc:level":
+            user.display_level = "simple" if user.display_level == "pro" else "pro"
+            note = (
+                "منوها کامل شدند"
+                if user.display_level == "pro"
+                else "منوها ساده شدند"
+            )
+        else:
+            user.daily_digest = not user.daily_digest
+            note = (
+                "خلاصه‌ی روزانه روشن شد"
+                if user.daily_digest
+                else "خلاصه‌ی روزانه خاموش شد"
+            )
+        await db.commit()
+        await db.refresh(user)
+
+    await call.answer(note)
+    try:
+        await call.message.edit_text(
+            await _account_text(user), reply_markup=_account_markup(user)
+        )
+    except Exception:
+        await call.message.answer(
+            await _account_text(user), reply_markup=_account_markup(user)
+        )
 
 
 # ------------------------------------------------------------------ ورود
@@ -76,8 +189,173 @@ async def cb_login(call: CallbackQuery, state: FSMContext) -> None:
 
 
 async def _begin_login(message: Message, state: FSMContext, user_id: int | None = None) -> None:
+    # اتصال اکانت تنها گلوگاه است: بدون آن هیچ پستی کپی نمی‌شود. پس
+    # شرایط استفاده همین‌جا پرسیده می‌شود، نه سرِ /start — کسی که فقط
+    # دارد ربات را نگاه می‌کند نباید با دیوار متنی روبه‌رو شود.
+    uid = user_id or message.from_user.id
+    if not await terms.accepted(uid):
+        await state.clear()
+        await message.answer(
+            terms.text(), reply_markup=terms_keyboard(), disable_web_page_preview=True
+        )
+        return
+
+    # <b>انتخاب، نه یک راهِ تحمیلی.</b> QR اول می‌آید چون تردیدِ
+    # «کد ورودم را بدهم؟» همان چیزی است که جلوی تست کردن را می‌گیرد،
+    # ولی راه قدیمی هم می‌ماند: QR روی بعضی نسخه‌های قدیمی تلگرام
+    # نیست و بن‌بست بدتر از یک دکمه‌ی اضافه است.
+    await state.clear()
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="📷 اسکن کد QR (پیشنهاد ما)", callback_data="acc:qr"))
+    kb.row(InlineKeyboardButton(text="📱 با شماره و کد", callback_data="acc:sms"))
+    await message.answer(LOGIN_CHOICE, reply_markup=kb.as_markup())
+
+
+@router.callback_query(F.data == "acc:sms")
+async def cb_login_sms(call: CallbackQuery, state: FSMContext) -> None:
+    await call.answer()
     await state.set_state(Flow.phone)
-    await message.answer(LOGIN_INTRO)
+    await call.message.answer(LOGIN_INTRO)
+
+
+@router.callback_query(F.data == "acc:qr")
+async def cb_login_qr(call: CallbackQuery, state: FSMContext) -> None:
+    """کد QR را می‌فرستد و تا اسکن شدن، تازه‌اش نگه می‌دارد."""
+    await call.answer()
+    await state.clear()
+    try:
+        url = await manager.start_qr_login(call.from_user.id)
+    except LoginError as exc:
+        await call.message.answer(f"⚠️ {exc}")
+        return
+
+    photo = BufferedInputFile(_qr_png(url), filename="login-qr.png")
+    sent = await call.message.answer_photo(photo, caption=LOGIN_QR)
+    asyncio.create_task(
+        _watch_qr(call.bot, call.from_user.id, sent.chat.id, sent.message_id),
+        name=f"qr-{call.from_user.id}",
+    )
+
+
+@router.callback_query(F.data == "acc:pass")
+async def cb_qr_password(call: CallbackQuery, state: FSMContext) -> None:
+    """بعد از اسکن QR، اگر رمز دو مرحله‌ای لازم بود."""
+    await call.answer()
+    if manager.pending(call.from_user.id) is None:
+        await call.message.answer("جریان ورود منقضی شده. دوباره «اتصال اکانت» را بزنید.")
+        return
+    await state.set_state(Flow.password)
+    await call.message.answer(LOGIN_PASSWORD)
+
+
+def _qr_png(url: str) -> bytes:
+    """<b>چرا تصویر و نه متن.</b> نشانیِ خام را نمی‌شود اسکن کرد، و
+    کپی کردنش در گوشی همان دردسری است که می‌خواستیم برداریم."""
+    import io
+
+    import segno
+
+    buffer = io.BytesIO()
+    segno.make(url, error="m").save(
+        buffer, kind="png", scale=10, border=3, dark="#000000", light="#ffffff"
+    )
+    return buffer.getvalue()
+
+
+async def _watch_qr(bot, user_id: int, chat_id: int, message_id: int) -> None:
+    """<b>کد QR چند ده ثانیه بیشتر اعتبار ندارد.</b>
+
+    بدون تازه‌سازی، کاربری که برود گوشی‌اش را بردارد برمی‌گردد و کدی را
+    اسکن می‌کند که دیگر کار نمی‌کند — و هیچ خطایی هم نمی‌بیند، فقط
+    هیچ اتفاقی نمی‌افتد. این حلقه تا سه دقیقه کد را زنده نگه می‌دارد.
+    """
+    deadline = time.monotonic() + QR_TOTAL_SECONDS
+    while time.monotonic() < deadline:
+        outcome = await manager.qr_result(user_id, QR_STEP_SECONDS)
+
+        if outcome == "done":
+            await bot.send_message(chat_id, LOGIN_OK, reply_markup=main_menu())
+            await manager.reload_user(user_id)
+            return
+        if outcome == "password":
+            # <b>چرا دکمه و نه ست کردن مستقیمِ وضعیت.</b> این تابع در
+            # پس‌زمینه اجرا می‌شود و FSMContext ندارد؛ ساختنِ دستی‌اش
+            # به کلیدِ داخلیِ aiogram گره می‌خورد و با هر نسخه‌ی تازه
+            # بی‌صدا می‌شکند. دکمه از مسیر عادی می‌رود.
+            kb = InlineKeyboardBuilder()
+            kb.row(
+                InlineKeyboardButton(
+                    text="🔑 وارد کردن رمز دو مرحله‌ای", callback_data="acc:pass"
+                )
+            )
+            await bot.send_message(chat_id, LOGIN_PASSWORD, reply_markup=kb.as_markup())
+            return
+        if outcome == "gone":
+            return
+
+        fresh = await manager.refresh_qr(user_id)
+        if fresh is None:
+            return
+        try:
+            await bot.edit_message_media(
+                chat_id=chat_id,
+                message_id=message_id,
+                media=InputMediaPhoto(
+                    media=BufferedInputFile(_qr_png(fresh), filename="login-qr.png"),
+                    caption=LOGIN_QR,
+                ),
+            )
+        except Exception:
+            log.debug("تازه‌سازی تصویر QR نشد", exc_info=True)
+
+    await manager.cancel_login(user_id)
+    try:
+        await bot.edit_message_caption(
+            chat_id=chat_id, message_id=message_id,
+            caption="⌛️ مهلت اسکن تمام شد. دوباره «اتصال اکانت» را بزنید.",
+        )
+    except Exception:
+        log.debug("پیام پایان مهلت QR ویرایش نشد", exc_info=True)
+
+
+def terms_keyboard() -> InlineKeyboardMarkup:
+    """فقط دکمه‌ی پذیرش.
+
+    دکمه‌ی «انصراف» لازم نیست: منوی اصلی همیشه پایین صفحه باز است و
+    کاربری که نپذیرد فقط کافی است دکمه‌ی دیگری بزند.
+    """
+    kb = InlineKeyboardBuilder()
+    kb.row(InlineKeyboardButton(text="✅ می‌پذیرم و ادامه می‌دهم", callback_data="terms:ok"))
+    return kb.as_markup()
+
+
+@router.message(Command("terms"))
+async def cmd_terms(message: Message) -> None:
+    """خواندن شرایط، هر وقت که کاربر بخواهد."""
+    await get_or_create_user(message.from_user)
+    seen = await terms.accepted(message.from_user.id)
+    await message.answer(
+        terms.text(),
+        reply_markup=None if seen else terms_keyboard(),
+        disable_web_page_preview=True,
+    )
+
+
+@router.callback_query(F.data == "terms:show")
+async def cb_show_terms(call: CallbackQuery) -> None:
+    """خواندن شرایط از راهنما — بدون دکمه‌ی پذیرش، فقط برای مطالعه."""
+    await call.answer()
+    await call.message.answer(terms.text(), disable_web_page_preview=True)
+
+
+@router.callback_query(F.data == "terms:ok")
+async def cb_accept_terms(call: CallbackQuery, state: FSMContext) -> None:
+    await terms.accept(call.from_user.id)
+    await call.answer("پذیرفته شد")
+    # بلافاصله همان کاری که کاربر می‌خواست ادامه پیدا می‌کند؛ فرستادنش
+    # به منو یعنی باید دوباره راهش را پیدا کند.
+    await state.set_state(Flow.phone)
+    await call.message.answer(LOGIN_INTRO)
 
 
 @router.message(Flow.phone)
@@ -218,3 +496,99 @@ async def cb_sub(call: CallbackQuery) -> None:
     user = await get_or_create_user(call.from_user)
     await call.answer()
     await call.message.answer(await _account_text(user))
+
+
+# ------------------------------------------------- سهمیه و اعتبار من
+def _bar(spent: int, limit: int, width: int = 10) -> str:
+    """نوار پیشرفت ساده‌ی مصرف."""
+    if limit <= 0:
+        return ""
+    filled = min(width, round(width * min(spent, limit) / limit))
+    return "▓" * filled + "░" * (width - filled)
+
+
+def _line(icon: str, title: str, spent: int, limit: int, credit: int | None = None) -> list[str]:
+    """یک بلوک سه‌خطی: عنوان، مانده، نوار."""
+    rows = [f"{icon} <b>{title}</b>"]
+    if limit == UNLIMITED:
+        rows.append(f"   مصرف: {fa_num(spent)} — <b>نامحدود</b>")
+    elif limit == 0:
+        rows.append("   در طرح شما نیست")
+    else:
+        left = max(0, limit - spent)
+        rows.append(
+            f"   مانده: <b>{fa_num(left)}</b> از {fa_num(limit)}  "
+            f"(مصرف: {fa_num(spent)})"
+        )
+        rows.append(f"   <code>{_bar(spent, limit)}</code>")
+    if credit is not None and credit > 0:
+        rows.append(f"   ➕ اعتبار خریداری‌شده: <b>{fa_num(credit)}</b>")
+    return rows
+
+
+@router.callback_query(F.data == "acc:quota")
+async def cb_quota(call: CallbackQuery) -> None:
+    """همه‌ی سهمیه‌ها و اعتبارها در یک صفحه."""
+    await call.answer()
+    user = await get_or_create_user(call.from_user)
+    plan, sub_id = await active_entitlement(user.id)
+    balances = await credits.balances(user.id)
+    wm_credit = balances.get(CREDIT_WATERMARK, 0)
+    hist_credit = balances.get(CREDIT_HISTORY, 0)
+
+    lines = ["📊 <b>سهمیه و اعتبار من</b>", "━━━━━━━━━━━━━━━━━━", ""]
+    if plan is None:
+        lines += [
+            "⛔️ اشتراک فعالی ندارید.",
+            "",
+            f"🎫 اعتبار واترمارک: <b>{fa_num(wm_credit)}</b>",
+            f"🎫 اعتبار پیام گذشته: <b>{fa_num(hist_credit)}</b>",
+            "",
+            "<i>اعتبار از بین نمی‌رود؛ با فعال شدن اشتراک قابل استفاده است.</i>",
+        ]
+        await call.message.answer("\n".join(lines), reply_markup=quota_menu())
+        return
+
+    days = await remaining_days(user.id)
+    msg_used = await entitlement.used(sub_id, FEAT_MESSAGES) if sub_id else 0
+    wm_used = await entitlement.used(sub_id, FEAT_WATERMARK) if sub_id else 0
+    hist_used = await entitlement.used(sub_id, FEAT_HISTORY) if sub_id else 0
+
+    lines += [
+        f"💎 طرح: <b>{plan.title}</b> ({fa_num(plan.days)} روزه)",
+        f"📅 باقی‌مانده: <b>{fa_num(days)} روز</b>",
+        "",
+    ]
+    lines += _line("📨", "پیام", msg_used, plan.period_messages)
+    if plan.fair_use_daily:
+        lines.append(
+            f"   <i>سقف مصرف منصفانه: {fa_num(plan.fair_use_daily)} در روز</i>"
+        )
+    lines.append("")
+    lines += _line("💧", "واترمارک", wm_used, plan.watermark_quota, wm_credit)
+    lines.append("")
+    lines += _line("🕓", "پیام گذشته", hist_used, plan.history_quota, hist_credit)
+
+    total_wm = _total(plan.watermark_quota, wm_used, wm_credit)
+    total_hist = _total(plan.history_quota, hist_used, hist_credit)
+    lines += [
+        "",
+        "━━━━━━━━━━━━━━━━━━",
+        "<b>در مجموع همین حالا می‌توانید:</b>",
+        f"  💧 {total_wm} تصویر واترمارک بزنید",
+        f"  🕓 {total_hist} پیام قدیمی کپی کنید",
+        "",
+        f"📋 کار کپی: {fa_num(plan.max_tasks)}  |  "
+        f"📤 مقصد هر کار: {fa_num(plan.max_destinations)}",
+        "",
+        "<i>سهمیه‌ها برای کل دوره‌اند و با تمدید از نو پر می‌شوند. "
+        "اعتبار خریداری‌شده انقضا ندارد.</i>",
+    ]
+    await call.message.answer("\n".join(lines), reply_markup=quota_menu())
+
+
+def _total(limit: int, spent: int, credit: int) -> str:
+    """مجموع سهمیه‌ی مانده و اعتبار، به شکل خوانا."""
+    if limit == UNLIMITED:
+        return "نامحدود"
+    return fa_num(max(0, limit - spent) + credit)
