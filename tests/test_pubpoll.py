@@ -16,17 +16,42 @@ from tests.test_copier import FakeMessage, _setup
 
 
 class _FakeClient:
-    """کانالی با چند پست؛ iter_messages از جدید به قدیم می‌دهد."""
+    """کانالی با چند پست؛ iter_messages از جدید به قدیم می‌دهد.
 
-    def __init__(self, messages: list, error: Exception | None = None) -> None:
+    `cold=True` یعنی سشن تازه بالا آمده و کشِ موجودیت خالی است — وضعیتِ
+    <b>هر</b> اکانت سرویس پس از هر ری‌استارت، چون سشن رشته‌ای فقط کلید
+    احراز هویت را نگه می‌دارد. آن‌وقت آیدی عددی برای تلگرام بی‌معناست
+    و باید از روی نام resolve شود.
+    """
+
+    def __init__(
+        self, messages: list, error: Exception | None = None, *, cold: bool = False
+    ) -> None:
         self.messages = sorted(messages, key=lambda m: m.id, reverse=True)
         self.error = error
+        self.cold = cold
+        self.resolved: list[str] = []
 
-    def iter_messages(self, chat_id, limit=None):
+    async def get_input_entity(self, ref):
+        if isinstance(ref, int):
+            if self.cold:
+                raise ValueError(
+                    f"Could not find the input entity for PeerChannel({ref})"
+                )
+            return ref
+        self.resolved.append(ref)
+        return f"resolved:{ref}"
+
+    def iter_messages(self, chat, limit=None):
         error = self.error
         items = self.messages[: limit or len(self.messages)]
+        cold = self.cold
 
         async def gen():
+            if cold and isinstance(chat, int):
+                raise ValueError(
+                    f"Could not find the input entity for PeerChannel({chat})"
+                )
             if error is not None:
                 raise error
             for message in items:
@@ -450,5 +475,84 @@ async def test_untouched_posts_are_not_re_examined_every_minute(tmp_path, monkey
         await poller.run_once()
 
         assert copier.edits == [], "پستِ دست‌نخورده بی‌دلیل وارسی شد"
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_the_poller_still_works_after_the_bot_restarts(tmp_path, monkeypatch):
+    """<b>خرابی‌ای که حالت ساده را در واقعیت خواباند.</b>
+
+    اکانت سرویس سالم بود، کار روشن بود، ربات در مقصد ادمین بود، و در
+    دیتابیس هیچ خطایی نبود — ولی بعد از اولین ری‌استارت هیچ پستی
+    نیامد و نشانه دقیقاً روی همان عددی ماند که آخرین بارِ موفق گذاشته
+    بود.
+
+    علتش: سشنِ رشته‌ای فقط کلید احراز هویت را نگه می‌دارد، نه
+    access_hash کانال‌ها را. در اجرایی که کار ساخته شده بود، نام کانال
+    تازه resolve شده و در حافظه بود؛ پس آیدی عددی کار می‌کرد. با
+    ری‌استارت آن حافظه رفت و هر دور با «Could not find the input
+    entity» می‌ترکید — پیش از آنکه چیزی در دیتابیس ثبت شود.
+
+    <b>نشانه‌ی بیرونی‌اش «نشانه‌ی ثابت» است</b>، و همین تست آن را
+    می‌سنجد: کار می‌کند یا نه، خروجی‌اش باید پست باشد نه سکوت.
+    """
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from sqlalchemy import select
+
+        from telkap.models import SourceLease
+        from telkap.services.pubpoll import PublicPoller
+
+        await _simple(db_module, task_id)
+        await _account(db_module)
+
+        # اجرای اول: کش گرم است (نام همین حالا resolve شده)
+        warm = _FakeClient([FakeMessage(id=10)])
+        _wire(monkeypatch, warm)
+        copier = _RecordingCopier()
+        await PublicPoller(copier).run_once()
+
+        # ری‌استارت: کلاینتِ تازه، کشِ خالی، و کانال چند پست گذاشته
+        cold = _FakeClient(
+            [FakeMessage(id=12), FakeMessage(id=11), FakeMessage(id=10)], cold=True
+        )
+        _wire(monkeypatch, cold)
+        assert await PublicPoller(copier).run_once() == 2, "بعد از ری‌استارت هیچ پستی نرفت"
+
+        assert cold.resolved == ["@src"], "از روی نام resolve نکرد"
+        async with db_module.get_session() as db:
+            lease = await db.scalar(select(SourceLease))
+        assert lease.seen_msg_id == 12, "نشانه سرِ جای قبلی ماند"
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_a_source_that_cannot_be_resolved_does_not_kill_the_round(
+    tmp_path, monkeypatch
+):
+    """کانالی که حذف یا خصوصی شده نباید بقیه‌ی مبدأها را هم بخواباند.
+
+    <b>این تست امروز هم سبز بود</b> — `run_once` از قبل دورِ هر مبدأ را
+    جدا می‌گرفت. نگهبان است، نه کاشفِ خرابی: حالا که یک مرحله‌ی تازه‌ی
+    resolve اضافه شده، همان مرحله می‌تواند خطای تازه‌ای بالا بدهد و
+    خرابیِ یک مشتری را به همه سرایت دهد.
+    """
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services.pubpoll import PublicPoller
+
+        await _simple(db_module, task_id)
+        await _account(db_module)
+
+        class _Unresolvable(_FakeClient):
+            async def get_input_entity(self, ref):
+                raise ValueError("Cannot find any entity corresponding to '@src'")
+
+        client = _Unresolvable([FakeMessage(id=10)], cold=True)
+        _wire(monkeypatch, client)
+
+        assert await PublicPoller(_RecordingCopier()).run_once() == 0
     finally:
         await db_module.close_db()

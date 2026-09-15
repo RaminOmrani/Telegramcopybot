@@ -167,9 +167,21 @@ class PublicPoller:
             seen = int(getattr(lease, "seen_msg_id", 0) or 0)
 
         try:
+            # <b>با آیدی خام نمی‌شود خواند.</b> سشنِ رشته‌ایِ اکانت‌های
+            # سرویس کشِ موجودیت ندارد، پس بعد از هر ری‌استارت آیدی
+            # عددی برای Telethon بی‌معناست. `entity_for` اول کش را
+            # می‌بیند و بعد از روی نام resolve می‌کند.
+            from telkap.services import reader
+
+            entity = await reader.entity_for(client, source_id, source_ref)
+        except Exception as exc:
+            log.error("مبدأ %s (%s) resolve نشد: %s", source_id, source_ref, exc)
+            return 0
+
+        try:
             fresh = []
             already = []
-            async for message in client.iter_messages(source_id, limit=LOOKBACK):
+            async for message in client.iter_messages(entity, limit=LOOKBACK):
                 if seen and message.id <= seen:
                     # <b>چرا نمی‌شکنیم.</b> پستِ دیده‌شده هم ممکن است
                     # همین حالا ویرایش شده باشد و همان‌ها را باید

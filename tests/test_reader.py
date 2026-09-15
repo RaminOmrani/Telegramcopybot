@@ -122,6 +122,11 @@ class _Messages:
     def __init__(self, messages) -> None:
         self.messages = messages
 
+    async def get_input_entity(self, ref):
+        # هر کلاینت واقعی این را دارد. کش گرم فرض می‌شود؛ حالتِ سردش
+        # پایین‌تر جداگانه سنجیده شده.
+        return ref
+
     async def get_messages(self, chat_id, ids=None):
         return list(self.messages)
 
@@ -210,3 +215,77 @@ async def test_a_simple_customers_approval_queue_actually_releases(
         assert copier.sent == [task_id]
     finally:
         await db_module.close_db()
+
+
+# ------------------------------------------------- resolve کردن مبدأ
+
+
+class _ColdClient:
+    """کلاینتی که تازه بالا آمده — کشِ موجودیتش خالی است.
+
+    <b>این دقیقاً وضعیتِ هر اکانت سرویس پس از هر ری‌استارت است.</b>
+    سشنِ رشته‌ای فقط کلید احراز هویت را نگه می‌دارد؛ access_hash ها
+    نه. پس آیدی عددی برای Telethon بی‌معناست تا وقتی یک بار از روی
+    نام resolve شود.
+    """
+
+    def __init__(self, warm: bool = False) -> None:
+        self.warm = warm
+        self.by_name: list[str] = []
+        self.by_id: list[int] = []
+
+    async def get_input_entity(self, ref):
+        if isinstance(ref, int):
+            self.by_id.append(ref)
+            if self.warm:
+                return f"cached:{ref}"
+            raise ValueError(
+                f"Could not find the input entity for PeerChannel({ref})"
+            )
+        self.by_name.append(ref)
+        return f"resolved:{ref}"
+
+
+@pytest.mark.asyncio
+async def test_a_cold_session_falls_back_to_the_channel_name():
+    """<b>خرابی‌ای که کلِ حالت ساده را بعد از اولین ری‌استارت خواباند.</b>
+
+    کار در همان اجرایی که ساخته شده بود کار می‌کرد — چون نام کانال
+    همان لحظه resolve شده و در حافظه بود. بعد از ری‌استارت، هر دقیقه
+    با «Could not find the input entity» می‌ترکید: اکانت سالم، کار
+    روشن، بدون خطا در دیتابیس، و هیچ پستی نمی‌آمد.
+    """
+    from telkap.services import reader
+
+    client = _ColdClient()
+    got = await reader.entity_for(client, -1001000431759, "@varzesh3")
+
+    assert got == "resolved:@varzesh3"
+    assert client.by_name == ["@varzesh3"]
+
+
+@pytest.mark.asyncio
+async def test_a_warm_cache_is_used_and_the_name_is_not_looked_up():
+    """resolve کردن یک درخواستِ شبکه است. هر دقیقه، برای هر مبدأ،
+    تا ابد — همان چیزی که اکانت را به محدودیت نرخ می‌رساند."""
+    from telkap.services import reader
+
+    client = _ColdClient(warm=True)
+    got = await reader.entity_for(client, -1001000431759, "@varzesh3")
+
+    assert got == "cached:-1001000431759"
+    assert client.by_name == [], "با وجود کش، باز هم از تلگرام پرسید"
+
+
+@pytest.mark.asyncio
+async def test_a_numeric_ref_is_not_mistaken_for_a_username():
+    """کارهای قدیمی `source_ref` عددی دارند. فرستادنش به
+    `get_input_entity` به‌عنوان نام، فقط همان خطای اول را تکرار
+    می‌کند با پیامی گیج‌کننده‌تر."""
+    from telkap.services import reader
+
+    client = _ColdClient()
+    got = await reader.entity_for(client, -1001000431759, "-1001000431759")
+
+    assert got == -1001000431759
+    assert client.by_name == []

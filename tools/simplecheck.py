@@ -103,6 +103,11 @@ async def main() -> int:
         linked = "yes" if account.session_enc else "NO"
         out(f"  [{flag}] id={account.id} label={account.label!r} "
             f"state={account.state} session={linked} sources={account.sources}")
+        # <b>خواب بودنِ اکانت، ساکت‌ترین دلیلِ «هیچ پستی نیامد» است.</b>
+        # وضعیتش «flood» می‌ماند و تا رسیدنِ این ساعت هیچ مبدأیی خوانده
+        # نمی‌شود — از بیرون دقیقاً شبیه خرابیِ سرویس.
+        if account.quiet_until:
+            out(f"        asleep until: {account.quiet_until} (UTC)")
         if account.note:
             out(f"        note: {account.note}")
 
@@ -119,7 +124,8 @@ async def main() -> int:
         out(f"  [{flag}] task={task.id} user={task.user_id}")
         out(f"        src={task.source_ref!r} src_id={task.source_id}")
         out(f"        dst={task.dest_ref!r} dst_id={task.dest_id}")
-        out(f"        copied={task.copied_count} last_copy={task.last_copy_at}")
+        out(f"        copied={task.copied_count} skipped={task.skipped_count} "
+            f"last_copy={task.last_copy_at}")
         if task.last_error:
             out(f"        last_error: {task.last_error}")
 
@@ -149,6 +155,8 @@ async def main() -> int:
         on = "yes" if cfg.get("sync_edits") else "NO -> half-written posts stay half"
         out(f"        edit sync: {on}")
 
+        await _why_not(task, out)
+
     # ------------------------------ آیا ربات واقعاً در مقصد اجازه دارد
     if tasks:
         out()
@@ -163,6 +171,10 @@ async def main() -> int:
     out("  seen_msg_id 0        -> first visit done, nothing sent (by design)")
     out("  bot cannot post      -> the customer must re-add the bot as admin")
     out("  edit sync NO         -> a post edited after we copied it stays stale")
+    out("  activity NONE        -> posts never reached the copy engine at all;")
+    out("                          the fault is in READING the source, not in")
+    out("                          deciding about posts. look at the log.")
+    out("  retry queue growing  -> reading works, sending does not")
     out("-" * 68)
 
     if "--send" in sys.argv:
@@ -186,10 +198,19 @@ async def _check_destinations(tasks, out) -> None:
         return
 
     async with aiohttp.ClientSession() as session:
-        async with session.get(
-            f"https://api.telegram.org/bot{token}/getMe", timeout=20
-        ) as response:
-            me = await response.json()
+        # <b>بی‌جواب ماندنِ تلگرام نباید کلِ گزارش را بیندازد.</b> بدون
+        # این محافظ، وقتی شبکه‌ی سرور خودش مشکل دارد — یعنی دقیقاً وقتی
+        # بیشترین نیاز را به این گزارش داریم — ابزار با traceback
+        # می‌ترکد و هرچه بالاتر چاپ شده بود هم با `--send` به تلگرام
+        # نمی‌رسد.
+        try:
+            async with session.get(
+                f"https://api.telegram.org/bot{token}/getMe", timeout=20
+            ) as response:
+                me = await response.json()
+        except Exception as exc:
+            out(f"  cannot check: telegram unreachable ({exc})")
+            return
         if not me.get("ok"):
             out(f"  cannot check: telegram refused the token ({me.get('description')})")
             return
@@ -224,6 +245,60 @@ async def _check_destinations(tasks, out) -> None:
                 out(f"  {target}: ok (status={status})")
             else:
                 out(f"  {target}: CANNOT POST (status={status}, can_post={can_post})")
+
+
+async def _why_not(task, out) -> None:
+    """آخرین چیزهایی که این کار گفته — به‌جای سکوت.
+
+    <b>گرانی‌ترین نیم‌روزِ این پروژه از نبودِ همین چند خط آمد.</b> کار
+    روشن بود، اکانت سالم بود، ربات در مقصد ادمین بود، هیچ خطایی در
+    دیتابیس نبود — و هیچ پستی نمی‌آمد. تنها جایی که دلیل نوشته شده
+    بود، لاگ فعالیت و صف تلاش مجدد بود، و هیچ ابزاری نشانشان نمی‌داد.
+
+    متنِ دلیل‌ها فارسی است و کنسول VNC آن را ♦ نشان می‌دهد؛ با
+    <code>--send</code> همین گزارش در تلگرام خواناست.
+    """
+    from sqlalchemy import func, select
+
+    from telkap.db import get_session
+    from telkap.models import ActivityLog, RetryItem
+
+    async with get_session() as db:
+        waiting = int(
+            await db.scalar(
+                select(func.count(RetryItem.id)).where(RetryItem.task_id == task.id)
+            )
+            or 0
+        )
+        events = list(
+            (
+                await db.execute(
+                    select(ActivityLog)
+                    .where(ActivityLog.task_id == task.id)
+                    .order_by(ActivityLog.id.desc())
+                    .limit(6)
+                )
+            ).scalars()
+        )
+
+    out(f"        retry queue: {waiting}")
+    if waiting:
+        out("            -> sending keeps failing; the reason is in the log below")
+
+    if not events:
+        # <b>مهم‌ترین حالت.</b> نه کپی، نه رد کردن، نه خطا — یعنی پست‌ها
+        # اصلاً به موتور کپی نرسیده‌اند و اشکال بالاتر است: در خواندنِ
+        # مبدأ، نه در تصمیم‌گیری درباره‌ی پست.
+        out("        recent activity: NONE")
+        out("            -> posts never even reached the copy engine.")
+        out("               check the log: journalctl -u telkap -n 200 --no-pager")
+        return
+
+    out("        recent activity (newest first):")
+    for event in events:
+        when = event.created_at.strftime("%m-%d %H:%M") if event.created_at else "?"
+        detail = (event.detail or "")[:90]
+        out(f"          {when}  {event.event:<16} {detail}")
 
 
 if __name__ == "__main__":

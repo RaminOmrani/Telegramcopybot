@@ -262,9 +262,12 @@ class ReleaseWorker:
             return False      # خواننده در دسترس نیست؛ دفعه‌ی بعد دوباره
 
         try:
-            messages = await client.get_messages(
-                item.src_chat_id, ids=item.message_ids
+            # همان دلیلِ `pubpoll` و صف تلاش مجدد: آیدی خام بدون
+            # access_hash برای اکانت سرویس بی‌معناست.
+            source = await reader.entity_for(
+                client, item.src_chat_id, getattr(task, "source_ref", "")
             )
+            messages = await client.get_messages(source, ids=item.message_ids)
         except Exception as exc:
             log.warning("خواندن پست صف‌شده‌ی %s ناموفق بود: %s", item.id, exc)
             return False

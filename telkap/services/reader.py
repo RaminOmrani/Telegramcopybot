@@ -53,6 +53,43 @@ async def for_task(task, manager):
         return None
 
 
+async def entity_for(client, source_id, source_ref: str = ""):
+    """چیزی که این کلاینت واقعاً می‌تواند با آن پیام بخواند.
+
+    <b>آیدی عددی به‌تنهایی کافی نیست — و این خرابی‌ای بود که همه‌ی
+    حالت ساده را بعد از اولین ری‌استارت می‌خواباند.</b>
+
+    تلگرام برای خواندن از یک کانال، کنار آیدی یک <code>access_hash</code>
+    هم می‌خواهد. Telethon آن را کش می‌کند، ولی سشنِ اکانت‌های سرویس ما
+    از نوع رشته‌ای است و آن نوع <b>فقط کلید احراز هویت را نگه می‌دارد،
+    نه کشِ موجودیت‌ها</b>. یعنی با هر بار بالا آمدنِ ربات، کش خالی است.
+
+    نتیجه‌اش دقیقاً همان چیزی بود که دیدیم: کار در همان اجرایی که ساخته
+    شده بود کار می‌کرد — چون نامِ کانال همان لحظه resolve شده و در
+    حافظه بود — و بعد از اولین ری‌استارت، هر دقیقه با
+    «Could not find the input entity» می‌ترکید. اکانت سالم، کار روشن،
+    بدون خطا در دیتابیس، و هیچ پستی نمی‌آمد.
+
+    پس: اول کش (رایگان و محلی)، و اگر نبود از روی نامِ کاربری resolve
+    می‌شود. مبدأ حالت ساده همیشه عمومی است، پس همیشه نام دارد.
+    """
+    if source_id:
+        try:
+            return await client.get_input_entity(int(source_id))
+        except (ValueError, TypeError):
+            pass
+
+    ref = (source_ref or "").strip()
+    if ref and not ref.lstrip("-").isdigit():
+        resolved = await client.get_input_entity(ref)
+        log.info("مبدأ %s از روی نامش resolve شد", ref)
+        return resolved
+
+    # چیزی برای resolve کردن نداریم؛ بگذار خودِ Telethon تصمیم بگیرد و
+    # اگر نشد، خطایش بالا برود — بی‌صدا رد شدن بدترین حالت است.
+    return source_id
+
+
 NO_READER_FULL = "اکانت کاربری متصل نیست"
 NO_READER_SIMPLE = "خواننده‌ای برای کانال عمومی در دسترس نیست"
 

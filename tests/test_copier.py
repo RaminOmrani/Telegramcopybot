@@ -49,6 +49,15 @@ class FakeClient:
         self._next_id += 1
         return self._next_id
 
+    async def get_input_entity(self, ref):
+        """هر کلاینت واقعی این را دارد؛ اینجا کش همیشه گرم است.
+
+        حالتِ سردش — که سشن رشته‌ای بعد از هر ری‌استارت دارد و کلِ حالت
+        ساده را خوابانده بود — در `tests/test_reader.py` جدا سنجیده
+        می‌شود.
+        """
+        return ref
+
     async def send_message(
         self, target, text, link_preview=True, buttons=None, formatting_entities=None
     ):

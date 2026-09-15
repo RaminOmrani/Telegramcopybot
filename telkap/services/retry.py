@@ -73,7 +73,13 @@ class RetryWorker:
             return False
 
         try:
-            messages = await client.get_messages(item.src_chat_id, ids=item.message_ids)
+            # همان دلیلِ `pubpoll`: آیدی خام بدون access_hash برای
+            # اکانت سرویس بی‌معناست و بعد از هر ری‌استارت هر تلاشِ
+            # مجددی همین‌جا می‌ترکید.
+            source = await reader.entity_for(
+                client, item.src_chat_id, getattr(task, "source_ref", "")
+            )
+            messages = await client.get_messages(source, ids=item.message_ids)
         except Exception as exc:
             await self._reschedule(item, f"خواندن پیام مبدا ناموفق بود: {exc}")
             return False
