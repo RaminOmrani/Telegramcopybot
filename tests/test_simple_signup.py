@@ -372,3 +372,68 @@ def test_the_old_dead_end_now_offers_a_way_through():
 
     gate = source.split("if user is None or not user.is_logged_in:", 1)[1][:600]
     assert "offer(" in gate, "بن‌بست هنوز سر جایش است"
+
+
+@pytest.mark.asyncio
+async def test_the_customer_is_warned_about_premium_emoji_up_front(
+    tmp_path, monkeypatch
+):
+    """<b>محدودیتی که خودش را سرِ اولین پست نشان می‌دهد.</b>
+
+    تلگرام اجازه‌ی فرستادنِ ایموجی پریمیوم را فقط به رباتی می‌دهد که
+    روی Fragment یوزرنیم خریده باشد؛ راهِ دومش (صاحبِ ربات پریمیوم
+    دارد) فقط در چت خصوصی و گروه کار می‌کند و <b>کانال در آن فهرست
+    نیست</b>. پس در حالت ساده پست با ایموجیِ معمولیِ زیرش می‌رسد.
+
+    این خودش خرابی نیست — ولی اگر از قبل گفته نشود، مشتری آن را
+    خرابی می‌بیند. و بدتر: فکر می‌کند اشتراکش کم است و پول بیشتری
+    می‌دهد برای چیزی که با پول درست نمی‌شود.
+    """
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.handlers import simple_task
+
+        monkeypatch.setattr(simple_task, "show_task", _noop)
+        state = _State()
+        state.data = {
+            "source_ref": "@a", "source_title": "الف", "source_id": -1001,
+            "dest_ref": "@b", "dest_title": "ب", "dest_id": -1002,
+        }
+        message = _Message("-")
+        await simple_task.got_title(message, state)
+
+        said = " ".join(message.replies)
+        assert "پریمیوم" in said, "درباره‌ی ایموجی پریمیوم چیزی گفته نشد"
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_the_mode_comparison_names_both_real_limits():
+    """<b>صفحه‌ای که مشتری پیش از انتخاب می‌خواند.</b>
+
+    اگر فقط «مبدأ باید عمومی باشد» را بگوید، ایموجی پریمیوم بعداً
+    به‌شکل غافلگیری می‌آید — و غافلگیریِ بعد از خرید، همان چیزی است که
+    مشتری را برمی‌گرداند. هر دو محدودیت باید <b>همین‌جا</b> باشند.
+    """
+    from telkap.handlers import simple_task
+
+    said: list[str] = []
+
+    class _Call:
+        data = "simple:why"
+
+        class message:
+            @staticmethod
+            async def answer(text, **kwargs):
+                said.append(text)
+
+        @staticmethod
+        async def answer(*args, **kwargs):
+            return None
+
+    await simple_task.cb_why(_Call())
+
+    text = " ".join(said)
+    assert "عمومی" in text, "محدودیتِ «مبدأ عمومی» گفته نشد"
+    assert "پریمیوم" in text, "محدودیتِ ایموجی پریمیوم گفته نشد"
