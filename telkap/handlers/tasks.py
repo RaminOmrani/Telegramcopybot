@@ -663,7 +663,9 @@ async def cb_delete(call: CallbackQuery, state: FSMContext) -> None:
         return
     await call.message.answer(
         "🗑 این کار و همه‌ی تنظیماتش حذف شود؟",
-        reply_markup=confirm(f"task:delyes:{task_id}", f"task:open:{task_id}"),
+        reply_markup=confirm(
+            f"task:delyes:{task_id}", f"task:open:{task_id}", danger=True
+        ),
     )
 
 

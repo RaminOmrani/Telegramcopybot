@@ -27,7 +27,7 @@ from sqlalchemy import func, select
 from telkap.db import get_session, log_activity
 from telkap.handlers.common import Flow
 from telkap.handlers.tasks import show_task
-from telkap.keyboards import main_menu
+from telkap.keyboards import CALM, GO, main_menu
 from telkap.models import Task, User
 from telkap.services import alerts, botsend, cache, pool
 from telkap.services.subscription import active_plan_for
@@ -60,7 +60,7 @@ NO_POOL = (
 
 def entry_button() -> InlineKeyboardButton:
     return InlineKeyboardButton(
-        text="⚡️ بدون وصل کردن اکانت", callback_data="simple:new"
+        text="⚡️ بدون وصل کردن اکانت", callback_data="simple:new", style=GO
     )
 
 
@@ -250,7 +250,11 @@ def new_task_choice() -> InlineKeyboardBuilder:
     """دو راهِ ساختنِ کار، کنار هم."""
     kb = InlineKeyboardBuilder()
     kb.row(entry_button())
-    kb.row(InlineKeyboardButton(text="🔗 با اکانت خودم", callback_data="task:new"))
+    kb.row(
+        InlineKeyboardButton(
+            text="🔗 با اکانت خودم", callback_data="task:new", style=CALM
+        )
+    )
     kb.row(InlineKeyboardButton(text="❓ فرقشان چیست", callback_data="simple:why"))
     return kb
 

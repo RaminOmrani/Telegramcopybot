@@ -279,3 +279,52 @@ async def test_an_empty_post_is_not_sent_at_all():
     bot = _Bot()
     assert not await botsend.send_text(bot, -100, "   ")
     assert bot.sent == []
+
+
+# ------------------------------------------------- رنگِ دکمه‌ها (Bot API 9.4)
+
+
+def test_only_the_three_real_styles_are_used():
+    """<b>مقدارِ اشتباه، کل پیام را رد می‌کند.</b>
+
+    تلگرام فقط سه مقدار می‌پذیرد. یک «red» یا «green» به‌جای
+    «danger»/«success» خطای اعتبارسنجی می‌دهد و پیام اصلاً نمی‌رود —
+    یعنی یک تایپوی رنگ، دکمه را نه بی‌رنگ که <b>ناموجود</b> می‌کند.
+    """
+    from telkap import keyboards
+
+    assert {keyboards.DANGER, keyboards.GO, keyboards.CALM} == {
+        "danger", "success", "primary"
+    }
+
+
+def test_a_plain_confirm_is_not_red():
+    """<b>اگر همه‌ی تأییدها قرمز شوند، قرمز دیگر چیزی نمی‌گوید.</b>"""
+    from telkap.keyboards import confirm
+
+    markup = confirm("yes", "no")
+    assert markup.inline_keyboard[0][0].style is None
+
+
+def test_a_destructive_confirm_is_red():
+    """حذف برگشت‌ناپذیر است؛ دکمه‌ی قرمز همان مکثِ نیم‌ثانیه‌ای را
+    می‌سازد که فرقِ «حذف کردم» و «اشتباهی حذف شد» است."""
+    from telkap.keyboards import DANGER, confirm
+
+    markup = confirm("yes", "no", danger=True)
+    assert markup.inline_keyboard[0][0].style == DANGER
+    # «خیر» رنگ نمی‌گیرد — رنگ برای کاری است که باید مکث بیاورد
+    assert markup.inline_keyboard[0][1].style is None
+
+
+def test_the_library_actually_supports_colours():
+    """<b>نگهبانِ ارتقا.</b>
+
+    این فیلد در Bot API 9.4 آمده و aiogram قدیمی‌تر از ۳٫۳۱ ندارَدش.
+    اگر روزی کسی کتابخانه را پایین ببرد، همه‌ی دکمه‌های رنگی بی‌صدا
+    خطای اعتبارسنجی می‌دهند — و پیام‌ها نمی‌روند.
+    """
+    from aiogram.types import InlineKeyboardButton, KeyboardButton
+
+    assert "style" in InlineKeyboardButton.model_fields
+    assert "style" in KeyboardButton.model_fields

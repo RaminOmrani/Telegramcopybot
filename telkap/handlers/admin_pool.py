@@ -30,6 +30,7 @@ from telkap.db import get_session, log_activity
 from telkap.handlers.account import _qr_png
 from telkap.handlers.admin_reports import guard
 from telkap.handlers.common import Flow
+from telkap.keyboards import DANGER, GO
 from telkap.models import ServiceAccount
 from telkap.services import pool, roles, svclogin
 from telkap.texts import fa_num
@@ -87,7 +88,7 @@ async def _overview() -> tuple[str, InlineKeyboardBuilder]:
             )
 
     kb = InlineKeyboardBuilder()
-    kb.row(InlineKeyboardButton(text="➕ افزودن اکانت", callback_data="pool:add"))
+    kb.row(InlineKeyboardButton(text="➕ افزودن اکانت", callback_data="pool:add", style=GO))
     for account in accounts:
         name = account.label or f"#{account.id}"
         toggle = "⏸ خاموش" if account.enabled else "▶️ روشن"
@@ -95,7 +96,9 @@ async def _overview() -> tuple[str, InlineKeyboardBuilder]:
             InlineKeyboardButton(
                 text=f"{toggle} — {name}", callback_data=f"pool:toggle:{account.id}"
             ),
-            InlineKeyboardButton(text="🗑", callback_data=f"pool:drop:{account.id}"),
+            InlineKeyboardButton(
+                text="🗑", callback_data=f"pool:drop:{account.id}", style=DANGER
+            ),
         )
     kb.row(InlineKeyboardButton(text="🔄 تازه‌سازی", callback_data="pool:home"))
     return "\n".join(lines), kb

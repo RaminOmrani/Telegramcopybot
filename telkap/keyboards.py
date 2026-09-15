@@ -27,6 +27,20 @@ from telkap.services.defaults import MEDIA_KINDS
 from telkap.services.watermark import POSITIONS
 from telkap.texts import fa_num, on_off
 
+# ------------------------------------------------------------ رنگ دکمه‌ها
+#
+# <b>رنگ باید معنا داشته باشد.</b> Bot API 9.4 سه سبک می‌دهد، و وسوسه‌ی
+# اولش این است که همه‌جا استفاده شود — ولی وقتی همه‌ی دکمه‌ها رنگی
+# باشند، هیچ‌کدام دیده نمی‌شود و رنگ فقط یک تزئین است.
+#
+# پس فقط دو معنا رنگ می‌گیرند و بقیه پیش‌فرض می‌مانند:
+DANGER = "danger"     # برگشت‌ناپذیر: حذف، قطع اتصال — باید مکث بیاورد
+GO = "success"        # کاری که واقعاً می‌خواهیم انجام شود
+CALM = "primary"      # مهم، ولی نه فوری و نه خطرناک
+
+# کلاینت‌های قدیمی‌تر این فیلد را نمی‌شناسند و بی‌صدا نادیده‌اش می‌گیرند؛
+# دکمه همان شکلِ همیشگی را می‌گیرد. پس اضافه کردنش هیچ‌جا نمی‌شکند.
+
 BTN_TASKS = "📋 کارهای کپی"
 BTN_NEW_TASK = "➕ کار جدید"
 BTN_FORWARD = "↪️ فوروارد پیشرفته"
@@ -680,10 +694,21 @@ def rules_menu(task_id: int, kind: str, rules: list) -> InlineKeyboardMarkup:
     return kb.as_markup()
 
 
-def confirm(yes_cb: str, no_cb: str) -> InlineKeyboardMarkup:
+def confirm(yes_cb: str, no_cb: str, *, danger: bool = False) -> InlineKeyboardMarkup:
+    """تأیید دو دکمه‌ای.
+
+    `danger` را وقتی بدهید که «بله» <b>برگشت‌ناپذیر</b> است — حذف کار،
+    قطع اکانت. دکمه‌ی قرمز همان مکثِ نیم‌ثانیه‌ای را می‌سازد که فرقِ
+    «حذف کردم» و «اشتباهی حذف شد» است.
+
+    پیش‌فرضش خاموش است چون بیشترِ تأییدها خطرناک نیستند و اگر همه قرمز
+    شوند، قرمز دیگر چیزی نمی‌گوید.
+    """
     kb = InlineKeyboardBuilder()
     kb.row(
-        InlineKeyboardButton(text="✅ بله", callback_data=yes_cb),
+        InlineKeyboardButton(
+            text="✅ بله", callback_data=yes_cb, style=DANGER if danger else None
+        ),
         InlineKeyboardButton(text="❌ خیر", callback_data=no_cb),
     )
     return kb.as_markup()
