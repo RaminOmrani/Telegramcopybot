@@ -101,6 +101,13 @@ def to_bot_entities(entities) -> list:
             language = getattr(entity, "language", None)
             if language:
                 extra["language"] = str(language)
+        elif kind == "blockquote":
+            # نقل‌قولِ تاشو در MTProto همان نقل‌قول است با یک پرچم، ولی
+            # در Bot API نوعِ جداگانه‌ای است. بدون این، نقل‌قولِ بلندِ
+            # مبدأ در مقصد باز می‌ماند — همان چیزی که کاربر «شکلش فرق
+            # دارد» می‌بیند.
+            if getattr(entity, "collapsed", False):
+                kind = "expandable_blockquote"
         elif kind == "text_mention":
             # بدون شناسه‌ی کاربر، این entity بی‌معناست
             user_id = getattr(entity, "user_id", None)
@@ -357,3 +364,74 @@ async def send_media(
     # قبول نمی‌کند؛ فرستادنش خطا می‌دهد و کلِ پست را می‌اندازد.
     sent = await bot.send_media_group(**shared, media=group)
     return Sent(ids=[int(m.message_id) for m in sent])
+
+
+# ----------------------------------------------------------------- ویرایش
+
+# <b>اینها شکست نیستند.</b> «تغییری نکرده» یعنی مقصد از قبل درست است،
+# و «قابل ویرایش نیست» یعنی پیام آن‌قدر کهنه شده که تلگرام دیگر اجازه
+# نمی‌دهد. هیچ‌کدام تلاش مجدد لازم ندارند و هیچ‌کدام نباید در لاگ شبیه
+# خرابی به نظر برسند — وگرنه لاگِ واقعی زیرشان گم می‌شود.
+_EDIT_DONE = (
+    "message is not modified",
+    "message to edit not found",
+    "message can't be edited",
+    "message_id_invalid",
+    "there is no text in the message to edit",
+)
+
+
+async def edit(
+    bot,
+    chat_id,
+    message_id: int,
+    text: str,
+    *,
+    entities=None,
+    caption: bool = False,
+    buttons=None,
+) -> bool:
+    """متنِ پستی که پیش‌تر خودِ ربات فرستاده را به‌روز می‌کند.
+
+    <b>چرا این لازم است و نه یک امکانِ لوکس.</b> در حالت ساده ما کانال
+    را هر دقیقه نگاه می‌کنیم، نه لحظه‌ای. پس بارها پستی را می‌گیریم که
+    نویسنده‌اش هنوز دارد رویش کار می‌کند — سرتیتر رفته، فهرست هنوز
+    نیامده. بدون این، آن نسخه‌ی نصفه برای همیشه در کانال مشتری می‌ماند
+    و از بیرون دقیقاً شبیه «ربات پست را ناقص کپی می‌کند» است.
+
+    <b>صفحه‌کلید همیشه صریح داده می‌شود.</b> تلگرام در ویرایش، نبودنِ
+    `reply_markup` را «دکمه‌ها را بردار» می‌فهمد، نه «دست نزن». پس
+    صداکننده همان دکمه‌هایی را می‌دهد که موقع ارسال داده بود.
+    """
+    body = trim(text, MAX_CAPTION if caption else MAX_TEXT)
+    translated = to_bot_entities(entities) or None
+
+    try:
+        if caption:
+            await bot.edit_message_caption(
+                chat_id=chat_id,
+                message_id=message_id,
+                caption=body or None,
+                caption_entities=translated if body else None,
+                reply_markup=buttons,
+            )
+        else:
+            if not body.strip():
+                # پیام متنی نمی‌تواند خالی شود؛ تلگرام ردش می‌کند و
+                # چیزی هم برای گذاشتن جایش نداریم.
+                return False
+            await bot.edit_message_text(
+                chat_id=chat_id,
+                message_id=message_id,
+                text=body,
+                entities=translated,
+                reply_markup=buttons,
+                link_preview_options={"is_disabled": True},
+            )
+    except Exception as exc:
+        lowered = str(exc).lower()
+        if any(needle in lowered for needle in _EDIT_DONE):
+            log.debug("ویرایش پیام %s لازم/ممکن نبود: %s", message_id, exc)
+            return False
+        raise
+    return True

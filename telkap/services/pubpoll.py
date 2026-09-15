@@ -11,6 +11,12 @@
 یعنی یک ماژول که دو قرارداد متفاوت دارد و هر تغییری در یکی، دیگری را
 بی‌صدا خراب می‌کند.
 
+<b>ویرایش هم از همین‌جا می‌آید.</b> کانالِ خبری پست را می‌گذارد و چند
+ثانیه بعد کاملش می‌کند. چون ما لحظه‌ای خبر نمی‌شویم، گاهی نسخه‌ی نصفه
+را برمی‌داریم — و بدون برگشتن سراغش، همان نصفه برای همیشه در کانال
+مشتری می‌ماند. پس هر دور، پست‌های دیده‌شده‌ی همین بازه هم وارسی
+می‌شوند. هزینه‌ای ندارد: همان یک درخواست بود که آمده.
+
 <b>اولین بار هرگز آرشیو نمی‌ریزد.</b> وقتی مبدأیی تازه سپرده می‌شود،
 فقط نشانه‌اش روی آخرین پست گذاشته می‌شود و هیچ‌چیز فرستاده نمی‌شود.
 بدون این، اولین اجرای هر کارِ تازه سی پستِ قدیمی را در کانال مشتری
@@ -162,9 +168,16 @@ class PublicPoller:
 
         try:
             fresh = []
+            already = []
             async for message in client.iter_messages(source_id, limit=LOOKBACK):
                 if seen and message.id <= seen:
-                    break
+                    # <b>چرا نمی‌شکنیم.</b> پستِ دیده‌شده هم ممکن است
+                    # همین حالا ویرایش شده باشد و همان‌ها را باید
+                    # برگردانیم. هزینه‌اش صفر است: تلگرام این ۲۵ پیام
+                    # را در همان یک درخواست داده، و ادامه دادنِ حلقه
+                    # فقط پیمایشِ یک لیستِ در دست است.
+                    already.append(message)
+                    continue
                 fresh.append(message)
         except FloodWaitError as exc:
             await pool.mark_flood(account.id, int(exc.seconds))
@@ -174,6 +187,8 @@ class PublicPoller:
                 await pool.mark_banned(account.id, str(exc)[:200])
                 return 0
             raise
+
+        await self._sync_edits(already, jobs)
 
         if not fresh:
             return 0
@@ -210,6 +225,39 @@ class PublicPoller:
         # بود، پستی که ارسالش شکست خورده دیگر هیچ‌وقت دیده نمی‌شد.
         await _remember(source_id, newest)
         return count
+
+    async def _sync_edits(self, messages: list, jobs: list[tuple[int, int]]) -> int:
+        """پست‌هایی که قبلاً فرستاده‌ایم و حالا در مبدأ عوض شده‌اند.
+
+        <b>این همان چیزی است که «پست کامل نیامد» را می‌سازد.</b> کانال
+        خبری، پست را می‌گذارد و چند ثانیه بعد کاملش می‌کند — سرتیتر
+        اول، فهرست بعد. ما یک بار در دقیقه نگاه می‌کنیم، پس گاهی دقیقاً
+        وسطِ آن چند ثانیه می‌رسیم و نسخه‌ی نصفه را کپی می‌کنیم. در مسیر
+        اکانتِ مشتری تلگرام خودش خبرِ ویرایش را می‌دهد؛ اینجا نمی‌دهد،
+        چون اصلاً نمی‌داند ما این کانال را می‌خوانیم.
+
+        کدام‌ها را نگاه می‌کنیم: فقط آنهایی که تلگرام «ویرایش‌شده»
+        نشانشان کرده. تصمیمِ نهایی — که واقعاً چیزی عوض شده یا نه —
+        با اثر انگشت در موتور کپی گرفته می‌شود.
+        """
+        changed = 0
+        for message in messages:
+            if getattr(message, "edit_date", None) is None:
+                continue
+            for task_id, user_id in jobs:
+                try:
+                    if await self.copier.sync_edit(user_id, task_id, message):
+                        changed += 1
+                        log.info(
+                            "پست %s در مبدأ ویرایش شده بود؛ نسخه‌ی کار %s به‌روز شد",
+                            message.id, task_id,
+                        )
+                except Exception:
+                    log.exception(
+                        "به‌روزرسانی پست ویرایش‌شده‌ی %s برای کار %s نشد",
+                        message.id, task_id,
+                    )
+        return changed
 
 
 def _is_dead_account(exc: BaseException) -> bool:

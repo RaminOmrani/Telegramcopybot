@@ -139,6 +139,16 @@ async def main() -> int:
             ))
         out(f"        message_map rows: {copies}")
 
+        # <b>«post arrived truncated» comes from here.</b> the source
+        # channel publishes a headline and finishes the post seconds
+        # later. we look once a minute, so sometimes we grab the half
+        # version -- and only edit sync brings it back up to date.
+        from telkap.services.defaults import merged_settings
+
+        cfg = merged_settings(task.settings)
+        on = "yes" if cfg.get("sync_edits") else "NO -> half-written posts stay half"
+        out(f"        edit sync: {on}")
+
     # ------------------------------ آیا ربات واقعاً در مقصد اجازه دارد
     if tasks:
         out()
@@ -152,6 +162,7 @@ async def main() -> int:
     out("  lease NONE           -> poller never reached this source")
     out("  seen_msg_id 0        -> first visit done, nothing sent (by design)")
     out("  bot cannot post      -> the customer must re-add the bot as admin")
+    out("  edit sync NO         -> a post edited after we copied it stays stale")
     out("-" * 68)
 
     if "--send" in sys.argv:

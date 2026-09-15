@@ -328,3 +328,175 @@ def test_the_library_actually_supports_colours():
 
     assert "style" in InlineKeyboardButton.model_fields
     assert "style" in KeyboardButton.model_fields
+
+
+# ------------------------------------------------------------ ویرایش
+
+
+class _EditBot:
+    """رباتی که ویرایش‌ها را یادداشت می‌کند و می‌تواند خطا بدهد."""
+
+    def __init__(self, error: Exception | None = None) -> None:
+        self.error = error
+        self.texts: list[dict] = []
+        self.captions: list[dict] = []
+
+    async def edit_message_text(self, **kwargs):
+        if self.error is not None:
+            raise self.error
+        self.texts.append(kwargs)
+
+    async def edit_message_caption(self, **kwargs):
+        if self.error is not None:
+            raise self.error
+        self.captions.append(kwargs)
+
+
+@pytest.mark.asyncio
+async def test_an_edit_carries_the_translated_format_along():
+    bot = _EditBot()
+    done = await botsend.edit(
+        bot, -100, 55, "سلام دنیا",
+        entities=[types.MessageEntityBold(offset=0, length=4)],
+    )
+    assert done is True
+    assert bot.texts[0]["message_id"] == 55
+    assert bot.texts[0]["entities"][0].type == "bold"
+
+
+@pytest.mark.asyncio
+async def test_a_media_post_is_edited_through_its_caption():
+    bot = _EditBot()
+    assert await botsend.edit(bot, -100, 55, "کپشن", caption=True)
+    assert bot.texts == [], "پیامِ رسانه‌دار مثل متن ویرایش شد"
+    assert bot.captions[0]["caption"] == "کپشن"
+
+
+@pytest.mark.asyncio
+async def test_nothing_to_change_is_not_a_failure():
+    """<b>پرتکرارترین جوابِ تلگرام در این مسیر.</b>
+
+    پویشگر هر دقیقه همان پست را دوباره می‌بیند. اگر «تغییری نکرده»
+    خطا حساب شود، لاگ پر می‌شود از چیزی که اصلاً خرابی نیست — و لاگِ
+    واقعی زیرش گم می‌شود.
+    """
+    bot = _EditBot(RuntimeError("Bad Request: message is not modified"))
+    assert await botsend.edit(bot, -100, 55, "همان") is False
+
+
+@pytest.mark.asyncio
+async def test_a_post_too_old_to_edit_is_not_a_failure_either():
+    """تلگرام بعد از ۴۸ ساعت اجازه‌ی ویرایش نمی‌دهد. کاری از ما
+    برنمی‌آید و تلاش مجدد هم جوابش را عوض نمی‌کند."""
+    bot = _EditBot(RuntimeError("Bad Request: message can't be edited"))
+    assert await botsend.edit(bot, -100, 55, "تازه") is False
+
+
+@pytest.mark.asyncio
+async def test_a_real_failure_is_still_raised():
+    """<b>نگهبانِ طرفِ دیگر.</b> اگر هر خطایی بلعیده شود، روزی که ربات
+    از کانال بیرون انداخته شده باشد هم «انجام شد» می‌گیریم."""
+    bot = _EditBot(RuntimeError("Forbidden: bot was kicked from the channel"))
+    with pytest.raises(RuntimeError):
+        await botsend.edit(bot, -100, 55, "متن")
+
+
+def test_a_collapsed_quote_stays_collapsed():
+    """نقل‌قولِ تاشو در MTProto همان نقل‌قول است با یک پرچم، ولی در
+    Bot API نوعِ جداگانه‌ای است. بدون ترجمه، نقل‌قولِ بلندِ مبدأ در
+    مقصد باز می‌ماند و پست شکلِ دیگری پیدا می‌کند."""
+    got = botsend.to_bot_entities([
+        types.MessageEntityBlockquote(offset=0, length=5, collapsed=True),
+        types.MessageEntityBlockquote(offset=6, length=5, collapsed=False),
+    ])
+    assert [e.type for e in got] == ["expandable_blockquote", "blockquote"]
+
+
+# ---------------------------------------------- رنگ، جایی که معنا دارد
+
+
+def _styles(markup) -> list:
+    return [b.style for row in markup.inline_keyboard for b in row]
+
+
+def test_at_most_one_green_button_per_screen():
+    """<b>قاعده‌ای که کلِ این دستگاه را قابلِ خواندن نگه می‌دارد.</b>
+
+    سبز یعنی «قدمِ بعدی». اگر در یک صفحه دو تا باشد، دیگر قدمِ بعدی
+    نیست — فقط دو دکمه‌ی سبز است و کاربر باید خودش انتخاب کند، یعنی
+    همان کاری که رنگ قرار بود از دوشش بردارد.
+    """
+    from telkap import keyboards
+
+    screens = {
+        "حساب (متصل)": keyboards.account_menu(True, False),
+        "حساب (بدون اکانت)": keyboards.account_menu(False, True),
+        "سهمیه": keyboards.quota_menu(),
+        "طرح‌ها": keyboards.plans_menu(),
+        "بلندمدت": keyboards.long_term_menu(),
+        "خرید اعتبار": keyboards.credit_offer_menu("watermark"),
+    }
+    for name, markup in screens.items():
+        greens = [s for s in _styles(markup) if s == keyboards.GO]
+        assert len(greens) <= 1, f"{name}: {len(greens)} دکمه‌ی سبز"
+
+    # <b>و بی‌رنگیِ کامل هم قبول نیست.</b> بدون این، تستِ بالا با
+    # صفحه‌ای که هیچ سبزی ندارد هم راضی می‌شود — یعنی دقیقاً همان
+    # چیزی را نمی‌سنجد که برایش نوشته شده.
+    #
+    # طرحِ پیشنهادی‌مان بلندمدت است و در صفحه‌ی اولِ طرح‌ها اصلاً
+    # نیست؛ آنجا سبز روی درِ بلندمدت می‌نشیند و پیشنهادِ واقعی یک
+    # صفحه آن‌طرف‌تر.
+    from telkap.plans import POPULAR_CODE
+
+    def _green(markup):
+        return [
+            b for row in markup.inline_keyboard for b in row
+            if b.style == keyboards.GO
+        ]
+
+    assert [b.callback_data for b in _green(screens["طرح‌ها"])] == ["plan:long"]
+    assert [b.callback_data for b in _green(screens["بلندمدت"])] == [
+        f"plan:{POPULAR_CODE}"
+    ]
+
+
+def test_logging_out_is_red_but_logging_in_is_green():
+    """یک دکمه با دو معنای متضاد. «خروج» نشستِ اکانت را پاک می‌کند و
+    هر کارِ حالت کامل همان لحظه می‌خوابد؛ «اتصال» تنها قدمی است که
+    کاربرِ تازه مانده."""
+    from telkap import keyboards
+
+    out = keyboards.account_menu(True, False).inline_keyboard[0][0]
+    into = keyboards.account_menu(False, False).inline_keyboard[0][0]
+    assert out.style == keyboards.DANGER
+    assert into.style == keyboards.GO
+
+
+def test_turning_the_pin_off_is_red_turning_it_on_is_not():
+    """برداشتنِ قفل باید مکث بیاورد؛ گذاشتنش ترساندن ندارد."""
+    from telkap import keyboards
+
+    with_pin = keyboards.account_menu(True, True).inline_keyboard[1][0]
+    without = keyboards.account_menu(True, False).inline_keyboard[1][0]
+    assert with_pin.style == keyboards.DANGER
+    assert without.style is None
+
+
+def test_a_page_made_only_of_delete_buttons_stays_colourless():
+    """<b>جایی که قرمز باید عقب بکشد.</b>
+
+    در فهرست قواعد هر ردیف یک حذف است. اگر همه قرمز شوند، قرمز دیگر
+    «مواظب باش» نمی‌گوید و فقط رنگِ صفحه است — آن‌وقت قرمزِ «حذف کار»
+    هم بی‌اثر می‌شود.
+    """
+    from types import SimpleNamespace
+
+    from telkap import keyboards
+
+    rules = [
+        SimpleNamespace(id=i, pattern=f"کلمه{i}", replacement="")
+        for i in range(1, 5)
+    ]
+    markup = keyboards.rules_menu(1, "replace", rules)
+    assert all(style is None for style in _styles(markup))

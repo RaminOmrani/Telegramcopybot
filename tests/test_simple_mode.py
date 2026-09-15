@@ -31,6 +31,8 @@ class _Bot:
         self.documents: list[dict] = []
         self.videos: list[dict] = []
         self.groups: list[dict] = []
+        self.edits: list[dict] = []
+        self.caption_edits: list[dict] = []
 
     async def send_message(self, **kwargs):
         self.sent.append(kwargs)
@@ -55,6 +57,14 @@ class _Bot:
     async def send_media_group(self, **kwargs):
         self.groups.append(kwargs)
         return [_Result(980 + i) for i in range(len(kwargs["media"]))]
+
+    async def edit_message_text(self, **kwargs):
+        self.edits.append(kwargs)
+        return _Result(kwargs["message_id"])
+
+    async def edit_message_caption(self, **kwargs):
+        self.caption_edits.append(kwargs)
+        return _Result(kwargs["message_id"])
 
 
 def _photo_media():
@@ -527,3 +537,156 @@ def _returns(value):
         return value
 
     return _inner()
+
+
+# ------------------------------------------------- ویرایشِ پس از انتشار
+
+
+@pytest.mark.asyncio
+async def test_a_post_edited_at_the_source_is_updated_in_place(tmp_path, monkeypatch):
+    """<b>«پست کامل نیامد» از همین‌جا می‌آمد.</b>
+
+    کانالِ خبری سرتیتر را می‌گذارد و چند ثانیه بعد فهرست را زیرش اضافه
+    می‌کند. در حالت ساده ما لحظه‌ای خبر نمی‌شویم — هر دقیقه نگاه
+    می‌کنیم — پس گاهی دقیقاً نسخه‌ی نصفه را برمی‌داریم.
+
+    و چاره‌اش <b>ویرایشِ همان پیام</b> است، نه فرستادنِ دوباره: پستِ
+    تکراری در کانال مشتری بدتر از پستِ ناقص است، چون خودش را پاک
+    نمی‌کند.
+    """
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services.copier import Copier
+
+        await _simple_task(db_module, task_id)
+        bot = _install(monkeypatch)
+        copier = Copier(_NoAccountManager())
+
+        await copier.process(7, task_id, [FakeMessage(id=5, message="سرتیتر")])
+        assert len(bot.sent) == 1
+
+        changed = await copier.sync_edit(
+            7, task_id, FakeMessage(id=5, message="سرتیتر\nو بقیه‌ی فهرست")
+        )
+
+        assert changed is True
+        assert len(bot.edits) == 1, "نسخه‌ی نصفه در مقصد ماند"
+        assert bot.edits[0]["text"] == "سرتیتر\nو بقیه‌ی فهرست"
+        assert bot.edits[0]["message_id"] == 901, "پیامِ اشتباهی ویرایش شد"
+        assert len(bot.sent) == 1, "به‌جای ویرایش، پست دوباره فرستاده شد"
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_looking_again_at_an_unchanged_post_edits_nothing(tmp_path, monkeypatch):
+    """<b>نگهبانِ حلقه‌ی بی‌پایان.</b>
+
+    پویشگر هر دقیقه همان بیست‌وپنج پستِ گذشته را می‌بیند و بارها همین
+    را می‌پرسد. اگر ملاکْ «تلگرام گفته ویرایش‌شده» بود — که با عوض شدنِ
+    تعداد بازدید هم می‌شود — هر پستِ یک‌روزه صدها بار ویرایش می‌شد.
+    ملاک اثر انگشتِ محتواست.
+    """
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services.copier import Copier
+
+        await _simple_task(db_module, task_id)
+        bot = _install(monkeypatch)
+        copier = Copier(_NoAccountManager())
+
+        await copier.process(7, task_id, [FakeMessage(id=5, message="سرتیتر")])
+
+        assert await copier.sync_edit(7, task_id, FakeMessage(id=5, message="سرتیتر")) is False
+        assert bot.edits == [], "متنِ دست‌نخورده بی‌دلیل ویرایش شد"
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_the_second_edit_of_the_same_post_also_lands(tmp_path, monkeypatch):
+    """اثر انگشت باید روی نسخه‌ی تازه برود، وگرنه ویرایشِ بعدی با
+    <b>نسخه‌ی اول</b> سنجیده می‌شود و یک‌بارمصرف بودنِ این مسیر
+    خودش را نشان نمی‌دهد مگر با دو ویرایشِ پشت‌سرهم."""
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services.copier import Copier
+
+        await _simple_task(db_module, task_id)
+        bot = _install(monkeypatch)
+        copier = Copier(_NoAccountManager())
+
+        await copier.process(7, task_id, [FakeMessage(id=5, message="یک")])
+        await copier.sync_edit(7, task_id, FakeMessage(id=5, message="دو"))
+        await copier.sync_edit(7, task_id, FakeMessage(id=5, message="دو"))
+        await copier.sync_edit(7, task_id, FakeMessage(id=5, message="سه"))
+
+        assert [e["text"] for e in bot.edits] == ["دو", "سه"]
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_a_photo_caption_is_edited_as_a_caption(tmp_path, monkeypatch):
+    """<b>دو تابعِ جدا برای دو چیز.</b> تلگرام روی پیامِ رسانه‌دار
+    `editMessageText` را با «متنی برای ویرایش نیست» رد می‌کند — و چون
+    آن خطا را می‌بلعیم، نتیجه‌اش پستی است که ساکت ناقص می‌ماند."""
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services.copier import Copier
+
+        await _simple_task(db_module, task_id)
+        bot = _install(monkeypatch)
+        _reader(monkeypatch, tmp_path, ["a.png"])
+        copier = Copier(_NoAccountManager())
+
+        photo = FakeMessage(id=5, message="کپشن", media=_photo_media())
+        await copier.process(7, task_id, [photo])
+        assert len(bot.photos) == 1
+
+        await copier.sync_edit(
+            7, task_id, FakeMessage(id=5, message="کپشنِ کامل", media=_photo_media())
+        )
+
+        assert bot.edits == [], "کپشن را مثل متن ویرایش کرد"
+        assert len(bot.caption_edits) == 1
+        assert bot.caption_edits[0]["caption"] == "کپشنِ کامل"
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_an_edit_that_failed_is_tried_again_next_round(tmp_path, monkeypatch):
+    """<b>شکستِ موقت نباید مثل «انجام شد» مهر بخورد.</b>
+
+    اثر انگشتِ ذخیره‌شده همان چیزی است که دورِ بعد می‌گوید «عوض نشده،
+    کاری نکن». اگر بعد از یک قطعیِ شبکه هم جلو برود، آن پستِ نصفه
+    <b>برای همیشه</b> نصفه می‌ماند — دقیقاً خرابی‌ای که این مسیر برای
+    رفعش ساخته شد، فقط این بار بی‌صدا.
+    """
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services.copier import Copier
+
+        await _simple_task(db_module, task_id)
+        bot = _install(monkeypatch)
+        copier = Copier(_NoAccountManager())
+
+        await copier.process(7, task_id, [FakeMessage(id=5, message="سرتیتر")])
+
+        healthy = bot.edit_message_text
+
+        async def explode(**kwargs):
+            raise RuntimeError("Request timeout")
+
+        bot.edit_message_text = explode
+        assert await copier.sync_edit(
+            7, task_id, FakeMessage(id=5, message="کامل")
+        ) is False
+        assert bot.edits == []
+
+        bot.edit_message_text = healthy
+        assert await copier.sync_edit(7, task_id, FakeMessage(id=5, message="کامل"))
+        assert [e["text"] for e in bot.edits] == ["کامل"]
+    finally:
+        await db_module.close_db()

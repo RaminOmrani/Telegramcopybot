@@ -33,11 +33,19 @@ from telkap.texts import fa_num, on_off
 # اولش این است که همه‌جا استفاده شود — ولی وقتی همه‌ی دکمه‌ها رنگی
 # باشند، هیچ‌کدام دیده نمی‌شود و رنگ فقط یک تزئین است.
 #
-# پس فقط دو معنا رنگ می‌گیرند و بقیه پیش‌فرض می‌مانند:
+# پس سه معنا رنگ می‌گیرند و بقیه پیش‌فرض می‌مانند:
 DANGER = "danger"     # برگشت‌ناپذیر: حذف، قطع اتصال — باید مکث بیاورد
-GO = "success"        # کاری که واقعاً می‌خواهیم انجام شود
-CALM = "primary"      # مهم، ولی نه فوری و نه خطرناک
+GO = "success"        # قدمی که همین حالا کاربر را جلو می‌برد
+CALM = "primary"      # درِ مهمی که فوری نیست: طرح و کیف پول، راهِ دوم،
+                      # و جوابِ «چرا کار نکرد؟»
 
+# <b>قاعده‌ای که این سه را قابلِ خواندن نگه می‌دارد: در هر صفحه حداکثر
+# یک سبز.</b> «قدم بعدی» اگر دوتا باشد، دیگر قدمِ بعدی نیست. قرمز
+# می‌تواند چند تا باشد — چون هرکدام یک شیء جداگانه را حذف می‌کند و
+# چشم باید هر کدامشان را جدا ببیند — ولی در صفحه‌ای که <b>همه‌ی</b>
+# دکمه‌ها حذف‌اند (مثل فهرست قواعد) هیچ‌کدام رنگ نمی‌گیرد: آنجا قرمز
+# دیگر «مواظب باش» نمی‌گوید، فقط پس‌زمینه است.
+#
 # کلاینت‌های قدیمی‌تر این فیلد را نمی‌شناسند و بی‌صدا نادیده‌اش می‌گیرند؛
 # دکمه همان شکلِ همیشگی را می‌گیرد. پس اضافه کردنش هیچ‌جا نمی‌شکند.
 
@@ -213,8 +221,14 @@ def task_menu(
     # این گزینه‌ی پیشرفته نیست؛ جوابِ سؤالی است که همه می‌پرسند. کاربری
     # که پستِ نرسیده ببیند و توضیحی نگیرد به ربات اعتماد نمی‌کند، و
     # پنهان کردنش پشت «گزینه‌های پیشرفته» یعنی همان کاربر پیدایش نکند.
+    # و آبی به همین دلیل: نه فوری است و نه خطرناک، ولی باید از میان
+    # چهارده دکمه پیدا شود.
     kb.row(
-        InlineKeyboardButton(text="🔍 چرا پستی نزد؟", callback_data=f"task:why:{task.id}")
+        InlineKeyboardButton(
+            text="🔍 چرا پستی نزد؟",
+            callback_data=f"task:why:{task.id}",
+            style=CALM,
+        )
     )
     kb.row(
         InlineKeyboardButton(text="🧰 قالب آماده", callback_data=f"tpl:list:{task.id}"),
@@ -243,8 +257,11 @@ def task_menu(
             )
         )
 
+    # حذفِ کار، تنظیمات و آمارش را با خودش می‌برد و برگشتی ندارد.
     kb.row(
-        InlineKeyboardButton(text="🗑 حذف کار", callback_data=f"task:del:{task.id}"),
+        InlineKeyboardButton(
+            text="🗑 حذف کار", callback_data=f"task:del:{task.id}", style=DANGER
+        ),
         InlineKeyboardButton(text="🔙 بازگشت", callback_data="task:list"),
     )
     return kb.as_markup()
@@ -682,7 +699,11 @@ def destinations_menu(task_id: int, primary: str, extras: list) -> InlineKeyboar
             InlineKeyboardButton(
                 text=has_own, callback_data=f"dest:sig:{dest.id}:{task_id}"
             ),
-            InlineKeyboardButton(text="🗑", callback_data=f"dest:del:{dest.id}:{task_id}"),
+            InlineKeyboardButton(
+                text="🗑",
+                callback_data=f"dest:del:{dest.id}:{task_id}",
+                style=DANGER,
+            ),
         )
     kb.row(InlineKeyboardButton(text="➕ افزودن مقصد", callback_data=f"dest:add:{task_id}"))
     kb.row(
@@ -695,6 +716,12 @@ def destinations_menu(task_id: int, primary: str, extras: list) -> InlineKeyboar
 
 
 def rules_menu(task_id: int, kind: str, rules: list) -> InlineKeyboardMarkup:
+    """فهرست قواعد — <b>عمداً بی‌رنگ.</b>
+
+    هر ردیفِ اینجا یک دکمه‌ی حذف است. اگر همه قرمز شوند، قرمز دیگر
+    «مواظب باش» نمی‌گوید و فقط رنگِ صفحه است؛ آن‌وقت قرمزِ «حذف کار»
+    هم بی‌اثر می‌شود. ضمناً یک قاعده‌ی حذف‌شده را می‌شود دوباره نوشت.
+    """
     kb = InlineKeyboardBuilder()
     for rule in rules:
         label = (
@@ -771,10 +798,16 @@ def plans_menu() -> InlineKeyboardMarkup:
     # دکمه‌ی بلندمدت خودش یک لحظه‌ی فروش است، نه فقط یک فهرست: عدد
     # تخفیف روی خودِ دکمه می‌نشیند تا کسی که فقط طرح ماهانه را
     # می‌خواست، دلیلی برای نگاه کردن داشته باشد.
+    #
+    # <b>و سبزِ این صفحه روی همین می‌نشیند، نه روی یکی از طرح‌ها.</b>
+    # طرحِ پیشنهادیِ ما (`POPULAR_CODE`) اصلاً در این فهرست نیست —
+    # بلندمدت است و پشت همین دکمه. پس تنها «قدمِ بعدی»ای که اینجا
+    # می‌توانیم نشان دهیم، خودِ این در است.
     kb.row(
         InlineKeyboardButton(
             text=f"⏳ اشتراک بلندمدت — تا {fa_num(24)}٪ تخفیف",
             callback_data="plan:long",
+            style=GO,
         )
     )
     app = _mini_app_button()
@@ -792,11 +825,15 @@ def long_term_menu() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     for plan in long_term():
         icon = PLAN_ICONS.get(plan.code, "🗓")
-        star = " ⭐️" if plan.code == POPULAR_CODE else ""
+        popular = plan.code == POPULAR_CODE
+        star = " ⭐️" if popular else ""
         kb.row(
             InlineKeyboardButton(
                 text=f"{icon} {plan.title} · {plan.price_label}{star}",
                 callback_data=f"plan:{plan.code}",
+                # ستاره در میان چند ردیفِ هم‌شکل گم می‌شود؛ رنگ گم
+                # نمی‌شود. و دقیقاً یکی — وگرنه دیگر پیشنهاد نیست.
+                style=GO if popular else None,
             )
         )
     kb.row(InlineKeyboardButton(text="🔙 بازگشت به طرح‌ها", callback_data="credit:plans"))
@@ -845,10 +882,16 @@ def credit_packs_menu(kind: str) -> InlineKeyboardMarkup:
 def credit_offer_menu(kind: str) -> InlineKeyboardMarkup:
     """دکمه‌ی کوتاه «اعتبار بخر» برای جاهایی که قابلیت قفل است."""
     kb = InlineKeyboardBuilder()
+    # این صفحه سرِ راهِ قابلیتی آمده که کاربر همین حالا می‌خواستش —
+    # پس خریدِ اعتبار اینجا واقعاً «قدمِ بعدی» است، نه یک پیشنهاد.
     kb.row(
-        InlineKeyboardButton(text="🎫 خرید اعتبار", callback_data=f"credit:pick:{kind}")
+        InlineKeyboardButton(
+            text="🎫 خرید اعتبار", callback_data=f"credit:pick:{kind}", style=GO,
+        )
     )
-    kb.row(InlineKeyboardButton(text="💳 دیدن طرح‌ها", callback_data="credit:plans"))
+    kb.row(InlineKeyboardButton(
+        text="💳 دیدن طرح‌ها", callback_data="credit:plans", style=CALM,
+    ))
     return kb.as_markup()
 
 
@@ -860,21 +903,31 @@ def account_menu(
     digest: bool = False,
 ) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
+    # <b>یک دکمه، دو معنای کاملاً متضاد — و همین جای رنگ است.</b>
+    # «خروج» نشستِ اکانت را پاک می‌کند و هر کارِ حالت کامل همان لحظه
+    # می‌خوابد؛ «اتصال» برعکس، تنها قدمی است که کاربرِ تازه مانده.
     if logged_in:
-        kb.row(InlineKeyboardButton(text="🚪 خروج از حساب", callback_data="acc:logout"))
+        kb.row(InlineKeyboardButton(
+            text="🚪 خروج از حساب", callback_data="acc:logout", style=DANGER,
+        ))
     else:
-        kb.row(InlineKeyboardButton(text="🔐 اتصال اکانت", callback_data="acc:login"))
+        kb.row(InlineKeyboardButton(
+            text="🔐 اتصال اکانت", callback_data="acc:login", style=GO,
+        ))
     kb.row(
         InlineKeyboardButton(
             text="🔒 غیرفعال‌سازی پین" if has_pin else "🔒 فعال‌سازی پین امنیتی",
             callback_data="acc:pin",
+            # برداشتنِ قفل قرمز است؛ گذاشتنش کارِ خوبی است و ترساندن
+            # ندارد.
+            style=DANGER if has_pin else None,
         )
     )
     kb.row(
         InlineKeyboardButton(text="📊 سهمیه و اعتبار من", callback_data="acc:quota")
     )
     kb.row(
-        InlineKeyboardButton(text="👛 کیف پول", callback_data="wal:home"),
+        InlineKeyboardButton(text="👛 کیف پول", callback_data="wal:home", style=CALM),
         InlineKeyboardButton(text="🧾 گزارش فعالیت", callback_data="acc:logs"),
     )
     kb.row(
@@ -900,7 +953,7 @@ def quota_menu() -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     kb.row(
         InlineKeyboardButton(text="🎫 خرید اعتبار", callback_data="credit:menu"),
-        InlineKeyboardButton(text="⬆️ ارتقای طرح", callback_data="credit:plans"),
+        InlineKeyboardButton(text="⬆️ ارتقای طرح", callback_data="credit:plans", style=CALM),
     )
     kb.row(InlineKeyboardButton(text="🔄 به‌روزرسانی", callback_data="acc:quota"))
     return kb.as_markup()
@@ -909,16 +962,27 @@ def quota_menu() -> InlineKeyboardMarkup:
 def forward_menu(profile) -> InlineKeyboardMarkup:
     kb = InlineKeyboardBuilder()
     if profile is None:
-        kb.row(InlineKeyboardButton(text="➕ تعیین کانال مقصد", callback_data="fwd:new"))
+        # تنها دکمه‌ی صفحه و تنها قدمِ ممکن
+        kb.row(InlineKeyboardButton(
+            text="➕ تعیین کانال مقصد", callback_data="fwd:new", style=GO,
+        ))
         return kb.as_markup()
     toggle = "⏸ غیرفعال" if profile.enabled else "▶️ فعال"
-    kb.row(InlineKeyboardButton(text=toggle, callback_data="fwd:toggle"))
+    # همان قاعده‌ی منوی کار: خوابیده سبز می‌شود تا دیده شود، روشن
+    # بی‌رنگ می‌ماند چون خواباندنش برگشت‌پذیر است.
+    kb.row(InlineKeyboardButton(
+        text=toggle,
+        callback_data="fwd:toggle",
+        style=None if profile.enabled else GO,
+    ))
     kb.row(
         InlineKeyboardButton(text="🧹 پاک‌سازی متن", callback_data="fwdset:clean"),
         InlineKeyboardButton(text="✍️ هدر / فوتر / امضا", callback_data="fwdset:text"),
     )
     kb.row(InlineKeyboardButton(text="🔁 تغییر مقصد", callback_data="fwd:new"))
-    kb.row(InlineKeyboardButton(text="🗑 حذف پروفایل", callback_data="fwd:del"))
+    kb.row(InlineKeyboardButton(
+        text="🗑 حذف پروفایل", callback_data="fwd:del", style=DANGER,
+    ))
     return kb.as_markup()
 
 

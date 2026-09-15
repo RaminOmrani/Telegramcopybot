@@ -89,6 +89,9 @@ def _pick_source() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(
             text="📋 انتخاب از کانال‌های من",
+            # تنها دکمه‌ی صفحه و تنها قدمِ ممکن — و رنگش تفاوتِ
+            # «یک ضربه» با «آدرس را دستی تایپ کن» را دیدنی می‌کند.
+            style=GO,
             request_chat=KeyboardButtonRequestChat(
                 request_id=PICK_SOURCE,
                 chat_is_channel=True,
@@ -117,6 +120,7 @@ def _pick_dest() -> ReplyKeyboardMarkup:
     return ReplyKeyboardMarkup(
         keyboard=[[KeyboardButton(
             text="📋 انتخاب کانال و افزودن ربات",
+            style=GO,
             request_chat=KeyboardButtonRequestChat(
                 request_id=PICK_DEST,
                 chat_is_channel=True,

@@ -135,6 +135,7 @@ VIA_LABELS = {
     DeliveryTiming.VIA_RETRY: "تلاش مجدد",
     DeliveryTiming.VIA_QUEUE: "پس از صف انتظار",
     DeliveryTiming.VIA_HISTORY: "کپی آرشیو",
+    DeliveryTiming.VIA_SIMPLE: "پویشِ حالت ساده",
     "unknown": "نامشخص (پیش از این اندازه‌گیری)",
 }
 
@@ -654,7 +655,7 @@ class Copier:
         async def handler(event):
             for task_id in self.manager.tasks_for_chat(user_id, event.chat_id):
                 try:
-                    await self._sync_edit(user_id, task_id, event.message)
+                    await self.sync_edit(user_id, task_id, event.message)
                 except Exception:
                     log.exception("همگام‌سازی ویرایش برای کار %s ناموفق بود", task_id)
         return handler
@@ -1514,13 +1515,23 @@ class Copier:
         return paths, changed
 
     # --------------------------------------------------------- همگام‌سازی
-    async def _sync_edit(self, user_id: int, task_id: int, message) -> None:
+    async def sync_edit(self, user_id: int, task_id: int, message) -> bool:
+        """نسخه‌ی مقصد را با نسخه‌ی تازه‌ی مبدا یکی می‌کند.
+
+        <b>یک در برای هر دو حالت.</b> در مسیر اکانتِ مشتری، تلگرام خودش
+        خبرِ ویرایش را می‌دهد و این تابع از هندلرِ آن صدا می‌شود. در
+        حالت ساده خبری نمی‌آید — پویشگر هر دقیقه همان پست را دوباره
+        می‌بیند و اینجا می‌پرسد «عوض شده؟». پس این تابع باید بتواند
+        <b>بی‌دلیل هم صدا شود</b> و کاری نکند؛ نگهبانش اثر انگشت است.
+
+        خروجی: آیا چیزی واقعاً ویرایش شد.
+        """
         snapshot = await cache.get_task(task_id)
         if snapshot is None or not snapshot.enabled:
-            return
+            return False
         cfg, rules = snapshot.cfg, snapshot.rules
         if not cfg.get("sync_edits"):
-            return
+            return False
         async with get_session() as db:
             rows = await db.execute(
                 select(MessageMap).where(
@@ -1529,31 +1540,120 @@ class Copier:
             )
             mappings = list(rows.scalars())
         if not mappings:
-            return
+            return False
 
-        client = await self.manager.ensure_client(user_id)
-        if client is None:
-            return
+        # <b>اثر انگشت، نه تاریخِ ویرایش.</b> تلگرام برای هر تغییری —
+        # عوض شدنِ تعداد بازدید هم — ممکن است پست را «ویرایش‌شده» نشان
+        # دهد. اگر ملاکْ آن بود، پویشگر هر دقیقه همان متن را دوباره
+        # می‌فرستاد و در عمل هر پستِ یک روزه صدها بار ویرایش می‌شد.
+        print_ = fingerprint_of(build_facts(message))
+        baseline = next((m.content_hash for m in mappings if m.content_hash), None)
+        if baseline == print_.exact:
+            return False
+
         original = message.message or ""
         text = apply_transforms(original, cfg, rules)
         entities = remap_entities(original, text, getattr(message, "entities", None))
-        for mapping in mappings:
-            try:
-                await client.edit_message(
-                    _as_target(mapping.dest_chat),
-                    mapping.dst_msg_id,
-                    text,
-                    formatting_entities=entities,
-                )
-            except (MessageIdInvalidError, ValueError):
-                log.debug("ویرایش پیام %s ممکن نبود", mapping.dst_msg_id)
-            except FloodWaitError as exc:
-                await asyncio.sleep(min(exc.seconds, 300))
-            except Exception:
-                log.debug("ویرایش در مقصد %s ناموفق بود", mapping.dest_chat, exc_info=True)
+
+        if snapshot.mode == Task.MODE_SIMPLE:
+            settled = await self._edit_by_bot(mappings, message, text, entities, cfg)
+        else:
+            client = await self.manager.ensure_client(user_id)
+            if client is None:
+                return False
+            settled = True
+            for mapping in mappings:
+                try:
+                    await client.edit_message(
+                        _as_target(mapping.dest_chat),
+                        mapping.dst_msg_id,
+                        text,
+                        formatting_entities=entities,
+                    )
+                except (MessageIdInvalidError, ValueError):
+                    log.debug("ویرایش پیام %s ممکن نبود", mapping.dst_msg_id)
+                except FloodWaitError as exc:
+                    settled = False
+                    await asyncio.sleep(min(exc.seconds, 300))
+                except Exception:
+                    settled = False
+                    log.debug(
+                        "ویرایش در مقصد %s ناموفق بود", mapping.dest_chat, exc_info=True
+                    )
+
+        # <b>اثر انگشت فقط وقتی جلو می‌رود که کار تمام شده باشد.</b>
+        # اگر شکستِ موقتی — قطعیِ شبکه، محدودیتِ نرخ — هم مهر بخورد،
+        # دورِ بعد «عوض نشده» می‌گیریمش و آن پستِ نصفه برای همیشه نصفه
+        # می‌ماند. دقیقاً همان خرابی‌ای که این کد برای رفعش نوشته شد.
+        if not settled:
+            return False
+        await self._restamp(task_id, message.id, print_)
         await log_activity(
             user_id=user_id, task_id=task_id, event="edit", detail=f"#{message.id}"
         )
+        return True
+
+    async def _edit_by_bot(self, mappings, message, text, entities, cfg) -> bool:
+        """همان ویرایش، ولی با خودِ ربات — چون مشتری اکانتی ندارد.
+
+        خروجی: آیا پرونده بسته شد. «تلگرام گفت تغییری نکرده» هم بسته
+        است — یعنی مقصد از قبل درست بوده.
+        """
+        from telkap.services import botsend
+
+        bot = alerts.bot()
+        if bot is None:
+            log.warning("ربات در دسترس نیست؛ ویرایشِ حالت ساده انجام نشد")
+            return False
+
+        # پیامِ رسانه‌دار کپشن دارد نه متن، و تلگرام برای هرکدام تابع
+        # جداگانه‌ای می‌خواهد. اشتباه گرفتنشان یعنی خطای «متنی برای
+        # ویرایش نیست» و پستی که ناقص می‌ماند.
+        as_caption = classify_media(message) != "text" and not cfg.get("caption_only")
+        buttons = botsend.to_bot_buttons(message) if cfg.get("copy_buttons") else None
+
+        settled = True
+        for mapping in mappings:
+            try:
+                await botsend.edit(
+                    bot,
+                    _as_target(mapping.dest_chat),
+                    mapping.dst_msg_id,
+                    text,
+                    entities=entities,
+                    caption=as_caption,
+                    buttons=buttons,
+                )
+            except Exception:
+                settled = False
+                log.debug(
+                    "ویرایش با ربات در مقصد %s ناموفق بود",
+                    mapping.dest_chat, exc_info=True,
+                )
+        return settled
+
+    async def _restamp(self, task_id: int, src_msg_id: int, print_: Fingerprint) -> None:
+        """اثر انگشتِ ذخیره‌شده را روی نسخه‌ی تازه می‌برد.
+
+        بدون این، دفعه‌ی بعد که پویشگر همین پست را می‌بیند باز هم
+        «عوض شده» می‌گیردش و تا ابد هر دقیقه یک ویرایش می‌فرستد.
+
+        هر سه سطح با هم به‌روز می‌شوند، نه فقط آنکه مقایسه شد: تشخیصِ
+        تکراری ممکن است روی هرکدامشان تنظیم باشد و جا ماندنِ دوتای دیگر
+        یعنی پستِ بعدی با <b>متنِ قدیمی</b> سنجیده می‌شود.
+        """
+        async with get_session() as db:
+            rows = await db.execute(
+                select(MessageMap).where(
+                    MessageMap.task_id == task_id,
+                    MessageMap.src_msg_id == src_msg_id,
+                )
+            )
+            for mapping in rows.scalars():
+                mapping.content_hash = print_.exact
+                mapping.norm_hash = print_.normalized
+                mapping.simhash = print_.fuzzy
+            await db.commit()
 
     async def _sync_delete(self, user_id: int, task_id: int, deleted_ids: Iterable[int]) -> None:
         snapshot = await cache.get_task(task_id)

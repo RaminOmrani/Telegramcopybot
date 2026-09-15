@@ -39,10 +39,15 @@ class _RecordingCopier:
     def __init__(self) -> None:
         self.seen: list[tuple[int, int, list[int]]] = []
         self.vias: list[str] = []
+        self.edits: list[tuple[int, int, int]] = []
 
     async def process(self, user_id, task_id, messages, **kwargs) -> bool:
         self.seen.append((user_id, task_id, [m.id for m in messages]))
         self.vias.append(kwargs.get("via", ""))
+        return True
+
+    async def sync_edit(self, user_id, task_id, message) -> bool:
+        self.edits.append((user_id, task_id, message.id))
         return True
 
 
@@ -373,5 +378,77 @@ async def test_with_no_service_account_the_admin_is_told(tmp_path, monkeypatch):
         assert await PublicPoller(copier).run_once() == 0
         assert said, "هیچ‌کس خبردار نشد که خواننده‌ای نداریم"
         assert "/pool" in said[0], "گفته نشد چه کار باید کرد"
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_a_post_edited_right_after_publication_is_brought_up_to_date(
+    tmp_path, monkeypatch
+):
+    """<b>همان «پست کامل نیامد».</b>
+
+    کانال خبری سرتیتر را می‌گذارد و چند ثانیه بعد فهرست را زیرش اضافه
+    می‌کند. ما یک بار در دقیقه نگاه می‌کنیم، پس گاهی دقیقاً وسطِ آن
+    چند ثانیه می‌رسیم. در مسیر اکانتِ مشتری تلگرام خودش خبرِ ویرایش را
+    می‌دهد؛ اینجا نمی‌دهد — اگر خودمان برنگردیم، آن نسخه‌ی نصفه برای
+    همیشه در کانال مشتری می‌ماند.
+    """
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services.pubpoll import PublicPoller
+
+        await _simple(db_module, task_id)
+        await _account(db_module)
+
+        client = _FakeClient([FakeMessage(id=10)])
+        _wire(monkeypatch, client)
+        copier = _RecordingCopier()
+        poller = PublicPoller(copier)
+        await poller.run_once()                       # نشانه روی ۱۰
+
+        client.messages = [FakeMessage(id=11, message="سرتیتر"), FakeMessage(id=10)]
+        await poller.run_once()                       # ۱۱ می‌رود
+        assert [ids for _, _, ids in copier.seen] == [[11]]
+
+        # حالا مبدأ همان پست را کامل می‌کند
+        client.messages = [
+            FakeMessage(id=11, message="سرتیتر\nو بقیه‌ی فهرست", edit_date=object()),
+            FakeMessage(id=10),
+        ]
+        await poller.run_once()
+
+        assert copier.edits == [(7, task_id, 11)], "نسخه‌ی نصفه در مقصد ماند"
+        assert len(copier.seen) == 1, "پست ویرایش‌شده دوباره از نو فرستاده شد"
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_untouched_posts_are_not_re_examined_every_minute(tmp_path, monkeypatch):
+    """پستی که تلگرام «ویرایش‌شده» نشانش نکرده، اصلاً پرسیده نمی‌شود.
+
+    هر دور بیست‌وپنج پستِ گذشته در دست است. اگر همه‌شان به موتور کپی
+    داده شوند، هر مبدأ در هر دقیقه بیست‌وپنج پرسشِ پایگاه‌داده می‌سازد
+    برای چیزی که در ۹۹٪ موارد عوض نشده.
+    """
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.services.pubpoll import PublicPoller
+
+        await _simple(db_module, task_id)
+        await _account(db_module)
+
+        client = _FakeClient([FakeMessage(id=10)])
+        _wire(monkeypatch, client)
+        copier = _RecordingCopier()
+        poller = PublicPoller(copier)
+        await poller.run_once()
+
+        client.messages = [FakeMessage(id=11), FakeMessage(id=10)]
+        await poller.run_once()
+        await poller.run_once()
+
+        assert copier.edits == [], "پستِ دست‌نخورده بی‌دلیل وارسی شد"
     finally:
         await db_module.close_db()
