@@ -51,6 +51,31 @@ ASK_SOURCE = (
     "<i>در این حالت فقط کانال‌های عمومی ممکن‌اند.</i>"
 )
 
+# <b>یک متن، چون یک واقعیت است.</b>
+#
+# این مقایسه در سه جا دیده می‌شود: پیش از انتخابِ حالت، روی خودِ کار، و
+# بعد از وصل شدنِ اکانت. اگر سه نسخه می‌داشت، دیر یا زود یکی‌شان کهنه
+# می‌ماند و همان یکی چیزی وعده می‌دهد که نداریم.
+#
+# و ترتیبش عمدی است: اول آنچه ساده <b>دارد</b>. فهرستی که با
+# «نمی‌تواند» شروع شود، حالتِ بی‌دردسرمان را شبیه نسخه‌ی معیوب نشان
+# می‌دهد، در حالی که برای بیشترِ مشتری‌ها همین کافی است.
+MODE_COMPARISON = (
+    "<b>در حالت ساده اینها می‌آیند:</b>\n"
+    "متن، عکس، ویدیو، آلبوم، فایل — با بولد، ایتالیک، لینک، اسپویلر و "
+    "نقل‌قول. ویرایش‌های مبدأ هم دنبال می‌شوند.\n\n"
+    "<b>و اینها فقط در حالت کامل هستند:</b>\n"
+    "• <b>ایموجی پریمیوم.</b> در حالت ساده به شکل ایموجی معمولیِ زیرش "
+    "می‌رسد. خودِ تلگرام اجازه نمی‌دهد ربات‌ها ایموجی پریمیوم در کانال "
+    "بفرستند — ربطی به اشتراک شما ندارد و با پول بیشتر هم درست "
+    "نمی‌شود.\n"
+    "• <b>کانال مبدأ خصوصی.</b> در حالت ساده فقط کانال عمومی.\n"
+    "• <b>کپی پست‌های قدیمی</b> (آرشیو مبدأ).\n\n"
+    "<b>حالت کامل چه می‌خواهد:</b> یک بار اکانت تلگرامتان را وصل "
+    "می‌کنید — یا <b>کد QR را اسکن می‌کنید</b>، یا کد ورودی که تلگرام "
+    "می‌فرستد را وارد می‌کنید. همین. بعدش همه‌چیز همان‌طور کار می‌کند."
+)
+
 ASK_DEST = (
     "📥 <b>حالا کانال خودتان را انتخاب کنید.</b>\n\n"
     "با دکمه‌ی زیر، تلگرام فهرست کانال‌هایتان را نشان می‌دهد و "
@@ -369,15 +394,7 @@ async def cb_why(call: CallbackQuery) -> None:
         "<b>خودِ ربات</b> در کانال شما می‌گذارد. پس لازم نیست اکانت "
         "تلگرامتان را وصل کنید — فقط ربات را در کانال خودتان ادمین "
         "می‌کنید، مثل هر ربات دیگری.\n\n"
-        "<b>دو محدودیتش:</b>\n"
-        "• فقط کانال مبدأ <b>عمومی</b>. برای کانال خصوصی یا کپیِ "
-        "پست‌های قدیمی، باید اکانت خودتان وصل باشد.\n"
-        "• <b>ایموجی پریمیوم</b> به شکل ایموجی معمولیِ زیرش می‌رسد. "
-        "خودِ تلگرام اجازه نمی‌دهد ربات‌ها ایموجی پریمیوم در کانال "
-        "بفرستند — ربطی به اشتراک شما ندارد. اگر این برایتان مهم است، "
-        "کار را با اکانت خودتان بسازید و آن اکانت پریمیوم باشد.\n\n"
-        "بقیه‌ی قالب‌بندی — بولد، ایتالیک، لینک، اسپویلر، نقل‌قول — "
-        "کامل می‌آید."
+        + MODE_COMPARISON
     )
 
 
@@ -420,3 +437,211 @@ async def offer(message: Message, user_id: int) -> bool:
         reply_markup=new_task_choice().as_markup(),
     )
     return True
+
+
+# ------------------------------------------------- جابه‌جایی بین دو حالت
+#
+# <b>چرا این مسیر از خودِ «ارتقا» مهم‌تر است.</b>
+#
+# حالت ساده برای این ساخته شد که مشتریِ بی‌اعتماد بتواند بدون دادنِ
+# اکانتش امتحان کند. ولی اگر همان‌جا بماند، هرگز به امکاناتِ کامل
+# نمی‌رسد — و ما هم هیچ‌وقت آن اعتماد را نمی‌گیریم.
+#
+# ترتیبِ درست این است: اول کار کند، بعد چیزی بخواهد. کسی که یک هفته
+# پست‌هایش را درست گرفته و حالا ایموجی پریمیوم می‌خواهد، اکانتش را وصل
+# می‌کند؛ همان آدم در قدم اول این کار را نمی‌کرد.
+
+
+def _mode_keyboard(task) -> InlineKeyboardBuilder:
+    kb = InlineKeyboardBuilder()
+    if task.mode == Task.MODE_SIMPLE:
+        kb.row(
+            InlineKeyboardButton(
+                text="⬆️ ارتقا به حالت کامل",
+                callback_data=f"task:mode:up:{task.id}",
+                style=GO,
+            )
+        )
+    else:
+        kb.row(
+            InlineKeyboardButton(
+                text="⚡️ بازگشت به حالت ساده",
+                callback_data=f"task:mode:down:{task.id}",
+            )
+        )
+    kb.row(
+        InlineKeyboardButton(text="🔙 بازگشت", callback_data=f"task:open:{task.id}")
+    )
+    return kb
+
+
+async def _owned(call: CallbackQuery, task_id: int):
+    async with get_session() as db:
+        task = await db.get(Task, task_id)
+    if task is None or task.user_id != call.from_user.id:
+        await call.answer("دسترسی ندارید", show_alert=True)
+        return None
+    return task
+
+
+@router.callback_query(F.data.startswith("task:mode:up:"))
+async def cb_upgrade(call: CallbackQuery) -> None:
+    """ارتقا — ولی فقط وقتی واقعاً کار می‌کند.
+
+    <b>نصفه ارتقا دادن بدتر از ارتقا ندادن است.</b> اگر حالت را عوض
+    کنیم و اکانت نتواند مبدأ را بخواند، کار از هر دو طرف می‌افتد: نه
+    پویشگرِ حالت ساده دیگر برش می‌دارد (چون دیگر ساده نیست) و نه
+    اکانت چیزی می‌بیند. یعنی کاری که تا یک دقیقه پیش سالم بود، ساکت
+    می‌ایستد.
+    """
+    task = await _owned(call, int(call.data.split(":")[3]))
+    if task is None:
+        return
+    await call.answer()
+
+    async with get_session() as db:
+        user = await db.get(User, call.from_user.id)
+    if user is None or not user.is_logged_in:
+        await call.message.answer(
+            "🔗 <b>برای حالت کامل باید یک بار اکانتتان را وصل کنید.</b>\n\n"
+            + MODE_COMPARISON
+            + "\n\nاز «👤 حساب کاربری ← 🔐 اتصال اکانت» شروع کنید. بعد از "
+            "وصل شدن، همین‌جا برگردید و دوباره «ارتقا» را بزنید — "
+            "تنظیمات و آمارِ این کار دست‌نخورده می‌ماند."
+        )
+        return
+
+    # اکانت هست؛ حالا واقعاً می‌بیندش؟
+    from telkap.handlers.tasks import manager
+
+    client = await manager.ensure_client(call.from_user.id)
+    if client is None:
+        await call.message.answer(
+            "اکانت وصل است ولی همین حالا در دسترس نیست. چند دقیقه بعد "
+            "دوباره امتحان کنید."
+        )
+        return
+
+    resolved = await manager.resolve_chat_id(client, task.source_ref)
+    if resolved is None:
+        await call.message.answer(
+            f"❌ اکانت شما «{task.source_ref}» را نمی‌بیند.\n\n"
+            "با همان اکانتی که وصل کرده‌اید عضو کانال مبدأ شوید و بعد "
+            "دوباره «ارتقا» را بزنید.\n\n"
+            "<i>کار فعلاً در حالت ساده و سالم ادامه دارد.</i>"
+        )
+        return
+
+    async with get_session() as db:
+        row = await db.get(Task, task.id)
+        row.mode = Task.MODE_FULL
+        row.source_id = resolved
+        await db.commit()
+    cache.invalidate_task(task.id)
+    await manager.reload_user(call.from_user.id)
+    await log_activity(
+        user_id=call.from_user.id, task_id=task.id,
+        event="mode_change", detail="ساده ← کامل",
+    )
+    await call.message.answer(
+        "✅ <b>این کار حالا در حالت کامل است.</b>\n\n"
+        "از این پس ایموجی پریمیوم هم منتقل می‌شود — به شرطی که اکانتی "
+        "که وصل کرده‌اید خودش پریمیوم باشد. کپی پست‌های قدیمی هم از "
+        "«🕓 کپی پیام‌های گذشته» در دسترس است.\n\n"
+        "<i>اگر روزی از اکانتتان خارج شوید، این کار متوقف می‌شود — "
+        "آن‌وقت می‌توانید به حالت ساده برش گردانید.</i>"
+    )
+    await show_task(call.message, task.id)
+
+
+@router.callback_query(F.data.startswith("task:mode:down:"))
+async def cb_downgrade(call: CallbackQuery) -> None:
+    """بازگشت — چون یک‌طرفه کردنِ این در، یک تلهٔ پشتیبانی است.
+
+    کسی که از اکانتش خارج شده یا سشنش باطل شده، کارِ کاملش می‌ایستد.
+    بدون این دکمه تنها راهش ساختنِ کار از نو است — یعنی از دست دادنِ
+    تنظیمات و آمار، برای مشکلی که یک کلیک راه دارد.
+    """
+    task = await _owned(call, int(call.data.split(":")[3]))
+    if task is None:
+        return
+    await call.answer()
+
+    # <b>شرطِ مثبت، نه فهرستی از حالت‌های بد.</b> مبدأ خصوصی می‌تواند
+    # لینک دعوت باشد، آیدی عددی، یا عنوانِ کانال — شمردنشان یعنی دیر یا
+    # زود یکی از قلم می‌افتد و کاری به حالت ساده می‌رود که هیچ‌وقت
+    # نمی‌تواند بخواندش.
+    if not (task.source_ref or "").startswith("@"):
+        await call.message.answer(
+            "این کار مبدأ خصوصی دارد و حالت ساده فقط کانال عمومی را "
+            "می‌خواند. پس بازگشت ممکن نیست."
+        )
+        return
+
+    # <b>وارسی، نه فرض.</b> در حالت ساده فرستنده خودِ ربات است. اگر
+    # مشتری در این مدت ربات را از کانالش برداشته باشد، برگرداندنِ کار
+    # یعنی کاری که سالم بود از این لحظه ساکت می‌ایستد — و دلیلش را
+    # هیچ‌جا نمی‌بیند.
+    bot = alerts.bot()
+    if bot is not None:
+        verdict = await botsend.can_post(bot, task.dest_id or task.dest_ref)
+        if not verdict:
+            await call.message.answer(
+                "❌ ربات نمی‌تواند در کانال مقصد پست بگذارد، و در حالت "
+                "ساده فرستنده خودِ ربات است.\n\n"
+                f"{verdict.message}\n\n"
+                "<i>کار فعلاً در حالت کامل و سالم ادامه دارد.</i>"
+            )
+            return
+
+    try:
+        used, total = await pool.capacity()
+    except Exception:
+        used, total = 1, 0
+    if used >= total:
+        await call.message.answer(
+            "ظرفیت خواننده‌های حالت ساده همین حالا پر است. کمی بعد "
+            "دوباره امتحان کنید.\n\n"
+            "<i>کار در حالت کامل و سالم ادامه دارد.</i>"
+        )
+        return
+
+    async with get_session() as db:
+        row = await db.get(Task, task.id)
+        row.mode = Task.MODE_SIMPLE
+        await db.commit()
+    cache.invalidate_task(task.id)
+    from telkap.handlers.tasks import manager
+
+    await manager.reload_user(call.from_user.id)
+    await log_activity(
+        user_id=call.from_user.id, task_id=task.id,
+        event="mode_change", detail="کامل ← ساده",
+    )
+    await call.message.answer(
+        "⚡️ <b>این کار به حالت ساده برگشت.</b>\n\n"
+        "دیگر به اکانت شما وابسته نیست — از این پس خودِ ربات پست "
+        "می‌گذارد (و بررسی کردیم که هنوز در کانالتان اجازه دارد).\n\n"
+        "در عوض ایموجی پریمیوم به شکل معمولی می‌رسد و پست‌های قدیمی "
+        "کپی نمی‌شوند."
+    )
+    await show_task(call.message, task.id)
+
+
+@router.callback_query(F.data.startswith("task:mode:"))
+async def cb_mode(call: CallbackQuery) -> None:
+    """صفحه‌ی «این کار در کدام حالت است» — و راهِ عوض کردنش.
+
+    این هندلر <b>بعد از</b> up/down ثبت می‌شود چون پیشوندش هر دو را
+    هم می‌گیرد؛ aiogram اولین تطبیق را می‌برد.
+    """
+    task = await _owned(call, int(call.data.split(":")[2]))
+    if task is None:
+        return
+    await call.answer()
+
+    now = "⚡️ ساده (بدون اکانت)" if task.mode == Task.MODE_SIMPLE else "🔗 کامل (با اکانت شما)"
+    await call.message.answer(
+        f"<b>حالت این کار:</b> {now}\n\n" + MODE_COMPARISON,
+        reply_markup=_mode_keyboard(task).as_markup(),
+    )

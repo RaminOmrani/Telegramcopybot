@@ -234,6 +234,29 @@ def task_menu(
         InlineKeyboardButton(text="🧰 قالب آماده", callback_data=f"tpl:list:{task.id}"),
         InlineKeyboardButton(text="🧪 تست تنظیمات", callback_data=f"task:test:{task.id}"),
     )
+
+    # <b>راهِ ارتقا، جایی که به چشم بیاید.</b>
+    #
+    # حالت ساده برای این است که مشتریِ بی‌اعتماد بدون دادنِ اکانتش
+    # امتحان کند. ولی اگر همان‌جا بماند هرگز به ایموجی پریمیوم و مبدأ
+    # خصوصی و آرشیو نمی‌رسد — و ما هم آن اعتماد را نمی‌گیریم. کسی که
+    # یک هفته پست‌هایش درست آمده، حالا اکانتش را وصل می‌کند؛ همان آدم
+    # در قدم اول نمی‌کرد.
+    #
+    # و فقط روی کارِ مبدأ-عمومی: آنجاست که هر دو حالت ممکن‌اند. برای
+    # مبدأ خصوصی انتخابی وجود ندارد و دکمه فقط شلوغی است.
+    if (task.source_ref or "").startswith("@"):
+        simple = getattr(task, "mode", "") == Task.MODE_SIMPLE
+        kb.row(
+            InlineKeyboardButton(
+                text=(
+                    "⬆️ ارتقا به حالت کامل" if simple
+                    else "🔀 حالت این کار: کامل"
+                ),
+                callback_data=f"task:mode:{task.id}",
+                style=CALM if simple else None,
+            )
+        )
     if pro:
         kb.row(
             InlineKeyboardButton(text="📋 کپی تنظیمات", callback_data=f"clone:pick:{task.id}")

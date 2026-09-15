@@ -437,3 +437,235 @@ async def test_the_mode_comparison_names_both_real_limits():
     text = " ".join(said)
     assert "عمومی" in text, "محدودیتِ «مبدأ عمومی» گفته نشد"
     assert "پریمیوم" in text, "محدودیتِ ایموجی پریمیوم گفته نشد"
+
+
+# ------------------------------------------- جابه‌جایی بین دو حالت
+
+
+class _Call:
+    """کلیکِ ساختگی روی یک دکمه."""
+
+    def __init__(self, data: str, user_id: int = 7) -> None:
+        self.data = data
+        self.from_user = SimpleNamespace(id=user_id)
+        self.message = _Message(user_id=user_id)
+        self.alerts: list[str] = []
+
+    async def answer(self, text: str = "", **kwargs):
+        if text:
+            self.alerts.append(text)
+
+
+class _UpgradeManager:
+    """مدیرِ اکانت مشتری — با کنترل روی اینکه مبدأ را می‌بیند یا نه."""
+
+    def __init__(self, *, client=object(), resolved: int | None = -1001) -> None:
+        self.client = client
+        self.resolved = resolved
+        self.reloaded: list[int] = []
+
+    async def ensure_client(self, user_id):
+        return self.client
+
+    async def resolve_chat_id(self, client, ref):
+        return self.resolved
+
+    async def reload_user(self, user_id):
+        self.reloaded.append(user_id)
+        return 1
+
+
+async def _simple_task(db_module, *, logged_in: bool):
+    from telkap.models import Task, User
+
+    async with db_module.get_session() as db:
+        task = (await db.execute(select_task())).scalar_one()
+        task.mode = Task.MODE_SIMPLE
+        task.source_ref = "@varzesh3"
+        user = await db.get(User, 7)
+        user.session_enc = "enc" if logged_in else None
+        await db.commit()
+        return task.id
+
+
+def select_task():
+    from sqlalchemy import select
+
+    from telkap.models import Task
+
+    return select(Task)
+
+
+@pytest.mark.asyncio
+async def test_upgrading_without_an_account_explains_the_two_ways_in(
+    tmp_path, monkeypatch
+):
+    """<b>جایی که مشتری تصمیم می‌گیرد اکانتش را بدهد یا نه.</b>
+
+    «اول اکانتت را وصل کن» بدون گفتنِ اینکه چه می‌گیرد، همان جمله‌ای
+    است که فروش را می‌بندد. و بدون گفتنِ <i>چطور</i> — اسکن QR یا کد —
+    بزرگ‌تر از آنچه هست به نظر می‌رسد.
+    """
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.handlers import simple_task
+
+        task_id = await _simple_task(db_module, logged_in=False)
+        call = _Call(f"task:mode:up:{task_id}")
+        await simple_task.cb_upgrade(call)
+
+        said = " ".join(call.message.replies)
+        assert "پریمیوم" in said, "نگفت چه چیزی گیرش می‌آید"
+        assert "QR" in said, "نگفت چطور وصل شود"
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_a_task_is_not_upgraded_while_the_account_cannot_see_the_source(
+    tmp_path, monkeypatch
+):
+    """<b>نصفه ارتقا دادن بدتر از ارتقا ندادن است.</b>
+
+    اگر حالت عوض شود و اکانت مبدأ را نبیند، کار از هر دو طرف می‌افتد:
+    نه پویشگرِ حالت ساده دیگر برش می‌دارد (چون ساده نیست) و نه اکانت
+    چیزی می‌بیند. کاری که تا یک دقیقه پیش سالم بود، ساکت می‌ایستد.
+    """
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.handlers import simple_task, tasks
+        from telkap.models import Task
+
+        task_id = await _simple_task(db_module, logged_in=True)
+        monkeypatch.setattr(tasks, "manager", _UpgradeManager(resolved=None))
+
+        call = _Call(f"task:mode:up:{task_id}")
+        await simple_task.cb_upgrade(call)
+
+        async with db_module.get_session() as db:
+            task = await db.get(Task, task_id)
+        assert task.mode == Task.MODE_SIMPLE, "کار نصفه ارتقا یافت و خاموش شد"
+        assert "عضو" in " ".join(call.message.replies), "نگفت چه کار باید بکند"
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_a_real_upgrade_switches_the_mode_and_rewires_the_account(
+    tmp_path, monkeypatch
+):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.handlers import simple_task, tasks
+        from telkap.models import Task
+
+        task_id = await _simple_task(db_module, logged_in=True)
+        manager = _UpgradeManager(resolved=-5005)
+        monkeypatch.setattr(tasks, "manager", manager)
+        monkeypatch.setattr(simple_task, "show_task", _noop)
+
+        await simple_task.cb_upgrade(_Call(f"task:mode:up:{task_id}"))
+
+        async with db_module.get_session() as db:
+            task = await db.get(Task, task_id)
+        assert task.mode == Task.MODE_FULL
+        assert task.source_id == -5005, "آیدی مبدأ از دید اکانت مشتری ثبت نشد"
+        # بدون این، کار تا اولین ری‌استارت هیچ آپدیتی نمی‌گیرد
+        assert manager.reloaded == [7], "هندلرهای اکانت دوباره سوار نشدند"
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_the_way_back_exists(tmp_path, monkeypatch):
+    """<b>دری که یک‌طرفه باشد، تلهٔ پشتیبانی است.</b>
+
+    کسی که از اکانتش خارج شود، کارِ کاملش می‌ایستد. بدون این دکمه تنها
+    راهش ساختنِ کار از نو است — یعنی از دست دادنِ تنظیمات و آمار، برای
+    مشکلی که یک کلیک راه دارد.
+    """
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.handlers import simple_task, tasks
+        from telkap.models import Task
+
+        task_id = await _simple_task(db_module, logged_in=True)
+        monkeypatch.setattr(tasks, "manager", _UpgradeManager())
+        monkeypatch.setattr(simple_task, "show_task", _noop)
+
+        async def plenty():
+            return 0, 10
+
+        monkeypatch.setattr(simple_task.pool, "capacity", plenty)
+
+        async with db_module.get_session() as db:
+            task = await db.get(Task, task_id)
+            task.mode = Task.MODE_FULL
+            await db.commit()
+
+        await simple_task.cb_downgrade(_Call(f"task:mode:down:{task_id}"))
+
+        async with db_module.get_session() as db:
+            task = await db.get(Task, task_id)
+        assert task.mode == Task.MODE_SIMPLE
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_no_one_can_switch_someone_elses_task(tmp_path, monkeypatch):
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.handlers import simple_task
+        from telkap.models import Task
+
+        task_id = await _simple_task(db_module, logged_in=True)
+        call = _Call(f"task:mode:up:{task_id}", user_id=999)
+        await simple_task.cb_upgrade(call)
+
+        async with db_module.get_session() as db:
+            task = await db.get(Task, task_id)
+        assert task.mode == Task.MODE_SIMPLE
+        assert call.alerts, "بی‌صدا رد شد؛ کاربر نفهمید چه شد"
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_going_back_is_refused_while_the_bot_cannot_post(tmp_path, monkeypatch):
+    """<b>وارسی، نه فرض.</b>
+
+    در حالت ساده فرستنده خودِ ربات است. اگر مشتری در این مدت ربات را
+    از کانالش برداشته باشد، برگرداندنِ کار یعنی کاری که سالم بود از
+    همان لحظه ساکت می‌ایستد — و دلیلش را هیچ‌جا نمی‌بیند.
+    """
+    db_module, _ = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.handlers import simple_task, tasks
+        from telkap.models import Task
+        from telkap.services import botsend
+
+        task_id = await _simple_task(db_module, logged_in=True)
+        monkeypatch.setattr(tasks, "manager", _UpgradeManager())
+        monkeypatch.setattr(simple_task, "show_task", _noop)
+        monkeypatch.setattr(simple_task.alerts, "bot", lambda: object())
+
+        async def kicked(bot, chat_id):
+            return botsend.Verdict(code="absent", message=botsend.ADD_BOT)
+
+        monkeypatch.setattr(simple_task.botsend, "can_post", kicked)
+
+        async with db_module.get_session() as db:
+            task = await db.get(Task, task_id)
+            task.mode = Task.MODE_FULL
+            await db.commit()
+
+        call = _Call(f"task:mode:down:{task_id}")
+        await simple_task.cb_downgrade(call)
+
+        async with db_module.get_session() as db:
+            task = await db.get(Task, task_id)
+        assert task.mode == Task.MODE_FULL, "کار به حالتی برگشت که در آن کار نمی‌کند"
+        assert "ادمین" in " ".join(call.message.replies), "نگفت چه کار باید بکند"
+    finally:
+        await db_module.close_db()
