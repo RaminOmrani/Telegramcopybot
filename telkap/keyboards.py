@@ -55,14 +55,17 @@ BTN_WALLET = "👛 کیف پول و دعوت"
 def main_menu(lang: str | None = None) -> ReplyKeyboardMarkup:
     # منوی اصلی عمداً روی ۸ دکمه نگه داشته می‌شود؛ «گزارش فعالیت» که کم
     # استفاده است به «حساب کاربری» منتقل شد تا جای کیف پول باز شود.
-    def btn(key: str) -> KeyboardButton:
-        return KeyboardButton(text=i18n.t(key, lang))
+    def btn(key: str, style: str | None = None) -> KeyboardButton:
+        return KeyboardButton(text=i18n.t(key, lang), style=style)
 
     return ReplyKeyboardMarkup(
         keyboard=[
-            [btn("menu.new_task"), btn("menu.tasks")],
+            # فقط این دو رنگ می‌گیرند: یکی کاری که کاربر تازه باید
+            # بکند، یکی کاری که سرویس را زنده نگه می‌دارد. اگر هشت
+            # دکمه رنگی شوند، رنگ دیگر راهنما نیست — زمینه است.
+            [btn("menu.new_task", GO), btn("menu.tasks")],
             [btn("menu.forward"), btn("menu.account")],
-            [btn("menu.plans"), btn("menu.wallet")],
+            [btn("menu.plans", CALM), btn("menu.wallet")],
             [btn("menu.help"), btn("menu.support")],
         ],
         resize_keyboard=True,
@@ -104,10 +107,16 @@ def tasks_list(tasks: list[Task], *, dest_counts: dict[int, int] | None = None) 
         badge = f" · 📤{fa_num(dests)}" if dests > 1 else ""
         kb.row(
             InlineKeyboardButton(
-                text=f"{status} {title[:36]}{badge}", callback_data=f"task:open:{task.id}"
+                text=f"{status} {title[:36]}{badge}",
+                callback_data=f"task:open:{task.id}",
+                # کارِ متوقف در فهرست باید فوراً پیدا باشد؛ همان چیزی
+                # که کاربر دنبالش می‌گردد وقتی می‌گوید «چرا پست نیامد».
+                style=None if task.enabled else DANGER,
             )
         )
-    kb.row(InlineKeyboardButton(text="➕ ساخت کار جدید", callback_data="task:new"))
+    kb.row(InlineKeyboardButton(
+        text="➕ ساخت کار جدید", callback_data="task:new", style=GO
+    ))
     if tasks:
         # «کدامش کار می‌کند» پرسشی است که با نگاه کردن به این فهرست
         # جواب نمی‌گیرد: کارِ خراب هم همین‌قدر سبز است.
@@ -133,8 +142,16 @@ def task_menu(
     یک دکمه می‌مانند — نه حذف شده‌اند، فقط سر راهِ کاربر تازه نیستند.
     """
     kb = InlineKeyboardBuilder()
+    # <b>رنگ اینجا حالِ کار را می‌گوید، نه اینکه دکمه را قشنگ کند.</b>
+    # کارِ خوابیده قرمز است چون خوابیدنش همان چیزی است که باید دیده شود؛
+    # و دکمه‌ی توقف خودش بی‌رنگ می‌ماند، چون توقف برگشت‌پذیر است و
+    # نباید مثل حذف بترساند.
     toggle = "⏸  توقف این کار" if task.enabled else "▶️  فعال‌سازی این کار"
-    kb.row(InlineKeyboardButton(text=toggle, callback_data=f"task:toggle:{task.id}"))
+    kb.row(InlineKeyboardButton(
+        text=toggle,
+        callback_data=f"task:toggle:{task.id}",
+        style=None if task.enabled else GO,
+    ))
 
     # فقط وقتی چیزی در صف هست دیده می‌شود؛ منوی خلوت‌تر یعنی گیجی کمتر
     if waiting:

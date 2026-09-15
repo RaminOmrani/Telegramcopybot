@@ -20,7 +20,15 @@ import logging
 
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import CallbackQuery, InlineKeyboardButton, Message
+from aiogram.types import (
+    CallbackQuery,
+    ChatAdministratorRights,
+    InlineKeyboardButton,
+    KeyboardButton,
+    KeyboardButtonRequestChat,
+    Message,
+    ReplyKeyboardMarkup,
+)
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 from sqlalchemy import func, select
 
@@ -37,19 +45,105 @@ log = logging.getLogger(__name__)
 router = Router(name="simple-task")
 
 ASK_SOURCE = (
-    "🌐 <b>آدرس کانال مبدأ را بفرستید.</b>\n\n"
-    "مثل <code>@varzesh3</code> یا <code>https://t.me/varzesh3</code>\n\n"
-    "<i>در این حالت فقط کانال‌های عمومی ممکن‌اند. برای کانال خصوصی باید "
-    "اکانت خودتان را وصل کنید.</i>"
+    "🌐 <b>کانال مبدأ را انتخاب کنید.</b>\n\n"
+    "دکمه‌ی زیر فهرست کانال‌های عمومی‌تان را باز می‌کند — یا اگر عضوش "
+    "نیستید، آدرسش را تایپ کنید (مثل <code>@varzesh3</code>).\n\n"
+    "<i>در این حالت فقط کانال‌های عمومی ممکن‌اند.</i>"
 )
 
 ASK_DEST = (
-    "📥 <b>حالا کانال خودتان را بفرستید.</b>\n\n"
-    "پیش از فرستادن، <b>ربات را در آن کانال ادمین کنید</b> با دسترسی "
-    "«ارسال پیام»:\n"
-    "کانال ← مدیریت کانال ← مدیران ← افزودن مدیر ← این ربات.\n\n"
-    "بعد آدرسش را بفرستید، مثل <code>@mychannel</code>"
+    "📥 <b>حالا کانال خودتان را انتخاب کنید.</b>\n\n"
+    "با دکمه‌ی زیر، تلگرام فهرست کانال‌هایتان را نشان می‌دهد و "
+    "<b>خودش ربات را با دسترسی «ارسال پیام» ادمین می‌کند</b> — لازم "
+    "نیست جایی بروید و دستی اضافه‌اش کنید."
 )
+
+# شناسه‌ی درخواست: تلگرام همین عدد را با جواب برمی‌گرداند، پس از روی
+# آن می‌فهمیم کاربر مبدأ را انتخاب کرده یا مقصد را — بدون تکیه به
+# حالتِ گفتگو، که ممکن است در این فاصله عوض شده باشد.
+PICK_SOURCE = 1
+PICK_DEST = 2
+
+# <b>کمترین دسترسیِ ممکن.</b> فقط «ارسال پیام» می‌خواهیم. خواستنِ حذف
+# یا مسدودسازی یا ارتقای اعضا، همان‌جا سرِ انتخاب، کاربر را می‌ترساند —
+# و حق هم دارد.
+BOT_RIGHTS = ChatAdministratorRights(
+    is_anonymous=False,
+    can_manage_chat=False,
+    can_delete_messages=False,
+    can_manage_video_chats=False,
+    can_restrict_members=False,
+    can_promote_members=False,
+    can_change_info=False,
+    can_invite_users=False,
+    can_post_stories=False,
+    can_edit_stories=False,
+    can_delete_stories=False,
+    can_send_welcome_messages=False,
+    can_post_messages=True,
+)
+
+
+def _pick_source() -> ReplyKeyboardMarkup:
+    """فهرست کانال‌های عمومی‌ای که کاربر عضوشان است."""
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(
+            text="📋 انتخاب از کانال‌های من",
+            request_chat=KeyboardButtonRequestChat(
+                request_id=PICK_SOURCE,
+                chat_is_channel=True,
+                # فقط عمومی — خصوصی در این حالت اصلاً ممکن نیست، پس
+                # نگذاریم کاربر انتخابش کند و بعد «نه» بشنود.
+                chat_has_username=True,
+                request_title=True,
+                request_username=True,
+            ),
+        )]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+        input_field_placeholder="یا آدرس کانال را تایپ کنید…",
+    )
+
+
+def _pick_dest() -> ReplyKeyboardMarkup:
+    """<b>شکننده‌ترین قدمِ محصول، در یک ضربه.</b>
+
+    تا امروز باید به کاربر می‌گفتیم برود در تنظیمات کانال، بخش مدیران،
+    ربات را اضافه کند، دسترسی درست را روشن بگذارد و برگردد — شش قدم،
+    و همان‌جایی که آدم‌ها رها می‌کنند.
+
+    با این، تلگرام خودش ربات را با همان دسترسی ادمین می‌کند.
+    """
+    return ReplyKeyboardMarkup(
+        keyboard=[[KeyboardButton(
+            text="📋 انتخاب کانال و افزودن ربات",
+            request_chat=KeyboardButtonRequestChat(
+                request_id=PICK_DEST,
+                chat_is_channel=True,
+                # فقط کانالی که خودش می‌تواند ادمین اضافه کند
+                user_administrator_rights=ChatAdministratorRights(
+                    is_anonymous=False,
+                    can_manage_chat=True,
+                    can_delete_messages=False,
+                    can_manage_video_chats=False,
+                    can_restrict_members=False,
+                    can_promote_members=True,
+                    can_change_info=False,
+                    can_invite_users=False,
+                    can_post_stories=False,
+                    can_edit_stories=False,
+                    can_delete_stories=False,
+                    can_send_welcome_messages=False,
+                ),
+                bot_administrator_rights=BOT_RIGHTS,
+                request_title=True,
+                request_username=True,
+            ),
+        )]],
+        resize_keyboard=True,
+        one_time_keyboard=True,
+        input_field_placeholder="یا آدرس کانال را تایپ کنید…",
+    )
 
 NO_POOL = (
     "⚠️ <b>حالت ساده همین حالا در دسترس نیست.</b>\n\n"
@@ -90,14 +184,34 @@ async def cb_new(call: CallbackQuery, state: FSMContext) -> None:
     if not await _allowed(call.from_user.id, call.message):
         return
     await state.set_state(Flow.simple_source)
-    await call.message.answer(ASK_SOURCE)
+    await call.message.answer(ASK_SOURCE, reply_markup=_pick_source())
+
+
+@router.message(Flow.simple_source, F.chat_shared)
+async def picked_source(message: Message, state: FSMContext) -> None:
+    """کاربر مبدأ را از فهرست کانال‌هایش انتخاب کرد."""
+    shared = message.chat_shared
+    ref = f"@{shared.username}" if shared.username else str(shared.chat_id)
+    await got_source(message, state, picked=ref)
+
+
+@router.message(Flow.simple_dest, F.chat_shared)
+async def picked_dest(message: Message, state: FSMContext) -> None:
+    """<b>کاربر مقصد را انتخاب کرد و تلگرام ربات را ادمین کرد.</b>
+
+    ولی هنوز وارسی می‌کنیم. «تلگرام باید ادمینش کرده باشد» فرض است، و
+    فرضِ وارسی‌نشده همان چیزی است که ساعت‌ها بعد به‌شکل «هیچ پستی
+    نیامد» برمی‌گردد.
+    """
+    shared = message.chat_shared
+    await got_dest(message, state, picked=str(shared.chat_id))
 
 
 @router.message(Flow.simple_source)
-async def got_source(message: Message, state: FSMContext) -> None:
-    ref = (message.text or "").strip()
+async def got_source(message: Message, state: FSMContext, picked: str = "") -> None:
+    ref = picked or (message.text or "").strip()
     if not ref:
-        await message.answer("⚠️ آدرس کانال عمومی را بفرستید.")
+        await message.answer("⚠️ کانال را انتخاب کنید یا آدرسش را بفرستید.")
         return
 
     notice = await message.answer("⏳ در حال بررسی مبدأ…")
@@ -153,14 +267,14 @@ async def got_source(message: Message, state: FSMContext) -> None:
     )
     await notice.edit_text(f"✅ مبدأ: <b>{title}</b> (🌐 عمومی)")
     await state.set_state(Flow.simple_dest)
-    await message.answer(ASK_DEST)
+    await message.answer(ASK_DEST, reply_markup=_pick_dest())
 
 
 @router.message(Flow.simple_dest)
-async def got_dest(message: Message, state: FSMContext) -> None:
-    ref = (message.text or "").strip()
+async def got_dest(message: Message, state: FSMContext, picked: str = "") -> None:
+    ref = picked or (message.text or "").strip()
     if not ref:
-        await message.answer("⚠️ آدرس کانال خودتان را بفرستید.")
+        await message.answer("⚠️ کانال را انتخاب کنید یا آدرسش را بفرستید.")
         return
 
     notice = await message.answer("⏳ در حال بررسی مقصد…")
@@ -187,7 +301,11 @@ async def got_dest(message: Message, state: FSMContext) -> None:
     await state.update_data(dest_ref=ref, dest_title=title, dest_id=int(chat.id))
     await notice.edit_text(f"✅ مقصد: <b>{title}</b> — ربات اجازه‌ی ارسال دارد.")
     await state.set_state(Flow.simple_title)
-    await message.answer("یک نام برای این کار بنویسید (یا «-» بفرستید).")
+    # صفحه‌کلیدِ انتخاب کارش تمام شد؛ منوی اصلی برمی‌گردد
+    await message.answer(
+        "یک نام برای این کار بنویسید (یا «-» بفرستید).",
+        reply_markup=main_menu(),
+    )
 
 
 @router.message(Flow.simple_title)
