@@ -211,9 +211,32 @@ async def _begin_login(message: Message, state: FSMContext, user_id: int | None 
     await message.answer(LOGIN_CHOICE, reply_markup=kb.as_markup())
 
 
+def _qr_keyboard() -> InlineKeyboardMarkup:
+    """راهِ فرار، روی خودِ صفحه‌ای که آدم در آن گیر می‌افتد.
+
+    <b>کسی که فقط یک گوشی دارد، اینجا می‌فهمد.</b> نه در صفحه‌ی
+    انتخاب — آنجا هنوز نمی‌داند اسکن یعنی چه — بلکه وقتی کد را
+    می‌بیند و می‌خواهد دوربین را بیاورد. اگر همان لحظه راهِ دوم
+    جلوی چشمش نباشد، یا برمی‌گردد و در منو دنبالش می‌گردد، یا
+    رها می‌کند.
+    """
+    kb = InlineKeyboardBuilder()
+    kb.row(
+        InlineKeyboardButton(
+            text="📱 فقط همین گوشی را دارم", callback_data="acc:sms"
+        )
+    )
+    return kb.as_markup()
+
+
 @router.callback_query(F.data == "acc:sms")
 async def cb_login_sms(call: CallbackQuery, state: FSMContext) -> None:
     await call.answer()
+    # <b>اگر از صفحه‌ی QR آمده باشد، آن جریان باید بسته شود.</b> وگرنه
+    # دو ورودِ نیمه‌تمام برای یک کاربر باز می‌ماند: حلقه‌ی پس‌زمینه
+    # هنوز کد را تازه می‌کند و سرِ همان کاربر با ورودِ تلفنی تداخل
+    # می‌کند — خرابی‌ای که فقط گاهی و بی‌دلیل خودش را نشان می‌دهد.
+    await manager.cancel_login(call.from_user.id)
     await state.set_state(Flow.phone)
     await call.message.answer(LOGIN_INTRO)
 
@@ -230,7 +253,9 @@ async def cb_login_qr(call: CallbackQuery, state: FSMContext) -> None:
         return
 
     photo = BufferedInputFile(_qr_png(url), filename="login-qr.png")
-    sent = await call.message.answer_photo(photo, caption=LOGIN_QR)
+    sent = await call.message.answer_photo(
+        photo, caption=LOGIN_QR, reply_markup=_qr_keyboard()
+    )
     asyncio.create_task(
         _watch_qr(call.bot, call.from_user.id, sent.chat.id, sent.message_id),
         name=f"qr-{call.from_user.id}",
@@ -304,6 +329,12 @@ async def _watch_qr(bot, user_id: int, chat_id: int, message_id: int) -> None:
                     media=BufferedInputFile(_qr_png(fresh), filename="login-qr.png"),
                     caption=LOGIN_QR,
                 ),
+                # <b>هر بار دوباره داده می‌شود، وگرنه برداشته می‌شود.</b>
+                # تلگرام نبودنِ صفحه‌کلید در ویرایش را «حذفش کن»
+                # می‌فهمد — و چون کد هر ۲۵ ثانیه تازه می‌شود، راهِ
+                # فرارِ کاربرِ تک‌گوشی درست سرِ همان لحظه‌ای که لازمش
+                # دارد ناپدید می‌شد.
+                reply_markup=_qr_keyboard(),
             )
         except Exception:
             log.debug("تازه‌سازی تصویر QR نشد", exc_info=True)

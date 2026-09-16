@@ -669,3 +669,67 @@ async def test_going_back_is_refused_while_the_bot_cannot_post(tmp_path, monkeyp
         assert "ادمین" in " ".join(call.message.replies), "نگفت چه کار باید بکند"
     finally:
         await db_module.close_db()
+
+
+def test_the_single_phone_customer_is_told_their_way_in():
+    """<b>شرطی که هیچ‌جا گفته نمی‌شد.</b>
+
+    کد QR را نمی‌شود با دوربینِ همان گوشی‌ای که نشانش می‌دهد اسکن کرد.
+    کسی که فقط یک گوشی دارد — در ایران بیشترِ مشتری‌ها — می‌رفت سراغ
+    راهی که «پیشنهاد ما» بود، به بن‌بست می‌خورد، و راهِ واقعیِ خودش را
+    «روش قدیمی» می‌دید.
+    """
+    from telkap.handlers.simple_task import MODE_COMPARISON
+
+    assert "فقط یک گوشی" in MODE_COMPARISON
+    assert "شماره و کد" in MODE_COMPARISON
+
+
+def test_the_login_choice_states_what_each_way_needs():
+    from telkap.texts import LOGIN_CHOICE
+
+    assert "فقط همین گوشی" in LOGIN_CHOICE, "نگفت راهِ تک‌گوشی کدام است"
+    assert "دستگاه دیگری" in LOGIN_CHOICE, "نگفت QR دستگاه دوم می‌خواهد"
+    assert "پیشنهاد ما" not in LOGIN_CHOICE, (
+        "QR هنوز «پیشنهاد ما» است، در حالی که برای بخش بزرگی از "
+        "مشتری‌ها اصلاً ممکن نیست"
+    )
+
+
+def test_the_qr_screen_warns_against_forwarding_it():
+    """<b>خطری که کاربرِ گیرافتاده خودش می‌سازد.</b>
+
+    کسی که نمی‌تواند اسکن کند، طبیعی‌ترین کاری که به ذهنش می‌رسد
+    فرستادنِ عکس برای کسی دیگر است. ولی این کد <b>اکانتِ اسکن‌کننده</b>
+    را وصل می‌کند — یعنی هم کارِ اشتباه راه می‌افتد و هم اکانتِ آن
+    آدم به ربات ما وصل می‌شود.
+    """
+    from telkap.texts import LOGIN_QR
+
+    assert "نفرستید" in LOGIN_QR
+    assert "اکانتِ خودش" in LOGIN_QR
+
+
+def test_the_qr_screen_offers_the_way_out():
+    """راهِ فرار باید روی همان صفحه‌ای باشد که آدم در آن گیر می‌افتد —
+    نه در منویی که باید برگردد و پیدایش کند."""
+    from telkap.handlers.account import _qr_keyboard
+
+    buttons = [b for row in _qr_keyboard().inline_keyboard for b in row]
+    assert any(b.callback_data == "acc:sms" for b in buttons)
+    assert any("گوشی" in b.text for b in buttons)
+
+
+def test_the_code_screen_says_where_the_code_arrives():
+    """<b>جایی که آدم‌ها منتظر پیامکی می‌مانند که نمی‌آید.</b>
+
+    وقتی اکانت روی همان گوشی فعال است، تلگرام کد را داخل خودِ تلگرام
+    می‌فرستد نه با پیامک. کاربری که این را نداند، منتظر می‌ماند و بعد
+    فکر می‌کند ربات خراب است — درست در شکننده‌ترین قدمِ محصول.
+    """
+    from telkap.texts import LOGIN_CODE
+
+    assert "پیامک" in LOGIN_CODE, "نگفت کد با پیامک نمی‌آید"
+    assert "Telegram" in LOGIN_CODE, "نگفت کد کجا می‌آید"
+    # ترفندی که بدونش تلگرام کد را باطل می‌کند
+    assert "فاصله" in LOGIN_CODE
