@@ -13,8 +13,9 @@ from datetime import timedelta
 from sqlalchemy import select
 
 from telkap.db import get_session, log_activity
-from telkap.models import RetryItem, Task, utcnow
-from telkap.services.copier import RETRY_BACKOFF
+from telkap.models import DeliveryTiming, RetryItem, Task, utcnow
+from telkap.services import reader
+from telkap.services.copier import RETRY_BACKOFF, SendFailed
 
 log = logging.getLogger(__name__)
 
@@ -62,13 +63,23 @@ class RetryWorker:
             await self._drop(item.id)
             return False
 
-        client = await self.manager.ensure_client(item.user_id)
+        # <b>کدام اکانت این مبدأ را می‌خواند</b> — به حالتِ کار بستگی
+        # دارد. تا دیروز همیشه اکانتِ مشتری پرسیده می‌شد، و برای مشتریِ
+        # حالت ساده که اکانتی ندارد، هر تلاشِ مجدد به همین دیوار
+        # می‌خورد تا سقف تمام شود و پست بی‌صدا دور ریخته شود.
+        client = await reader.for_task(task, self.manager)
         if client is None:
-            await self._reschedule(item, "اکانت کاربری متصل نیست")
+            await self._reschedule(item, reader.why_missing(task))
             return False
 
         try:
-            messages = await client.get_messages(item.src_chat_id, ids=item.message_ids)
+            # همان دلیلِ `pubpoll`: آیدی خام بدون access_hash برای
+            # اکانت سرویس بی‌معناست و بعد از هر ری‌استارت هر تلاشِ
+            # مجددی همین‌جا می‌ترکید.
+            source = await reader.entity_for(
+                client, item.src_chat_id, getattr(task, "source_ref", "")
+            )
+            messages = await client.get_messages(source, ids=item.message_ids)
         except Exception as exc:
             await self._reschedule(item, f"خواندن پیام مبدا ناموفق بود: {exc}")
             return False
@@ -86,7 +97,19 @@ class RetryWorker:
             return False
 
         try:
-            sent = await self.copier.process(item.user_id, item.task_id, messages)
+            # <b>retrying=True حیاتی است.</b> بدون آن، شکستِ ارسال یک
+            # آیتمِ تازه در صف می‌ساخت (با شمارنده‌ی صفر) و همین آیتم
+            # بلافاصله دور ریخته می‌شد — یعنی سقفِ تلاش هیچ‌وقت
+            # نمی‌رسید و یک پستِ نرفتنی هر دقیقه، تا ابد، دوباره
+            # فرستاده می‌شد. آماری که این را لو داد: ۶۶ کپی موفق در
+            # برابر ۲۰۲۹ «ناموفق» در یک روز.
+            sent = await self.copier.process(
+                item.user_id, item.task_id, messages,
+                retrying=True, via=DeliveryTiming.VIA_RETRY,
+            )
+        except SendFailed as exc:
+            await self._reschedule(item, str(exc))
+            return False
         except Exception as exc:
             await self._reschedule(item, str(exc))
             return False
@@ -101,7 +124,9 @@ class RetryWorker:
             )
             return True
 
-        # فیلترها یا تکراری بودن جلویش را گرفت؛ تلاش دوباره فایده ندارد
+        # حالا که شکستِ ارسال جداگانه خبر می‌دهد، «False» فقط یک معنی
+        # دارد: فیلترها یا تکراری بودن جلویش را گرفت. تلاش دوباره
+        # فایده ندارد.
         await self._drop(item.id)
         return False
 

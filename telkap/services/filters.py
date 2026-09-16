@@ -2,10 +2,11 @@
 from __future__ import annotations
 
 import hashlib
+from collections.abc import Iterable
 from dataclasses import dataclass
-from typing import Any, Iterable
+from typing import Any
 
-from telkap.services.transform import URL_RE, RuleLike, looks_like_ad
+from telkap.services.transform import URL_RE, RuleLike, ad_reason, looks_like_ad
 
 
 @dataclass(slots=True)
@@ -29,6 +30,8 @@ class MessageFacts:
     is_forwarded: bool = False
     has_buttons: bool = False
     size_bytes: int = 0
+    from_bot: bool = False      # فرستنده ربات است (فقط در گروه‌ها معنا دارد)
+    is_reply: bool = False      # پاسخ به پیام دیگر
 
 
 def content_hash(facts: MessageFacts) -> str:
@@ -52,14 +55,22 @@ def should_copy(
     if settings.get("block_forwarded") and facts.is_forwarded:
         return Decision(False, "پست فورواردشده است")
 
+    if settings.get("skip_bots") and facts.from_bot:
+        return Decision(False, "فرستنده ربات است")
+
+    if settings.get("skip_replies") and facts.is_reply:
+        return Decision(False, "پیام پاسخ به پیام دیگری است")
+
     if settings.get("block_with_buttons") and facts.has_buttons:
         return Decision(False, "پست دکمه شیشه‌ای دارد")
 
     if settings.get("block_with_links") and URL_RE.search(text):
         return Decision(False, "پست حاوی لینک است")
 
-    if settings.get("block_ads") and looks_like_ad(text):
-        return Decision(False, "پست تبلیغاتی تشخیص داده شد")
+    if settings.get("block_ads"):
+        sensitivity = settings.get("ad_sensitivity", "medium")
+        if looks_like_ad(text, sensitivity):
+            return Decision(False, f"تبلیغاتی تشخیص داده شد ({ad_reason(text)})")
 
     limit_mb = int(settings.get("skip_media_over_mb") or 0)
     if limit_mb and facts.size_bytes > limit_mb * 1024 * 1024:
