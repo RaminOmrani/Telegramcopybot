@@ -81,7 +81,8 @@ TOOLS = Path(__file__).parent.parent / "tools"
 
 
 @pytest.mark.parametrize(
-    "name", ["why.py", "botcheck.py", "tryopen.py", "simplecheck.py"]
+    "name",
+    ["why.py", "botcheck.py", "tryopen.py", "simplecheck.py", "review.py"],
 )
 def test_the_tools_work_from_any_directory(name: str):
     """<b>تله‌ای که یک بار گرفتارش شدیم.</b>
