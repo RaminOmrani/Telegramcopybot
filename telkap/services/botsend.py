@@ -318,8 +318,13 @@ async def send_media(
     entities=None,
     buttons=None,
     silent: bool = False,
+    kinds: list[str] | None = None,
 ) -> Sent:
     """فایل‌های دانلودشده را با ربات می‌فرستد.
+
+    `kinds` نوعِ هر آیتمِ آلبوم است، به همان ترتیبِ `paths`. بدونش همه‌ی
+    آیتم‌ها نوعِ `kind` را می‌گیرند — و آلبومِ عکس و ویدیو با کلاسِ
+    اولی ساخته می‌شد.
 
     <b>چرا دانلود و آپلود، و نه ارجاع به فایل.</b> `file_id` در تلگرام
     به همان رباتی گره خورده که آن را دیده. فایلی که اکانت سرویس در
@@ -359,9 +364,13 @@ async def send_media(
     # روی همه یعنی متن زیر هر عکس تکرار شود.
     import aiogram.types as tg
 
-    cls = getattr(tg, _ALBUM_MEDIA.get(kind, "InputMediaDocument"))
+    def album_class(index: int):
+        item = kinds[index] if kinds and index < len(kinds) else kind
+        return getattr(tg, _ALBUM_MEDIA.get(item, "InputMediaDocument"))
+
     group = []
     for index, path in enumerate(paths[:10]):
+        cls = album_class(index)
         if index == 0 and body:
             group.append(
                 cls(

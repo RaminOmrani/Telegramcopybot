@@ -27,11 +27,11 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from sqlalchemy import func, select
+from sqlalchemy import func, or_, select
 
 from telkap.db import get_session
-from telkap.models import DeliveryTiming, MessageMap, Task
-from telkap.services import alerts
+from telkap.models import DeliveryTiming, MessageMap, PendingPost, RetryItem, Task
+from telkap.services import abandoned, alerts
 
 log = logging.getLogger(__name__)
 
@@ -68,6 +68,52 @@ async def _already_sent(task_id: int, src_msg_id: int) -> bool:
                 MessageMap.task_id == task_id,
                 MessageMap.src_msg_id == src_msg_id,
             )
+        )
+    return found is not None
+
+
+async def _waiting_retry(task_id: int, src_msg_id: int) -> bool:
+    """آیا همین پست همین حالا در صفِ تلاش مجدد است؟
+
+    <b>چرا جارو باید این را بپرسد.</b> پستی که ارسالش شکست خورده نه در
+    نگاشت است (نرفته) و نه زیرِ نشانه (نشانه بزرگ‌ترین پستِ <i>رفته</i>
+    است). پس جارو هر سه دقیقه دوباره پیدایش می‌کرد و یک آیتمِ تازه در
+    صف می‌گذاشت. ۳۱ اکتبر: یک پست، ۸۶ آیتم، حدود ۴۳۰ ارسالِ بیهوده با
+    اکانتِ مشتری و ۷۷ پیامِ «ارسال نشد».
+    """
+    first = str(int(src_msg_id))
+    async with get_session() as db:
+        found = await db.scalar(
+            select(RetryItem.id).where(
+                RetryItem.task_id == task_id,
+                # آیدی‌ها با کاما ذخیره شده‌اند؛ آلبوم با اولین آیدی شناخته می‌شود
+                or_(
+                    RetryItem.src_msg_ids == first,
+                    RetryItem.src_msg_ids.startswith(first + ","),
+                ),
+            ).limit(1)
+        )
+    return found is not None
+
+
+async def _held(task_id: int, src_msg_id: int) -> bool:
+    """آیا این پست در صفِ تأیید یا زمان‌بندی منتظر است؟
+
+    <b>بدون این، تأیید دستی سه دقیقه بیشتر دوام نمی‌آورد.</b> پستِ
+    منتظرِ تأیید هم «نرفته» است؛ جارو پیدایش می‌کرد، `process` می‌خواست
+    دوباره در صف بگذاردش، صف «از قبل هست» می‌گفت — و پست بی‌تأیید منتشر
+    می‌شد.
+    """
+    first = str(int(src_msg_id))
+    async with get_session() as db:
+        found = await db.scalar(
+            select(PendingPost.id).where(
+                PendingPost.task_id == task_id,
+                or_(
+                    PendingPost.src_msg_ids == first,
+                    PendingPost.src_msg_ids.startswith(first + ","),
+                ),
+            ).limit(1)
         )
     return found is not None
 
@@ -228,6 +274,13 @@ class Sweeper:
                 if group[0].id <= top:
                     continue
                 if await _already_sent(task_id, group[0].id):
+                    continue
+                # در صف است، یا قطعاً نمی‌رود: جارو کاری با آن ندارد
+                if await _waiting_retry(task_id, group[0].id):
+                    continue
+                if await _held(task_id, group[0].id):
+                    continue
+                if await abandoned.is_marked(task_id, group[0].id):
                     continue
                 try:
                     # برچسبِ «با جارو آمد» — همین یک کلمه فرقِ بین

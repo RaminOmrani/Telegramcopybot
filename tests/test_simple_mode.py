@@ -72,10 +72,17 @@ def _photo_media():
 
     `classify_media` روی شیء ناشناخته <b>document</b> برمی‌گرداند، پس
     تستی که با `object()` نوشته شود مسیرِ فایل را می‌سنجد نه مسیرِ عکس.
-    """
-    from telethon.tl.types import MessageMediaPhoto
 
-    return MessageMediaPhoto(photo=None)
+    <b>و پوسته‌ی خالی هم عکس نیست.</b> نسخه‌ی قبلیِ همین تابع
+    `photo=None` می‌داد — یعنی همان «عکسِ منقضی‌شده‌ای» که نه فرستاده
+    می‌شود نه دانلود. تا وقتی ربات این را تشخیص نمی‌داد فرقی نمی‌کرد؛
+    حالا که می‌دهد، تست باید عکسِ واقعی بسازد.
+    """
+    from telethon.tl.types import MessageMediaPhoto, Photo
+
+    return MessageMediaPhoto(photo=Photo(
+        id=1, access_hash=1, file_reference=b"", date=None, sizes=[], dc_id=2,
+    ))
 
 
 def _reader(monkeypatch, tmp_path, names: list[str]) -> list[str]:

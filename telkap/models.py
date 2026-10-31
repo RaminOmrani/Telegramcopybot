@@ -362,6 +362,38 @@ class PendingPost(Base):
         return [int(part) for part in self.src_msg_ids.split(",") if part.strip()]
 
 
+class AbandonedPost(Base):
+    """پستی که دیگر نباید فرستاده شود — و جارو باید این را بداند.
+
+    <b>چرا در دیتابیس و نه در حافظه.</b> جارو هر سه دقیقه ۳۰ پستِ آخرِ
+    مبدأ را نگاه می‌کند و هر چیزی را که نرفته، دوباره می‌فرستد. پستی که
+    «نرفتنی» بود یا کاربر ردش کرد یا صفِ تلاش مجدد رهایش کرد هم «نرفته»
+    است. با حافظه‌ی پروسه، هر ری‌استارت (که هر آپدیت یکی دارد) همه را
+    فراموش می‌کرد و همان حلقه از نو شروع می‌شد.
+
+    فقط اولین آیدیِ پست (یا آلبوم) ثبت می‌شود؛ جارو هم با همان می‌شناسد.
+    ردیف‌های قدیمی‌تر از یک هفته پاک می‌شوند: جارو آن‌قدر عقب نمی‌رود.
+    """
+
+    __tablename__ = "abandoned_posts"
+    __table_args__ = (
+        UniqueConstraint("task_id", "src_msg_id", name="uq_abandoned_once"),
+    )
+
+    REASON_UNSENDABLE = "unsendable"   # با تکرار درست نمی‌شود
+    REASON_EXHAUSTED = "exhausted"     # صفِ تلاش مجدد رهایش کرد
+    REASON_REJECTED = "rejected"       # کاربر در صفِ تأیید ردش کرد
+    REASON_EXPIRED = "expired"         # سه روز در صفِ تأیید ماند و کسی تأیید نکرد
+
+    id: Mapped[int] = mapped_column(Integer, primary_key=True)
+    task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
+    src_msg_id: Mapped[int] = mapped_column(BigInteger)
+    reason: Mapped[str] = mapped_column(String(16), default=REASON_UNSENDABLE)
+    created_at: Mapped[datetime] = mapped_column(
+        DateTime(timezone=True), default=utcnow, index=True
+    )
+
+
 class ForceJoinChannel(Base):
     """کانالی که کاربر پیش از استفاده از ربات باید عضو آن باشد.
 
@@ -846,6 +878,7 @@ class DeliveryTiming(Base):
     PATH_WATERMARK = "watermark"    # دانلود، واترمارک، آپلود
     PATH_REWRITE = "rewrite"        # دانلود، بازنویسی فایل، آپلود
     PATH_REUPLOAD = "reupload"      # مبدا محافظت‌شده بود؛ چاره‌ای نبود
+    PATH_FORWARD = "forward"        # نوعی که فقط سرور کپی می‌کند؛ فوروارد بی‌نام
 
     # <b>چه چیزی باعث شد این پست برود.</b> `path` می‌گوید پست چطور
     # ساخته شد؛ این یکی می‌گوید <b>چه کسی خبر داد که پستی هست</b> — و

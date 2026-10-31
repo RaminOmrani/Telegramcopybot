@@ -6,6 +6,7 @@
 """
 from __future__ import annotations
 
+import html
 import logging
 
 from aiogram import F, Router
@@ -39,7 +40,7 @@ async def _owned_task(user_id: int, task_id: int) -> Task | None:
 
 
 def _entry(item: PendingPost, index: int) -> str:
-    return f"<b>{fa_num(index)}.</b> {item.preview}"
+    return f"<b>{fa_num(index)}.</b> {html.escape(item.preview or '')}"
 
 
 async def _screen(user_id: int, task_id: int):
@@ -149,7 +150,7 @@ async def cb_reject(call: CallbackQuery) -> None:
         await call.answer("این پست دیگر در صف نیست", show_alert=True)
         return
     task_id = item.task_id
-    await pending.drop(item.id)
+    await pending.reject(item)
     await log_activity(
         user_id=call.from_user.id,
         task_id=task_id,

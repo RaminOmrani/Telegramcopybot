@@ -46,7 +46,12 @@ IRAN = timezone(timedelta(hours=3, minutes=30))
 
 # رویدادهایی که یعنی «پست باید می‌رفت و نرفت». skip اینجا نیست: آن
 # یعنی فیلتر کارش را کرده.
-FAIL_EVENTS = ("retry_queued", "retry_failed", "retry_dropped", "error", "pause")
+FAIL_EVENTS = (
+    "retry_queued", "retry_failed", "retry_dropped", "error", "pause",
+    # پستی که قطعاً نمی‌رود (نوعِ ناشناخته، آزمونِ بی‌جواب، کانالِ قفل‌شده
+    # برای فوروارد). دوباره امتحان نمی‌شود، ولی نرسیدنش باید دیده شود.
+    "unsendable",
+)
 
 
 def _shape(text: str | None) -> str:

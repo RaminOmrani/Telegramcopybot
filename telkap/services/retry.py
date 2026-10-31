@@ -7,14 +7,15 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 from datetime import timedelta
 
 from sqlalchemy import select
 
 from telkap.db import get_session, log_activity
-from telkap.models import DeliveryTiming, RetryItem, Task, utcnow
-from telkap.services import reader
+from telkap.models import AbandonedPost, DeliveryTiming, RetryItem, Task, utcnow
+from telkap.services import abandoned, reader
 from telkap.services.copier import RETRY_BACKOFF, SendFailed
 
 log = logging.getLogger(__name__)
@@ -96,6 +97,14 @@ class RetryWorker:
             )
             return False
 
+        in_flight = getattr(self.copier, "in_flight", None)
+        if in_flight is not None and in_flight(item.task_id, messages[0].id):
+            # <b>ارسالِ اول هنوز تمام نشده</b> (مثلاً مقصدِ دیگری در حال
+            # آپلود است). کمی بعد — بی‌آنکه تلاشی شمرده شود. صدا زدنِ
+            # process اینجا False می‌داد و آیتم پاک می‌شد.
+            await self._postpone(item.id)
+            return False
+
         try:
             # <b>retrying=True حیاتی است.</b> بدون آن، شکستِ ارسال یک
             # آیتمِ تازه در صف می‌ساخت (با شمارنده‌ی صفر) و همین آیتم
@@ -106,6 +115,11 @@ class RetryWorker:
             sent = await self.copier.process(
                 item.user_id, item.task_id, messages,
                 retrying=True, via=DeliveryTiming.VIA_RETRY,
+                # <b>فقط همان مقصدی که شکست خورده.</b> هر مقصدِ ناموفق آیتمِ
+                # خودش را دارد؛ فرستادن به همه یعنی کانالی که بار اول پست
+                # را گرفته بود، دوباره بگیردش. آیتم‌های قدیمی که مقصد ندارند
+                # همان رفتارِ قبلی را دارند.
+                only_target=item.dest_chat or None,
             )
         except SendFailed as exc:
             await self._reschedule(item, str(exc))
@@ -139,8 +153,15 @@ class RetryWorker:
             row.last_error = error[:400]
             if row.attempts >= MAX_ATTEMPTS:
                 user_id, task_id, attempts = row.user_id, row.task_id, row.attempts
+                first = row.message_ids[0] if row.message_ids else None
                 await db.delete(row)
                 await db.commit()
+                if first is not None:
+                    # <b>و جارو باید بداند.</b> پستِ رهاشده نه در نگاشت است
+                    # و نه در صف؛ بدون این ثبت، جارو سه دقیقه بعد دوباره
+                    # پیدایش می‌کرد و همه‌ی چهار تلاش از نو شروع می‌شد —
+                    # هر ۸۰ دقیقه یک دور، با یک پیامِ «ارسال نشد» در هر دور.
+                    await abandoned.mark(task_id, first, AbandonedPost.REASON_EXHAUSTED)
                 await log_activity(
                     user_id=user_id,
                     task_id=task_id,
@@ -149,14 +170,26 @@ class RetryWorker:
                     level="error",
                 )
                 if self.notifier:
+                    # تلاشِ اول هم شمرده می‌شود؛ «۴ تلاش» برای پنج ارسال
+                    # درست نبود. و متنِ خطا escape می‌شود: پیام با HTML
+                    # فرستاده می‌شود و یک «<» در خطای تلگرام کلِ پیام را
+                    # می‌انداخت.
                     await self.notifier(
                         user_id,
-                        f"⚠️ یک پست پس از {attempts} تلاش ارسال نشد.\nعلت: {error}",
+                        f"⚠️ یک پست پس از {attempts + 1} تلاش ارسال نشد.\n"
+                        f"علت: {html.escape(error)}",
                     )
                 return
             delay = RETRY_BACKOFF[min(row.attempts, len(RETRY_BACKOFF) - 1)]
             row.next_try_at = utcnow() + timedelta(seconds=delay)
             await db.commit()
+
+    async def _postpone(self, item_id: int) -> None:
+        async with get_session() as db:
+            row = await db.get(RetryItem, item_id)
+            if row is not None:
+                row.next_try_at = utcnow() + timedelta(seconds=RETRY_BACKOFF[0])
+                await db.commit()
 
     async def _drop(self, item_id: int) -> None:
         async with get_session() as db:

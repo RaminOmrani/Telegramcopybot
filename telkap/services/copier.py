@@ -2,8 +2,10 @@
 from __future__ import annotations
 
 import asyncio
+import html
 import logging
 import random
+import time
 from collections.abc import Iterable, Sequence
 from dataclasses import dataclass
 from datetime import UTC, timedelta
@@ -17,10 +19,12 @@ from telethon.errors import (
     ChatWriteForbiddenError,
     FloodWaitError,
     MessageIdInvalidError,
+    MessageNotModifiedError,
     PremiumAccountRequiredError,
 )
 from telethon.tl.custom import Button
 from telethon.tl.types import (
+    Document,
     DocumentAttributeAnimated,
     DocumentAttributeAudio,
     DocumentAttributeSticker,
@@ -31,12 +35,14 @@ from telethon.tl.types import (
     MessageMediaPhoto,
     MessageMediaPoll,
     MessageMediaWebPage,
+    Photo,
     Poll,
 )
 
 from telkap.config import get_settings
 from telkap.db import get_session, log_activity
 from telkap.models import (
+    AbandonedPost,
     DailyStat,
     DeliveryTiming,
     Destination,
@@ -48,6 +54,7 @@ from telkap.models import (
 )
 from telkap.plans import FEAT_MESSAGES, FEAT_WATERMARK
 from telkap.services import (
+    abandoned,
     aipass,
     alerts,
     cache,
@@ -119,6 +126,174 @@ class SendFailed(Exception):
     دوباره زمان‌بندی کند.
     """
 
+
+class Unsendable(Exception):
+    """این پست با <b>هیچ</b> تلاشِ دوباره‌ای نمی‌رود — رد کن، دوباره امتحان نکن.
+
+    <b>چرا یک نوعِ جداگانه.</b> تا امروز هر خطای ارسال یک معنا داشت:
+    «موقتی است، چهار بار دیگر امتحان کن». ولی پستی که رسانه‌اش اصلاً
+    قابل دانلود نیست، یک ساعت و ربع بعد هم قابل دانلود نیست. نتیجه‌اش
+    در ۳۱ اکتبر دیده شد: <b>یک</b> پست از نوعی که Telethonِ ما
+    نمی‌شناسد، ۸۶ بار در صف رفت، حدود ۴۳۰ بار با اکانتِ مشتری ارسالش
+    امتحان شد، و هر بار یک پیامِ «ارسال نشد» برای صاحب کانال آمد.
+
+    `kind` نامِ نوعِ رسانه است تا هشدار به مشتری برای هر نوع فقط یک
+    بار برود، نه برای هر پست.
+    """
+
+    def __init__(self, reason: str, *, kind: str = "") -> None:
+        super().__init__(reason)
+        self.kind = kind
+
+
+# <b>رسانه‌هایی که فقط سرورِ تلگرام می‌تواند کپی‌شان کند.</b>
+#
+# برای اینها نه ارسال با مرجع کار می‌کند (Telethon برایشان ورودی
+# نمی‌سازد) و نه دانلود (چیزی برای دانلود ندارند). تنها راه، فوروارد است
+# که خودِ سرور انجامش می‌دهد بی‌آنکه ما لازم باشد محتوا را بفهمیم.
+#
+# MessageMediaUnsupported مهم‌ترینشان است: هر نوع پستی که تلگرام بعد از
+# لایه‌ی Telethonِ ما (۱۹۳) اضافه کرده، به این شکل به ما می‌رسد. پس این
+# فهرست با هر قابلیتِ تازه‌ی تلگرام خودبه‌خود بزرگ‌تر می‌شود بی‌آنکه
+# لازم باشد اسمش را بدانیم.
+#
+# Dice هم اینجاست: ساختنِ دوباره‌اش عدد تازه‌ای می‌ریزد — یعنی «کپی»
+# چیزی متفاوت با مبدأ می‌شود. فوروارد همان عدد را نگه می‌دارد.
+_OPAQUE_MEDIA = frozenset({
+    "MessageMediaUnsupported",
+    "MessageMediaPaidMedia",
+    "MessageMediaStory",
+    "MessageMediaGiveaway",
+    "MessageMediaGiveawayResults",
+    "MessageMediaInvoice",
+    "MessageMediaGame",
+    "MessageMediaGeoLive",
+    "MessageMediaDice",
+})
+
+
+def opaque_media(message) -> str:
+    """نامِ نوعِ رسانه اگر فقط با فوروارد قابل کپی است؛ وگرنه رشته‌ی خالی.
+
+    عکس یا فایلی که پوسته‌اش هست ولی محتوایش نه (منقضی‌شده، خالی) هم
+    همین حکم را دارد: Telethon آن را «عکس» می‌شمارد ولی نه می‌فرستدش
+    نه دانلودش می‌کند.
+    """
+    media = getattr(message, "media", None)
+    if media is None:
+        return ""
+    name = type(media).__name__
+    if name in _OPAQUE_MEDIA:
+        return name
+    if isinstance(media, MessageMediaPhoto) and not isinstance(media.photo, Photo):
+        return name + "(empty)"
+    if isinstance(media, MessageMediaDocument) and not isinstance(media.document, Document):
+        return name + "(empty)"
+    return ""
+
+
+def _discard(paths) -> None:
+    """فایل‌های موقت را پاک می‌کند — و <b>هرگز</b> خطا نمی‌دهد.
+
+    <b>چرا «هرگز».</b> این تابع در finally بعد از یک ارسالِ <b>موفق</b>
+    صدا می‌شود. خطایی که از finally بیرون بیاید، جای نتیجه‌ی ارسال را
+    می‌گیرد: پستی که رفته «شکست» حساب می‌شود، دوباره فرستاده می‌شود، و
+    مشتری همان پست را تا پنج بار در کانالش می‌بیند. دقیقاً همین اتفاق
+    می‌افتاد: وقتی فقط یک فایل بود، فهرست به یک رشته تبدیل می‌شد و حلقه
+    روی <b>حرف‌های</b> مسیر می‌چرخید تا به «/» برسد.
+
+    پس اینجا فقط فهرست پذیرفته می‌شود، و هر خطای پاک کردن بلعیده
+    می‌شود — یک فایلِ جامانده در پوشه‌ی موقت بی‌نهایت ارزان‌تر از یک پستِ
+    پنج‌باره است.
+    """
+    if isinstance(paths, str | Path):
+        paths = [paths]
+    for path in paths or ():
+        try:
+            Path(path).unlink(missing_ok=True)
+        except OSError:
+            log.warning("فایل موقت %s پاک نشد", path, exc_info=True)
+
+
+# خطاهایی که تکرارشان فرقی نمی‌کند: محتوا یا قالب پست ایراد دارد، نه
+# شبکه یا سرعت. با نام مقایسه می‌شوند تا نبودنِ یکی در نسخه‌ای دیگر از
+# Telethon کل ماژول را نشکند.
+_PERMANENT_ERRORS = frozenset({
+    "MediaEmptyError",
+    "MediaInvalidError",
+    "MessageEmptyError",
+    "MessageTooLongError",
+    "MediaCaptionTooLongError",
+    "EntityBoundsInvalidError",
+    "EntitiesTooLongError",
+    "PhotoInvalidDimensionsError",
+    "WebpageMediaEmptyError",
+    "QuizCorrectAnswersEmptyError",
+    "PollOptionInvalidError",
+})
+
+
+def is_permanent(exc: BaseException) -> bool:
+    """آیا این خطا با تلاش دوباره درست می‌شود؟ False یعنی «شاید».
+
+    TypeError هم دائمی است: Telethon وقتی نمی‌تواند از یک رسانه ورودی
+    بسازد همین را می‌دهد («Cannot use … as file») — و اگر از ایرادِ کدِ
+    خودمان باشد، تکرار هم درستش نمی‌کند.
+
+    <b>ولی ValueError نه.</b> Telethon برای «این کانال را در کش ندارم»
+    (Could not find the input entity) هم ValueError می‌دهد — همان خانواده‌ای
+    که حالت ساده را بعد از هر ری‌استارت می‌خواباند — و آن با گرم شدنِ کش
+    درست می‌شود. دائمی شمردنش یعنی دور ریختنِ پست‌هایی که چند دقیقه بعد
+    می‌رفتند.
+    """
+    if isinstance(exc, Unsendable):
+        return True
+    if isinstance(exc, TypeError):
+        return True
+    return type(exc).__name__ in _PERMANENT_ERRORS
+
+
+@dataclass
+class _Outcome:
+    """نتیجه‌ی ارسال به مقصدها، که `process` برای برگرداندنِ سهمیه می‌خواند."""
+
+    sent: bool = False      # دست‌کم یک مقصد پستِ تازه گرفت
+    already: bool = False   # تلاش مجدد دید که پست پیش‌تر رسیده بود
+    queued: bool = False    # دست‌کم یک مقصد به صفِ تلاش مجدد رفت
+
+
+class PartialForward(RuntimeError):
+    """آلبومِ فورواردشده ناقص رسید. دائمی نیست؛ دوباره امتحان می‌شود."""
+
+
+class CaptionNotSet(RuntimeError):
+    """فوروارد رسید ولی کپشنِ ما ننشست و پاکش کردیم. دوباره امتحان می‌شود."""
+
+
+# این‌ها اصلاً کپشن ندارند؛ امتحانِ ویرایش فقط یک درخواستِ ردشده است
+_NO_CAPTION_MEDIA = frozenset({
+    "MessageMediaDice",
+    "MessageMediaGame",
+    "MessageMediaGeoLive",
+    "MessageMediaGiveaway",
+    "MessageMediaGiveawayResults",
+    "MessageMediaStory",
+    "MessageMediaInvoice",
+})
+
+
+# فوروارد را تلگرام به خاطرِ <b>خودِ پست</b> نپذیرفت: کانالِ محافظت‌شده،
+# پیامِ حذف‌شده. تکرار فرقی نمی‌کند.
+_FORWARD_REFUSALS = frozenset({
+    "ChatForwardsRestrictedError",
+    "MessageIdInvalidError",
+    "MessageIdsEmptyError",
+})
+
+
+def _forward_refused(exc: BaseException) -> bool:
+    return type(exc).__name__ in _FORWARD_REFUSALS or is_permanent(exc)
+
 # نامِ خواندنیِ هر مسیر. کدِ ذخیره‌شده انگلیسی و پایدار است تا با عوض
 # شدنِ یک کلمه‌ی فارسی، آمارِ ماه‌های قبل بی‌معنا نشود.
 PATH_LABELS = {
@@ -127,6 +302,7 @@ PATH_LABELS = {
     DeliveryTiming.PATH_WATERMARK: "واترمارک",
     DeliveryTiming.PATH_REWRITE: "بازنویسی فایل",
     DeliveryTiming.PATH_REUPLOAD: "دانلود و آپلود مجدد",
+    DeliveryTiming.PATH_FORWARD: "فوروارد بدون نام فرستنده",
 }
 
 VIA_LABELS = {
@@ -399,6 +575,10 @@ class Copier:
         self._workers: dict[tuple, asyncio.Task] = {}
         # کدام مسیر برای آخرین ارسال به کار رفت — برای اندازه‌گیری تأخیر
         self._last_path: str = ""
+        # (کار، اولین آیدیِ پست) هایی که همین حالا در حال پردازش‌اند
+        self._in_flight: set[tuple[int, int]] = set()
+        # (کار، نوع) ← زمانِ آخرین هشدار؛ برای هر نوع روزی یک پیام کافی است
+        self._unsendable_warned: dict[tuple[int, str], float] = {}
 
     # ------------------------------------------------------------- هندلرها
     def make_new_message_handler(self, user_id: int):
@@ -728,10 +908,17 @@ class Copier:
     ) -> bool:
         """پست را در صف می‌گذارد. خروجی True یعنی نگه داشته شد.
 
-        اگر پست از قبل در صف باشد یا نگه داشتن ممکن نباشد، False برمی‌گردد
-        تا مسیر عادی ادامه پیدا کند — پستی نباید بی‌سروصدا گم شود.
+        اگر نگه داشتن ممکن نباشد، False برمی‌گردد تا مسیر عادی ادامه
+        پیدا کند — پستی نباید بی‌سروصدا گم شود.
+
+        <b>ولی «از قبل در صف است» یعنی نگه داشته شده</b>، نه «نشد».
+        تا امروز همین هم False بود: جارو پستِ منتظرِ تأیید را (که هنوز
+        «نرفته» است) پیدا می‌کرد، اینجا «از قبل هست» می‌شنید، و پست
+        <b>بی‌تأیید</b> منتشر می‌شد — تأیید دستی سه دقیقه دوام داشت.
         """
         first = messages[0]
+        if await pending.is_waiting(snapshot.id, [m.id for m in messages]):
+            return True
         item = await pending.hold(
             task_id=snapshot.id,
             user_id=snapshot.user_id,
@@ -743,7 +930,9 @@ class Copier:
             release_at=release_at,
         )
         if item is None:
-            return False
+            # همزمان یک فراخوانیِ دیگر همین پست را در صف گذاشت (بازه‌ی بین
+            # پرسیدن و نوشتن) — یعنی نگه داشته شده
+            return await pending.is_waiting(snapshot.id, [m.id for m in messages])
 
         await log_activity(
             user_id=snapshot.user_id,
@@ -758,15 +947,50 @@ class Copier:
             try:
                 await self.notifier(
                     snapshot.user_id,
-                    f"⏳ یک پست تازه از «{snapshot.title}» منتظر تأیید شماست.\n\n"
-                    f"<i>{item.preview}</i>\n\n"
+                    f"⏳ یک پست تازه از «{html.escape(snapshot.title or '')}» منتظر تأیید شماست.\n\n"
+                    f"<i>{html.escape(item.preview or '')}</i>\n\n"
                     f"در صف: {waiting} پست — «📋 کارهای کپی» ← «⏳ در انتظار تأیید»",
                 )
             except Exception:
                 log.debug("اطلاع صف تأیید به کاربر نرسید", exc_info=True)
         return True
 
-    async def process(
+    async def process(self, user_id: int, task_id: int, messages: Sequence, **kwargs) -> bool:
+        """`_process` — ولی هیچ پستی دو بار <b>همزمان</b>.
+
+        <b>چرا.</b> آپدیتِ لحظه‌ای، جارو، صفِ انتشار و صفِ تلاش مجدد همه
+        می‌توانند یک پست را بدهند. هرکدام پیش از ارسال می‌پرسند «رفته؟» و
+        جوابِ همه «نه» است تا وقتی یکی‌شان ارسال را تمام کند — که برای یک
+        ویدیو چند دقیقه است. مثلاً صفِ انتشار ردیفِ پست را برمی‌دارد و
+        شروع به فرستادن می‌کند؛ جارو در همین فاصله پست را «نه رفته، نه در
+        صف» می‌بیند و دوباره می‌فرستدش، یا دوباره به صفِ تأیید می‌بردش.
+
+        همه‌ی این‌ها یک Copier دارند، پس یک مجموعه در حافظه کافی است: دومی
+        بی‌صدا کنار می‌رود و اولی کار را تمام می‌کند.
+
+        <b>صف‌ها اما پیش از صدا زدن می‌پرسند</b> (`in_flight`): برای آن‌ها
+        False یعنی «فیلترها گفتند نه» و آیتم را پاک می‌کنند. تلاشِ مجددی
+        که وسطِ ارسالِ اول برسد — مثلاً مقصدِ اول شکست خورده و مقصدِ دوم
+        هنوز در حال آپلود است — اگر False بشنود، آیتمش را دور می‌ریزد و
+        آن مقصد پست را برای همیشه از دست می‌دهد.
+        """
+        key = (int(task_id), int(messages[0].id)) if messages else None
+        if key is not None and key in self._in_flight:
+            log.info("پستِ %s کار %s همین حالا در حال ارسال است؛ رد شد", key[1], task_id)
+            return False
+        if key is not None:
+            self._in_flight.add(key)
+        try:
+            return await self._process(user_id, task_id, messages, **kwargs)
+        finally:
+            if key is not None:
+                self._in_flight.discard(key)
+
+    def in_flight(self, task_id: int, src_msg_id: int) -> bool:
+        """آیا همین حالا یک ارسال برای این پست در جریان است؟"""
+        return (int(task_id), int(src_msg_id)) in self._in_flight
+
+    async def _process(
         self,
         user_id: int,
         task_id: int,
@@ -775,6 +999,7 @@ class Copier:
         released: str = "",
         retrying: bool = False,
         via: str = DeliveryTiming.VIA_UPDATE,
+        only_target: str | None = None,
     ) -> bool:
         """یک پیام یا آلبوم را برای یک کار پردازش و به همه‌ی مقصدها ارسال می‌کند.
 
@@ -797,8 +1022,21 @@ class Copier:
         مقدار دیگری می‌دهند. این تنها چیزی است که «تأخیرِ واقعی» را از
         «تأخیرِ جارو» جدا می‌کند، و بدون جدا کردنشان تور ایمنی، خرابیِ
         زیرش را پنهان می‌کند.
+
+        <b>`only_target` یعنی «فقط همان مقصدی که شکست خورده».</b> صفِ
+        تلاش مجدد برای هر مقصدِ ناموفق یک آیتم می‌سازد، ولی تا امروز هر
+        تلاش دوباره را به <b>همه‌ی</b> مقصدها می‌فرستاد: کانالی که بار اول
+        پست را گرفته بود، دوباره می‌گرفتش.
+
+        <b>و در تلاش مجدد، دروازه‌ها دوباره بسته نمی‌شوند.</b> ساعت فعال،
+        تأیید دستی، فاصله‌ی حداقل، سقف ساعتی، سهمیه‌ی پیام و تشخیص تکراری
+        همه یک بار — سرِ ورودِ پست — سنجیده شده‌اند. تکرارشان هر بار یک
+        واحد سهمیه می‌سوزاند (پستی که هرگز نرفت، پنج واحد) و اگر یکی
+        «نه» می‌گفت، پست بی‌صدا دور ریخته می‌شد.
         """
         waited = bool(released)      # هر انتظاری که بوده، تمام شده
+        # پستی که دوباره امتحان می‌شود، بار اول از همه‌ی دروازه‌ها گذشته
+        admitted = retrying
         approved = released == PendingPost.REASON_APPROVAL
         snapshot = await cache.get_task(task_id)
         if snapshot is None or not snapshot.enabled:
@@ -806,14 +1044,11 @@ class Copier:
 
         cfg = snapshot.cfg
         rules = snapshot.rules
-        task_title = snapshot.title
-        targets = list(snapshot.targets)
-        src_ids = [m.id for m in messages]
         src_chat_id = snapshot.source_id
         # حالت ساده: فرستنده خودِ ربات است و مشتری اکانتی وصل نکرده
         simple = snapshot.mode == Task.MODE_SIMPLE
 
-        if not within_active_hours(cfg):
+        if not admitted and not within_active_hours(cfg):
             # نگه داشتن، فقط اگر کاربر خواسته باشد؛ وگرنه رفتار قبلی
             if not waited and cfg.get("hold_outside_hours") and src_chat_id:
                 if await self._hold(
@@ -863,7 +1098,7 @@ class Copier:
 
         # فیلتر تعامل. پستِ تازه هنوز بازدید ندارد، پس اول منتظر می‌مانیم و
         # بعد از آنکه دوباره از مبدا خوانده شد (با آمار به‌روز) می‌سنجیم.
-        if _wants_engagement(cfg):
+        if not admitted and _wants_engagement(cfg):
             wait = int(cfg.get("engagement_wait_minutes") or 0)
             if not waited and wait > 0 and src_chat_id:
                 if await self._hold(
@@ -885,7 +1120,7 @@ class Copier:
         # یا فاصله‌ی حداقلی خواسته، اینجا نگه داشته می‌شود — پیش از آنکه
         # سهمیه‌ای مصرف شود. هنگام انتشار همه‌ی بررسی‌ها دوباره اجرا
         # می‌شوند، پس چیزی از قلم نمی‌افتد.
-        if src_chat_id:
+        if src_chat_id and not admitted:
             if cfg.get("approval") and not approved:
                 if await self._hold(
                     snapshot, messages, reason=PendingPost.REASON_APPROVAL
@@ -902,18 +1137,18 @@ class Copier:
                 ):
                     return False
 
-        if not hourly_quota.allow(task_id, int(cfg.get("max_per_hour") or 0)):
+        if not admitted and not hourly_quota.allow(
+            task_id, int(cfg.get("max_per_hour") or 0)
+        ):
             await self._bump(task_id, user_id, skipped=True)
             await log_activity(
                 user_id=user_id, task_id=task_id, event="skip", detail="سقف ساعتی پر شده است"
             )
             return False
 
-        if not await self._message_quota_ok(user_id, task_id, ent):
-            return False
-
+        # تکراری پیش از سهمیه: پستی که قرار نیست برود نباید واحدی بسوزاند
         print_ = fingerprint_of(facts)
-        if cfg.get("skip_duplicates") and await self._seen_before(
+        if not admitted and cfg.get("skip_duplicates") and await self._seen_before(
             MessageMap.task_id == task_id, print_, cfg
         ):
             await self._bump(task_id, user_id, skipped=True)
@@ -921,6 +1156,60 @@ class Copier:
                 user_id=user_id, task_id=task_id, event="skip", detail="پست تکراری"
             )
             return False
+
+        # واحدِ سهمیه‌ی پیام یک بار برای هر پست برداشته می‌شود؛ اگر پست
+        # به هیچ مقصدی نرسید و در صف هم نرفت، برمی‌گردد — <b>از هر راهی که
+        # بیرون برود</b>: بازگشتِ زودهنگام، FloodWait، یا خطای اکانت. برای
+        # همین بقیه‌ی کار در try/finally است و نه یک release در ته تابع.
+        message_grant = None
+        if not admitted:
+            allowed, message_grant = await self._message_quota_ok(user_id, task_id, ent)
+            if not allowed:
+                return False
+
+        outcome = _Outcome()
+        try:
+            return await self._deliver(
+                user_id, task_id, messages, snapshot, ent, facts, print_,
+                src_entities, primary, outcome,
+                simple=simple, admitted=admitted, retrying=retrying,
+                via=via, only_target=only_target,
+            )
+        finally:
+            if not (outcome.sent or outcome.already or outcome.queued):
+                await entitlement.release(user_id, message_grant, ent.subscription_id)
+
+    async def _deliver(
+        self,
+        user_id: int,
+        task_id: int,
+        messages: Sequence,
+        snapshot,
+        ent,
+        facts,
+        print_,
+        src_entities,
+        primary,
+        outcome: _Outcome,
+        *,
+        simple: bool,
+        admitted: bool,
+        retrying: bool,
+        via: str,
+        only_target: str | None,
+    ) -> bool:
+        """نیمه‌ی دومِ `process`: از دروازه‌ها گذشته؛ حالا به مقصدها.
+
+        `outcome` را صدازننده نگه می‌دارد تا سهمیه را — هر طور که این
+        تابع تمام شود — درست برگرداند.
+        """
+        cfg = snapshot.cfg
+        rules = snapshot.rules
+        task_title = snapshot.title
+        targets = list(snapshot.targets)
+        src_ids = [m.id for m in messages]
+        src_chat_id = snapshot.source_id
+        plan = ent.plan
 
         # <b>در حالت ساده مشتری اصلاً اکانتی ندارد — و نباید داشته باشد.</b>
         #
@@ -959,7 +1248,7 @@ class Copier:
         # می‌گیرد. وقتی کاربر تأخیری نخواسته چیزی اضافه نمی‌شود: کپی باید
         # لحظه‌ای بماند، و فاصله‌گذاری واقعی را محدودکننده‌ی نرخ انجام
         # می‌دهد که بر حسب حجم کار می‌کند، نه بر حسب میلی‌ثانیه.
-        delay = int(cfg.get("delay_seconds") or 0)
+        delay = 0 if admitted else int(cfg.get("delay_seconds") or 0)
         if delay > 0:
             jitter = random.uniform(-0.15, 0.15) * delay
             await asyncio.sleep(max(0.0, min(delay + jitter, 3600)))
@@ -972,13 +1261,24 @@ class Copier:
         want_wm = wanted_watermark and bool(wm_units)
         sub_id = ent.subscription_id
         watermark_open = True   # تا وقتی سهمیه و اعتبار تمام نشده
-        any_sent = False
         routed_away = 0         # مقصدهایی که کلمه‌ی کلیدی‌شان نخورد
         cross_dupes = 0         # مقصدهایی که این محتوا را قبلاً گرفته بودند
         failures: list[str] = []   # فقط در مسیر تلاش مجدد پر می‌شود
+        unsendable: list[tuple[str, Exception]] = []   # (مقصد، چرا)
+        matched = False            # مقصدِ آیتمِ تلاش مجدد هنوز وجود دارد؟
 
         for spec in targets:
             target = spec.target
+            if only_target and str(target) != only_target:
+                continue
+            matched = True
+            if retrying and await self._delivered(task_id, src_ids, str(target)):
+                # <b>یک تلاشِ قبلی در واقع رسیده بود.</b> مثلاً ارسال موفق
+                # بود و خطایی بعدش رخ داد. فرستادنِ دوباره یعنی پستِ تکراری.
+                # <b>ولی کپیِ تازه هم نیست</b>: آمار و تأخیر یک بار، همان
+                # بار که واقعاً رفت، ثبت شده‌اند.
+                outcome.already = True
+                continue
             # مقصدی که امضا یا فوتر اختصاصی دارد، متنش جدا ساخته می‌شود
             if spec.overrides:
                 dest_cfg = {**cfg, **spec.overrides}
@@ -996,7 +1296,7 @@ class Copier:
                 continue
 
             # همین محتوا شاید از مبدای دیگری قبلاً به همین کانال رفته باشد
-            if dest_cfg.get("skip_cross_duplicates") and await self._seen_before(
+            if not admitted and dest_cfg.get("skip_cross_duplicates") and await self._seen_before(
                 MessageMap.dest_chat == str(target), print_, dest_cfg
             ):
                 cross_dupes += 1
@@ -1051,7 +1351,7 @@ class Copier:
                     if self.notifier:
                         await self.notifier(
                             user_id,
-                            f"⚠️ کار «{task_title}» متوقف شد: "
+                            f"⚠️ کار «{html.escape(task_title or '')}» متوقف شد: "
                             "اکانت شما اجازه‌ی ارسال در کانال مقصد را ندارد.",
                         )
                     return False
@@ -1066,6 +1366,15 @@ class Copier:
                 # اوضاع را بدتر می‌کند؛ بالاتر مرکزی رسیدگی می‌شود
                 if health.classify(exc).fatal:
                     raise
+                if is_permanent(exc):
+                    # <b>دوباره امتحان نمی‌شود.</b> محتوا یا قالبِ پست ایراد
+                    # دارد، نه شبکه؛ یک ساعت و ربع بعد هم همین است.
+                    log.warning(
+                        "پست %s برای مقصد %s فرستادنی نیست: %s",
+                        src_ids[0], target, exc,
+                    )
+                    unsendable.append((str(target), exc))
+                    continue
                 if retrying:
                     # آیتمِ صف همین حالا وجود دارد؛ ساختنِ دومی یعنی
                     # همان حلقه‌ی بی‌پایان. فقط ثبتش می‌کنیم و ته کار
@@ -1074,9 +1383,10 @@ class Copier:
                     failures.append(f"{target}: {exc}")
                     continue
                 log.exception("ارسال به مقصد %s ناموفق بود؛ در صف تلاش مجدد", target)
-                await self._enqueue_retry(
+                if await self._enqueue_retry(
                     task_id, user_id, src_chat_id, src_ids, str(target), str(exc)
-                )
+                ):
+                    outcome.queued = True
                 continue
 
             if not sent:
@@ -1084,10 +1394,35 @@ class Copier:
                 await entitlement.release(user_id, grant, sub_id)
 
             if sent:
-                any_sent = True
+                outcome.sent = True
                 await self._remember(task_id, src_ids, sent, print_, str(target))
 
-        if retrying and failures and not any_sent:
+        any_sent = outcome.sent
+        delivered = outcome.sent or outcome.already
+
+        if only_target and not matched:
+            # مقصدی که این آیتم برایش بود، دیگر در کار نیست (حذف یا خاموش
+            # شده). بی‌صدا دور ریختنش گزارش را گیج می‌کرد.
+            await log_activity(
+                user_id=user_id, task_id=task_id, event="retry_dropped",
+                detail=f"{only_target}: مقصد دیگر در این کار نیست",
+            )
+
+        if unsendable:
+            await self._give_up(
+                user_id, task_id, task_title, src_ids, unsendable,
+                # <b>برای هر مقصد یک شکست</b>، همان‌طور که صفِ تلاش مجدد
+                # برای هر مقصد یکی می‌شمارد. در تلاش مجدد همان شکست سرِ
+                # ورودِ پست شمرده شده.
+                count_failure=not retrying,
+                # پستی که به مقصدی رسیده، «نرفتنی» نیست
+                remember=not delivered,
+            )
+
+        # (اگر نرفت و در صف هم نیست، `process` واحدِ سهمیه را برمی‌گرداند.
+        # اگر در صف است، همان یک واحد بهای کلِ تلاش‌هایش است.)
+
+        if retrying and failures and not delivered:
             # هیچ مقصدی نگرفت. کارگرِ صف باید همین آیتم را بشمارد، نه
             # اینکه فکر کند فیلترها جلویش را گرفته‌اند و دورش بیندازد.
             raise SendFailed("، ".join(failures)[:400])
@@ -1095,6 +1430,8 @@ class Copier:
         if any_sent:
             await self._bump(task_id, user_id, skipped=False)
             await self._record_latency(user_id, task_id, primary, via)
+        elif outcome.already:
+            pass
         elif routed_away or cross_dupes:
             # هیچ مقصدی این پست را نخواست — رد شدن است، نه خطا
             await self._bump(task_id, user_id, skipped=True)
@@ -1108,7 +1445,7 @@ class Copier:
                     else "کلمه‌ی کلیدی هیچ مقصدی نخورد"
                 ),
             )
-        return any_sent
+        return delivered
 
     async def _record_latency(
         self,
@@ -1212,11 +1549,23 @@ class Copier:
             return result.ids
 
         if media_kind == "poll":
-            # نظرسنجی محتوای فایلی ندارد و باید از نو ساخته شود. تا
-            # وقتی نساخته‌ایم، رد کردنش از فرستادنِ یک پستِ بی‌ربط بهتر
-            # است.
-            log.info("حالت ساده هنوز نظرسنجی نمی‌سازد؛ پست رد شد")
-            return []
+            # نظرسنجی محتوای فایلی ندارد و باید از نو ساخته شود، و ربات
+            # هنوز این را نمی‌کند. <b>بلند رد می‌شود، نه بی‌صدا:</b> تا
+            # امروز این پست بدون هیچ رویداد و شمارشی ناپدید می‌شد.
+            raise Unsendable(
+                "حالت ساده هنوز نظرسنجی را از نو نمی‌سازد", kind="simple-poll"
+            )
+
+        opaque = next((kind for m in messages if (kind := opaque_media(m))), "")
+        if opaque:
+            # در حالت کامل اینها را فوروارد می‌کنیم. اینجا ربات عضوِ مبدأ
+            # نیست و فوروارد از آن ممکن نیست، و اکانت سرویس هم در کانالِ
+            # مشتری ادمین نیست. پس راهی نمانده.
+            raise Unsendable(
+                f"این نوع پست ({opaque}) در حالت ساده کپی نمی‌شود — فقط با "
+                "اکانتِ خودتان (حالت کامل) می‌شود فرستادش",
+                kind=opaque,
+            )
 
         client = await self._reader_for(messages)
         if client is None:
@@ -1225,13 +1574,17 @@ class Copier:
         # <b>همان مسیرِ دانلودِ همیشگی.</b> تنها فرقش این است که با
         # کلاینتِ اکانت سرویس انجام می‌شود، نه اکانتِ مشتری.
         self._last_path = DeliveryTiming.PATH_REUPLOAD
+        with_media = [m for m in messages if m.media is not None]
         files = await self._download_all(client, messages)
-        if not files:
-            # <b>نه نصفه.</b> فرستادنِ کپشنِ تنها به‌جای عکس، پستی
-            # می‌سازد که بی‌معناست — و بدتر، در نگاشت «فرستاده شد» ثبت
-            # می‌شود و دیگر هیچ‌وقت درست فرستاده نمی‌شود.
-            log.warning("دانلود رسانه‌ی پست %s نشد", getattr(messages[0], "id", "?"))
-            return []
+        if len(files) != len(with_media):
+            _discard(files)
+            # <b>نه نصفه.</b> فرستادنِ کپشنِ تنها به‌جای عکس — یا آلبومی
+            # که یکی از عکس‌هایش جا مانده — پستی می‌سازد که بی‌معناست، و
+            # بدتر، در نگاشت «فرستاده شد» ثبت می‌شود و دیگر درست نمی‌شود.
+            raise Unsendable(
+                f"فقط {len(files)} از {len(with_media)} رسانه‌ی پست دانلود شد",
+                kind="simple-download",
+            )
 
         try:
             result = await botsend.send_media(
@@ -1242,10 +1595,12 @@ class Copier:
                 # نگهبانِ واقعی همین‌جاست.
                 buttons=buttons,
                 silent=bool(cfg.get("silent")),
+                # هر آیتمِ آلبوم نوعِ خودش را دارد. آلبومِ عکس و ویدیو
+                # اگر همه با نوعِ اولی ساخته شود، ویدیو مثل عکس می‌رود.
+                kinds=[classify_media(m) for m in with_media],
             )
         finally:
-            for path in files:
-                Path(path).unlink(missing_ok=True)
+            _discard(files)
         return result.ids
 
     async def _reader_for(self, messages: Sequence):
@@ -1321,6 +1676,21 @@ class Copier:
             return [sent.id]
 
         self._last_path = DeliveryTiming.PATH_DIRECT
+
+        # <b>اول: آیا اصلاً می‌شود این رسانه را خودمان فرستاد؟</b>
+        #
+        # برای بعضی نوع‌ها نه ارسال با مرجع کار می‌کند و نه دانلود. تا
+        # امروز این را پنج بار امتحان می‌کردیم تا مطمئن شویم نمی‌شود —
+        # و تهِ هر بار «Cannot use [] as file» بود. حالا همان اول تشخیص
+        # داده می‌شود و یک‌راست سراغ تنها راهی می‌رویم که ممکن است جواب
+        # بدهد.
+        opaque = next((kind for m in messages if (kind := opaque_media(m))), "")
+        if opaque:
+            return await self._forward_opaque(
+                client, target, messages, text, entities, kind=opaque
+            )
+
+        media_count = sum(1 for m in messages if m.media is not None)
         watermarking = allow_watermark and media_kind == "photo" and watermark_ready(cfg)
         # فایل کانفیگ باید دانلود، بازنویسی و دوباره آپلود شود؛ ارسال
         # مستقیمِ رسانه‌ی مبدا نسخه‌ی دست‌نخورده را می‌فرستد.
@@ -1332,10 +1702,10 @@ class Copier:
 
         if rewriting:
             files, changed = await self._rewritten_files(client, messages, cfg)
-            if not changed:
-                # چیزی عوض نشد؛ همان مسیر عادی، بدون آپلود اضافه
-                for path in files:
-                    Path(path).unlink(missing_ok=True)
+            if not changed or len(files) != media_count:
+                # چیزی عوض نشد — یا همه‌ی فایل‌ها نیامدند؛ آلبومِ ناقص
+                # نمی‌فرستیم. همان مسیر عادی، بدون آپلود اضافه.
+                _discard(files)
                 rewriting = False
             else:
                 self._last_path = DeliveryTiming.PATH_REWRITE
@@ -1349,8 +1719,7 @@ class Copier:
                         force_document=True,
                     )
                 finally:
-                    for path in files:
-                        Path(path).unlink(missing_ok=True)
+                    _discard(files)
                 sent = sent if isinstance(sent, list) else [sent]
                 return [m.id for m in sent if m]
 
@@ -1358,16 +1727,25 @@ class Copier:
             self._last_path = DeliveryTiming.PATH_WATERMARK
             files = await self._watermarked_files(client, messages, cfg)
             try:
+                if len(files) != media_count:
+                    # <b>نه نصفه.</b> آلبومی که یکی از عکس‌هایش جا مانده،
+                    # «فرستاده شد» ثبت می‌شود و هیچ‌وقت درست نمی‌شود.
+                    raise Unsendable(
+                        f"فقط {len(files)} از {media_count} عکس برای واترمارک "
+                        "دانلود شد",
+                        kind="watermark-download",
+                    )
                 sent = await client.send_file(
                     target,
-                    files,
+                    # تک‌عکس باید تکی برود. فهرستِ یک‌عضوی در Telethon
+                    # مسیر آلبوم را می‌رود، و آلبوم دکمه نمی‌گیرد.
+                    files if len(files) > 1 else files[0],
                     caption=text or None,
                     buttons=buttons,
                     formatting_entities=entities,
                 )
             finally:
-                for path in files:
-                    Path(path).unlink(missing_ok=True)
+                _discard(files)
         else:
             payload = [m.media for m in messages if m.media is not None]
             if not payload:
@@ -1381,46 +1759,227 @@ class Copier:
                     formatting_entities=entities,
                 )
                 return [sent.id]
-            # تک‌رسانه را تکی بفرست؛ لیست یعنی آلبوم و برای یک آیتم لازم نیست
-            if len(payload) == 1:
-                payload = payload[0]
             try:
                 sent = await client.send_file(
                     target,
-                    payload,
+                    # تک‌رسانه را تکی بفرست؛ فهرست یعنی آلبوم
+                    payload if len(payload) > 1 else payload[0],
                     caption=text or None,
                     buttons=buttons,
                     formatting_entities=entities,
                 )
             except (FloodWaitError, ChatWriteForbiddenError):
                 raise  # این دو را لایه‌ی بالاتر مدیریت می‌کند
-            except Exception:
-                # کانال‌های محدودشده اجازه‌ی ارسال مجدد مستقیم رسانه را نمی‌دهند؛
-                # در این حالت فایل دانلود و دوباره آپلود می‌شود.
-                # <b>گران‌ترین مسیر، و بی‌صداترین.</b> کانال‌هایی که
-                # «محافظت از محتوا» دارند اجازه‌ی ارسال مجدد مرجعِ رسانه
-                # را نمی‌دهند، پس هر پستِ رسانه‌ای اینجا می‌افتد: دانلود
-                # کامل و آپلود دوباره. برای یک ویدیو یعنی چند دقیقه —
-                # همان چیزی که کاربر به‌عنوان «تأخیر» می‌بیند.
+            except Exception as direct_error:
+                # <b>گران‌ترین مسیر.</b> کانال‌هایی که «محافظت از محتوا»
+                # دارند اجازه‌ی ارسال مجدد مرجعِ رسانه را نمی‌دهند، پس
+                # هر پستِ رسانه‌ای اینجا می‌افتد: دانلود کامل و آپلود
+                # دوباره. برای یک ویدیو یعنی چند دقیقه.
+                #
+                # <b>و دلیلِ اصلی ثبت می‌شود.</b> تا امروز فقط خطای مرحله‌ی
+                # بعد ثبت می‌شد («Cannot use [] as file») و علتِ واقعی —
+                # که مثلاً کدام نوع رسانه بود — هیچ‌جا نمی‌ماند.
                 self._last_path = DeliveryTiming.PATH_REUPLOAD
-                log.info("ارسال مستقیم رسانه ناموفق بود؛ دانلود و آپلود مجدد")
+                log.warning(
+                    "ارسال مستقیم رسانه نشد (%s: %s)؛ دانلود و آپلود مجدد",
+                    type(direct_error).__name__, direct_error,
+                )
                 files = await self._download_all(client, messages)
-                if len(files) == 1:
-                    files = files[0]
+                if len(files) != media_count:
+                    _discard(files)
+                    # چیزی دانلود نشد، یا نه همه‌اش. آلبومِ ناقص نمی‌فرستیم
+                    # و با فهرست خالی هم send_file صدا نمی‌زنیم؛ تنها راهِ
+                    # باقی‌مانده فوروارد است.
+                    return await self._forward_opaque(
+                        client, target, messages, text, entities,
+                        kind=f"download-failed:{type(direct_error).__name__}",
+                    )
                 try:
                     sent = await client.send_file(
                         target,
-                        files,
+                        files if len(files) > 1 else files[0],
                         caption=text or None,
                         buttons=buttons,
                         formatting_entities=entities,
                     )
                 finally:
-                    for path in files:
-                        Path(path).unlink(missing_ok=True)
+                    _discard(files)
 
         sent = sent if isinstance(sent, list) else [sent]
         return [m.id for m in sent if m]
+
+    async def _forward_opaque(
+        self, client, target, messages: Sequence, text: str, entities, *, kind: str
+    ) -> list[int]:
+        """پستی که فقط سرورِ تلگرام می‌تواند کپی‌اش کند.
+
+        <b>فوروارد، بی‌نام.</b> تا برچسبِ «فورواردشده از» نخورد و پست مثل
+        یک کپی به نظر برسد. <b>کپشن پیش از فوروارد تصمیم گرفته می‌شود</b>،
+        نه بعدش:
+
+        - متنِ ما همان متنِ مبدأ است → کپشنِ مبدأ همراهش می‌آید و ویرایشی
+          لازم نیست.
+        - مبدأ کپشن نداشت و متنِ ما فقط امضا/فوتر است → امضا <b>اگر
+          بنشیند</b>. تاس، استوری، بازی و موقعیت زنده اصلاً کپشن نمی‌گیرند
+          و امتحان هم نمی‌شوند؛ بقیه (عکسی که دانلود نشد، نوعِ ناشناخته)
+          امتحان می‌شوند و اگر نشد، پست همان‌طور می‌ماند — چیزی از مبدأ
+          کم ندارد، پس «نصفه» نیست. تا قبل از این، ویرایشِ ردشده پستِ
+          رسیده را پاک می‌کرد: کاری که امضا داشت هیچ تاسی نمی‌فرستاد.
+        - کپشن عوض شده → بی‌کپشن فوروارد و کپشنِ <b>خودمان</b> جایش. کپشنِ
+          مبدأ لینک و امضای کانالِ دیگری را دارد؛ همان که تبدیل‌ها پاک
+          کرده‌اند.
+
+        <b>نه نصفه.</b> اگر کپشنِ مبدأ را انداختیم و کپشنِ ما ننشست، یا
+        آلبوم ناقص رسید، پستِ فورواردشده پاک می‌شود. پستی که متنش جا
+        مانده یا یکی از عکس‌هایش نیست، از پستی که نیامده بدتر است: آن یکی
+        را مشتری می‌بیند. و بعدش <b>در صفِ تلاش مجدد</b> می‌رود — حتی برای
+        FloodWait — نه اینکه خطا بالا برود: آن‌وقت ردیفی در صف نبود و جارو
+        هر سه دقیقه دوباره فورواردش می‌کرد و پاکش می‌کرد.
+
+        <b>فقط ایرادِ محتوا «نرفتنی» است.</b> کانالِ «محافظت‌شده» یا پیامِ
+        حذف‌شده با تکرار درست نمی‌شود. ولی محدودیتِ سرعت، قطعی شبکه، یا بن
+        شدنِ اکانت چیز دیگری‌اند و همان‌طور که هستند بالا می‌روند تا لایه‌ی
+        بالاتر رسیدگی کند — اگر این‌ها را «نرفتنی» می‌نامیدیم، پست بی‌صدا
+        رها می‌شد و محدودیتِ اکانت هم پنهان می‌ماند.
+        """
+        self._last_path = DeliveryTiming.PATH_FORWARD
+        holder = next(
+            (i for i, m in enumerate(messages) if (m.message or "").strip()), None
+        )
+        original = messages[holder].message if holder is not None else ""
+        takes_caption = not any(
+            type(m.media).__name__ in _NO_CAPTION_MEDIA for m in messages
+        )
+        if text == original or not text.strip():
+            # همان کپشن، یا ما کپشنی نمی‌خواهیم (مبدأ کپشن داشت → انداخته می‌شود)
+            drop_captions, caption = bool(holder is not None and text != original), ""
+        elif holder is None:
+            # مبدأ کپشن نداشت؛ متنِ ما فقط امضا/فوتر است
+            drop_captions, caption = False, (text if takes_caption else "")
+            if not takes_caption:
+                log.info("پستِ %s (%s) کپشن نمی‌گیرد؛ بی‌امضا فوروارد شد", messages[0].id, kind)
+        else:
+            drop_captions, caption = True, text
+
+        try:
+            forwarded = await self._forward_without_caption(
+                client, target, messages, drop_captions=drop_captions
+            )
+        except Exception as exc:
+            if _forward_refused(exc):
+                raise Unsendable(
+                    f"این نوع پست ({kind}) فقط با فوروارد کپی می‌شود و تلگرام "
+                    f"فوروارد را نپذیرفت ({type(exc).__name__})",
+                    kind=kind,
+                ) from exc
+            raise
+
+        ids = [int(m.id) for m in forwarded if m]
+        if not ids and not forwarded:
+            raise Unsendable(
+                f"فوروارد این نوع پست ({kind}) چیزی در مقصد نساخت", kind=kind
+            )
+        if len(ids) != len(messages):
+            # آلبوم نصفه رسید. پاکش می‌کنیم و دوباره امتحان می‌شود —
+            # این خطای محتوا نیست.
+            await self._delete_quietly(client, target, ids)
+            raise PartialForward(
+                f"از {len(messages)} پیامِ آلبوم فقط {len(ids)} فوروارد شد"
+            )
+
+        if caption.strip():
+            try:
+                await self._set_caption(
+                    client, target, ids[holder or 0], caption, entities
+                )
+            except Exception as exc:
+                if not drop_captions:
+                    # مبدأ کپشن نداشت و پست عیناً همان است که بود؛ فقط
+                    # امضای ما رویش ننشست. پاک کردنش یعنی از دست دادنِ پستی
+                    # که درست رسیده.
+                    log.warning(
+                        "امضا روی پستِ %s (%s) ننشست (%s)؛ بی‌امضا ماند",
+                        messages[0].id, kind, type(exc).__name__,
+                    )
+                    return ids
+                await self._delete_quietly(client, target, ids)
+                if isinstance(exc, ChatWriteForbiddenError) or health.classify(exc).fatal:
+                    raise
+                if is_permanent(exc):
+                    raise Unsendable(
+                        f"این نوع پست ({kind}) فوروارد شد ولی کپشن رویش ننشست "
+                        f"({type(exc).__name__}); پاکش کردیم تا نصفه نماند",
+                        kind=kind,
+                    ) from exc
+                # گذرا — حتی FloodWait. به صف می‌رود، نه بالا.
+                raise CaptionNotSet(
+                    f"کپشن روی پستِ فورواردشده ننشست ({type(exc).__name__}: {exc}); "
+                    "پاکش کردیم و دوباره امتحان می‌شود"
+                ) from exc
+        return ids
+
+    @staticmethod
+    async def _set_caption(client, target, msg_id: int, caption: str, entities) -> None:
+        """کپشن را می‌گذارد؛ «همان متن بود» موفقیت است.
+
+        <b>اکانتِ غیرپریمیوم فقط ایموجی پریمیوم را از دست می‌دهد.</b> اگر
+        این خطا بالا می‌رفت، لایه‌ی بالاتر کلِ ارسال را بی‌ایموجی تکرار
+        می‌کرد: یک فورواردِ دیگر، و پستی که برای مشترک‌ها آمد و رفت.
+        """
+        try:
+            await client.edit_message(target, msg_id, caption, formatting_entities=entities)
+        except MessageNotModifiedError:
+            return
+        except PremiumAccountRequiredError:
+            plain = drop_custom_emoji(entities)
+            if plain is None:
+                raise
+            try:
+                await client.edit_message(
+                    target, msg_id, caption, formatting_entities=plain or None
+                )
+            except MessageNotModifiedError:
+                return
+
+    @staticmethod
+    async def _delete_quietly(client, target, ids: Sequence[int]) -> None:
+        if not ids:
+            return
+        try:
+            await client.delete_messages(target, list(ids))
+        except Exception:
+            log.warning("پستِ نصفه‌ی فورواردشده در %s پاک نشد", target, exc_info=True)
+
+    @staticmethod
+    async def _forward_without_caption(
+        client, target, messages: Sequence, *, drop_captions: bool = True
+    ) -> list:
+        """فوروارد با `drop_author` و (در صورت خواست) `drop_media_captions`.
+
+        `forward_messages` در Telethon فقط `drop_author` را می‌گیرد، پس
+        درخواست خام ساخته می‌شود — دقیقاً همان‌طور که خودِ
+        `forward_messages` می‌سازد — با یک پرچمِ بیشتر.
+
+        خروجی <b>به ترتیبِ ورودی</b> است و جای پیامی که نرسید None است؛
+        فیلتر کردنش کارِ صدازننده است، چون همان None یعنی «آلبوم ناقص».
+        """
+        from telethon.tl.functions.messages import ForwardMessagesRequest
+
+        to_peer = await client.get_input_entity(target)
+        from_peer = await client.get_input_entity(messages[0].peer_id)
+        request = ForwardMessagesRequest(
+            from_peer=from_peer,
+            id=[m.id for m in messages],
+            to_peer=to_peer,
+            drop_author=True,
+            drop_media_captions=drop_captions,
+        )
+        result = await client(request)
+        # همان تابعی که forward_messages برای خواندنِ جواب صدا می‌زند
+        found = client._get_response_message(request, result, to_peer)
+        if found is None:
+            return []
+        return list(found) if isinstance(found, list) else [found]
 
     async def _send_poll(self, client, target, message) -> int | None:
         """نظرسنجی را به‌صورت یک نظرسنجی تازه در مقصد می‌سازد.
@@ -1429,54 +1988,108 @@ class Copier:
         """
         poll = getattr(message.media, "poll", None)
         if poll is None:
-            return None
-        try:
-            # سؤال و گزینه‌ها عیناً بازاستفاده می‌شوند تا با تغییر قالب
-            # متن در نسخه‌های مختلف تلگرام سازگار بماند
-            new_poll = InputMediaPoll(
-                poll=Poll(
-                    id=0,
-                    question=poll.question,
-                    answers=list(poll.answers),
-                    multiple_choice=bool(getattr(poll, "multiple_choice", False)),
-                    public_voters=bool(getattr(poll, "public_voters", False)),
-                    quiz=bool(getattr(poll, "quiz", False)),
+            raise Unsendable("نظرسنجی مبدأ خالی بود", kind="poll-empty")
+
+        quiz = bool(getattr(poll, "quiz", False))
+        correct: list[bytes] = []
+        solution = None
+        solution_entities = None
+        if quiz:
+            # <b>آزمون بدون جوابِ درست ساخته نمی‌شود.</b> تلگرام جوابِ
+            # درست را فقط به کسی نشان می‌دهد که رأی داده — و اکانتِ ما
+            # رأی نمی‌دهد. تا امروز آزمون بدون جواب فرستاده می‌شد، تلگرام
+            # ردش می‌کرد، و پست بی‌هیچ ردی گم می‌شد.
+            results = getattr(message.media, "results", None)
+            correct = [
+                r.option for r in (getattr(results, "results", None) or [])
+                if getattr(r, "correct", False)
+            ]
+            if not correct:
+                raise Unsendable(
+                    "نظرسنجیِ آزمونی است و جوابِ درستش فقط به رأی‌دهنده‌ها "
+                    "نشان داده می‌شود؛ بدون آن تلگرام آزمون نمی‌سازد",
+                    kind="quiz-hidden-answer",
                 )
-            )
+            solution = getattr(results, "solution", None)
+            solution_entities = getattr(results, "solution_entities", None)
+
+        # سؤال و گزینه‌ها عیناً بازاستفاده می‌شوند تا با تغییر قالب متن در
+        # نسخه‌های مختلف تلگرام سازگار بماند
+        new_poll = InputMediaPoll(
+            poll=Poll(
+                id=0,
+                question=poll.question,
+                answers=list(poll.answers),
+                multiple_choice=bool(getattr(poll, "multiple_choice", False)),
+                public_voters=bool(getattr(poll, "public_voters", False)),
+                quiz=quiz,
+            ),
+            correct_answers=correct or None,
+            solution=solution,
+            solution_entities=solution_entities,
+        )
+        try:
             sent = await client.send_file(target, new_poll)
-            return sent.id
-        except Exception:
-            log.exception("ساخت دوباره‌ی نظرسنجی ناموفق بود")
-            return None
+        except (FloodWaitError, ChatWriteForbiddenError):
+            raise
+        except Exception as exc:
+            # <b>بلند، نه بی‌صدا.</b> تا امروز اینجا None برمی‌گشت و پست
+            # بدون هیچ رویداد و شمارشی ناپدید می‌شد.
+            if not is_permanent(exc):
+                raise
+            raise Unsendable(
+                f"ساخت دوباره‌ی نظرسنجی نشد ({type(exc).__name__})", kind="poll"
+            ) from exc
+        return sent.id
 
     async def _download_all(self, client, messages: Sequence) -> list[str]:
+        """رسانه‌ی همه‌ی پیام‌ها. چیزی که دانلود نشد در خروجی نیست —
+        صداکننده تعداد را با تعدادِ رسانه‌ها می‌سنجد.
+
+        <b>اگر وسط کار خطا شد، دانلودشده‌ها پاک می‌شوند.</b> وگرنه هر
+        آلبومی که آیتمِ سومش نیامد، دو فایلِ اولش را برای همیشه روی دیسک
+        می‌گذاشت.
+        """
         out_dir = get_settings().download_dir
         out_dir.mkdir(parents=True, exist_ok=True)
         paths: list[str] = []
-        for msg in messages:
-            if msg.media is None:
-                continue
-            path = await client.download_media(msg, file=str(out_dir))
-            if path:
-                paths.append(path)
+        try:
+            for msg in messages:
+                if msg.media is None:
+                    continue
+                path = await client.download_media(msg, file=str(out_dir))
+                if path:
+                    paths.append(path)
+        except BaseException:
+            _discard(paths)
+            raise
         return paths
 
     async def _watermarked_files(self, client, messages: Sequence, cfg: dict[str, Any]) -> list[str]:
         out_dir = get_settings().download_dir
         out_dir.mkdir(parents=True, exist_ok=True)
         results: list[str] = []
-        for msg in messages:
-            if msg.media is None:
-                continue
-            src = await client.download_media(msg, file=str(out_dir))
-            if not src:
-                continue
-            src_path = Path(src)
-            dest_path = src_path.with_name(f"wm_{src_path.name}").with_suffix(".jpg")
-            final = apply_watermark(src_path, dest_path, cfg)
-            if final != src_path:
-                src_path.unlink(missing_ok=True)
-            results.append(str(final))
+        try:
+            for msg in messages:
+                if msg.media is None:
+                    continue
+                src = await client.download_media(msg, file=str(out_dir))
+                if not src:
+                    continue
+                src_path = Path(src)
+                dest_path = src_path.with_name(f"wm_{src_path.name}").with_suffix(".jpg")
+                try:
+                    final = apply_watermark(src_path, dest_path, cfg)
+                except BaseException:
+                    _discard([src_path])
+                    raise
+                if final != src_path:
+                    _discard([src_path])
+                results.append(str(final))
+        except BaseException:
+            # همان دلیلِ _download_all: خطای وسطِ آلبوم نباید فایل جا بگذارد
+            _discard(results)
+            raise
         return results
 
     async def _rewritten_files(
@@ -1494,24 +2107,31 @@ class Copier:
 
         paths: list[str] = []
         changed = 0
-        for msg in messages:
-            if msg.media is None:
-                continue
-            src = await client.download_media(msg, file=str(out_dir))
-            if not src:
-                continue
-            src_path = Path(src)
-            try:
-                final, count = await asyncio.to_thread(
-                    docedit.rewrite_file, src_path, tag, rename=pattern
-                )
-            except Exception:
-                log.exception("بازنویسی فایل %s ناموفق بود؛ نسخه‌ی اصلی می‌رود", src_path.name)
-                final, count = src_path, 0
-            if final != src_path:
-                src_path.unlink(missing_ok=True)
-            changed += count
-            paths.append(str(final))
+        try:
+            for msg in messages:
+                if msg.media is None:
+                    continue
+                src = await client.download_media(msg, file=str(out_dir))
+                if not src:
+                    continue
+                src_path = Path(src)
+                try:
+                    final, count = await asyncio.to_thread(
+                        docedit.rewrite_file, src_path, tag, rename=pattern
+                    )
+                except Exception:
+                    log.exception(
+                        "بازنویسی فایل %s ناموفق بود؛ نسخه‌ی اصلی می‌رود", src_path.name
+                    )
+                    final, count = src_path, 0
+                if final != src_path:
+                    _discard([src_path])
+                changed += count
+                paths.append(str(final))
+        except BaseException:
+            # همان دلیلِ _download_all: خطای وسطِ آلبوم نباید فایل جا بگذارد
+            _discard(paths)
+            raise
         return paths, changed
 
     # --------------------------------------------------------- همگام‌سازی
@@ -1766,6 +2386,75 @@ class Copier:
             await db.commit()
         await self._trim_history(task_id)
 
+    async def _delivered(self, task_id: int, src_ids: Sequence[int], dest_chat: str) -> bool:
+        """آیا این پست پیش‌تر به همین مقصد رسیده؟ — از روی آیدی، نه محتوا.
+
+        تشخیصِ تکراریِ محتوایی در تلاش مجدد خاموش است (پست بار اول از آن
+        گذشته)، پس این تنها چیزی است که جلوی فرستادنِ دوباره‌ی پستی را
+        می‌گیرد که یک تلاشِ قبلی واقعاً رسانده بود.
+        """
+        if not src_ids:
+            return False
+        async with get_session() as db:
+            found = await db.scalar(
+                select(MessageMap.id).where(
+                    MessageMap.task_id == task_id,
+                    MessageMap.src_msg_id == src_ids[0],
+                    MessageMap.dest_chat == dest_chat,
+                ).limit(1)
+            )
+        return found is not None
+
+    async def _give_up(
+        self,
+        user_id: int,
+        task_id: int,
+        task_title: str,
+        src_ids: Sequence[int],
+        unsendable: list[tuple[str, Exception]],
+        *,
+        count_failure: bool,
+        remember: bool,
+    ) -> None:
+        """پستی که نمی‌رود: یک بار ثبت، یک بار شمرده، و به خاطر سپرده.
+
+        <b>هشدار به مشتری برای هر نوع، روزی یک بار.</b> تا امروز برای هر
+        پستِ رهاشده یک پیام می‌رفت — روزی که یک پست ۸۶ بار در صف رفت،
+        یعنی ۷۷ پیامِ «ارسال نشد» با یک خطای انگلیسی. کانالی که مرتب
+        استوری بازنشر می‌کند، با این قاعده روزی یک خبر می‌گیرد نه صد تا.
+        """
+        for dest, exc in unsendable:
+            await log_activity(
+                user_id=user_id,
+                task_id=task_id,
+                event="unsendable",
+                detail=f"{dest}: {exc}"[:600],
+                level="warning",
+            )
+        if count_failure:
+            for _ in unsendable:
+                await self._bump_daily(task_id, user_id, field="failed")
+        if remember and src_ids:
+            # در دیتابیس، نه حافظه: هر آپدیت یک ری‌استارت است و جارو بعدش
+            # همه‌ی این پست‌ها را از نو امتحان می‌کرد.
+            await abandoned.mark(task_id, src_ids[0], AbandonedPost.REASON_UNSENDABLE)
+
+        _, first = unsendable[0]
+        kind = getattr(first, "kind", "") or type(first).__name__
+        key = (int(task_id), kind)
+        now = time.monotonic()
+        last = self._unsendable_warned.get(key)
+        if self.notifier is None or (last is not None and now - last < 86_400):
+            return
+        self._unsendable_warned[key] = now
+        await self.notifier(
+            user_id,
+            f"⚠️ یک پست از کار «{html.escape(task_title or '')}» کپی نشد.\n"
+            f"علت: {html.escape(str(first))}\n\n"
+            "<i>دوباره امتحانش نمی‌کنیم چون با تکرار درست نمی‌شود. برای همین "
+            "نوع پست تا ۲۴ ساعت دوباره خبر نمی‌دهیم.</i>",
+        )
+
     async def _enqueue_retry(
         self,
         task_id: int,
@@ -1774,12 +2463,16 @@ class Copier:
         src_ids: Sequence[int],
         dest_chat: str,
         error: str,
-    ) -> None:
-        """پستی که ارسالش شکست خورد را در صف تلاش مجدد می‌گذارد."""
+    ) -> bool:
+        """پستی که ارسالش شکست خورد را در صف تلاش مجدد می‌گذارد.
+
+        خروجی True یعنی واقعاً در صف رفت — و واحدِ سهمیه‌اش نگه داشته
+        می‌شود تا تلاش‌های بعدی هزینه‌ی تازه نداشته باشند.
+        """
         if src_chat_id is None or not src_ids:
             # بدون نشانی مبدا نمی‌توان پیام را دوباره خواند
             await self._record_error(task_id, error)
-            return
+            return False
 
         # <b>صفی که فقط بالا می‌رود یعنی مقصد خراب است، نه کند.</b>
         # وقتی دسترسی ادمین گرفته شده یا کانال حذف شده، هر پستِ تازه‌ی
@@ -1804,19 +2497,19 @@ class Copier:
                     "⛔️ <b>یک کار کپی متوقف شد.</b>\n\n"
                     f"{fa_num(MAX_RETRY_QUEUE)} پست پشت سر هم به کانال مقصد نرفتند، "
                     "پس ادامه ندادیم تا اکانتتان محدود نشود.\n\n"
-                    f"<b>علت:</b> <code>{error[:200]}</code>\n\n"
+                    f"<b>علت:</b> <code>{html.escape(error[:200])}</code>\n\n"
                     "معمولاً یعنی دسترسی ارسال در کانال مقصد گرفته شده. "
                     "با «🩺 بررسی سلامت کارها» دقیقاً می‌بینید کدام کار و چرا.",
                 )
             await alerts.send(
                 f"⛔️ کار <code>{task_id}</code> کاربر <code>{user_id}</code> "
                 f"به‌دلیل {MAX_RETRY_QUEUE} شکست پیاپی متوقف شد.\n"
-                f"<code>{error[:200]}</code>",
+                f"<code>{html.escape(error[:200])}</code>",
                 cap=roles.CAP_USERS,
                 key=f"retry-flood-{task_id}",
                 cooldown=3600,
             )
-            return
+            return False
 
         async with get_session() as db:
             db.add(
@@ -1839,6 +2532,7 @@ class Copier:
             detail=f"{dest_chat}: {error}"[:600],
             level="warning",
         )
+        return True
 
     async def _disable_destination(self, task_id: int, target) -> None:
         """مقصد اضافی‌ای که اجازه‌ی ارسال ندارد را خاموش می‌کند."""
@@ -1917,8 +2611,13 @@ class Copier:
             await db.commit()
         await log_activity(task_id=task_id, event="error", detail=detail, level="error")
 
-    async def _message_quota_ok(self, user_id: int, task_id: int, ent) -> bool:
-        """سهمیه‌ی پیام دوره و سقف «مصرف منصفانه»‌ی روزانه را بررسی می‌کند."""
+    async def _message_quota_ok(self, user_id: int, task_id: int, ent) -> tuple[bool, Any]:
+        """سهمیه‌ی پیام دوره و سقف «مصرف منصفانه»‌ی روزانه را بررسی می‌کند.
+
+        خروجی: (مجاز است؟، واحدِ برداشته‌شده). واحد برگردانده می‌شود تا اگر
+        پست به هیچ‌جا نرسید، صداکننده پسش بدهد. تا امروز دور ریخته می‌شد —
+        پستی که هرگز نرفت هم سهمیه می‌خورد.
+        """
         plan = ent.plan
         day = today_key()
         if day != self._quota_day:
@@ -1948,14 +2647,14 @@ class Copier:
                         "پشتیبانی در تماس باشید."
                     ),
                 )
-                return False
+                return False, None
 
         # ۲) سهمیه‌ی پیام کل دوره
         grant = await entitlement.reserve(
             user_id, FEAT_MESSAGES, 1, plan, ent.subscription_id
         )
         if grant is not None:
-            return True
+            return True, grant
 
         limit = plan.quota(FEAT_MESSAGES) if plan else 0
         await self._reject_quota(
@@ -1968,7 +2667,7 @@ class Copier:
                 "«💳 خرید اشتراک» را بزنید."
             ),
         )
-        return False
+        return False, None
 
     async def _reject_quota(
         self, user_id: int, task_id: int, *, detail: str, notice: str
