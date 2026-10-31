@@ -762,3 +762,78 @@ async def test_one_post_is_never_sent_twice_at_the_same_time(tmp_path, monkeypat
         assert copier._in_flight == set()
     finally:
         await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_a_retry_that_arrives_mid_send_waits_instead_of_being_thrown_away(
+    tmp_path, monkeypatch
+):
+    """مقصدِ اول شکست خورد و در صف رفت؛ مقصدِ دوم هنوز در حال آپلود است.
+    تلاشِ مجدد سرِ دقیقه می‌رسد، «در حال ارسال» می‌شنید، False می‌گرفت و
+    آیتمش پاک می‌شد — مقصدِ اول پست را برای همیشه از دست می‌داد."""
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.models import RetryItem
+        from telkap.services.copier import Copier
+        from telkap.services.retry import RetryWorker
+
+        async with db_module.get_session() as db:
+            db.add(RetryItem(
+                task_id=task_id, user_id=7, src_chat_id=-1001,
+                src_msg_ids="7", dest_chat="-1002",
+            ))
+            await db.commit()
+        await _due(db_module)
+
+        client = Telethonish()
+        client.messages[7] = FakeMessage(id=7, message="خبر")
+        manager = FakeManager(client)
+        copier = Copier(manager)
+        copier._in_flight.add((task_id, 7))     # ارسالِ اول هنوز جریان دارد
+
+        await RetryWorker(manager, copier).run_once()
+
+        (item,) = await _rows(db_module, RetryItem)
+        assert item.attempts == 0, "انتظار یک تلاشِ ناموفق شمرده شد"
+
+        copier._in_flight.clear()
+        await _due(db_module)
+        await RetryWorker(manager, copier).run_once()
+        assert [r.target for r in client.sent] == [-1002]
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_an_approved_post_is_not_lost_if_it_is_being_sent_elsewhere(
+    tmp_path, monkeypatch
+):
+    """صفِ انتشار ردیف را پیش از ارسال برمی‌دارد. اگر process «در حال
+    ارسال» می‌گفت، پستِ تأییدشده نه منتشر می‌شد و نه در صف می‌ماند."""
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.models import PendingPost
+        from telkap.services import pending
+        from telkap.services.copier import Copier
+
+        monkeypatch.setattr(pending, "IN_FLIGHT_WAIT", 1)
+        item = await pending.hold(
+            task_id=task_id, user_id=7, src_chat_id=-1001, message_ids=[7],
+            reason=PendingPost.REASON_APPROVAL, text="خبر",
+        )
+        client = Telethonish()
+        client.messages[7] = FakeMessage(id=7, message="خبر")
+        manager = FakeManager(client)
+        copier = Copier(manager)
+        copier._in_flight.add((task_id, 7))
+
+        worker = pending.ReleaseWorker(manager, copier)
+        assert await worker.release(item) is False
+        assert len(await _rows(db_module, PendingPost)) == 1, "پستِ تأییدشده گم شد"
+
+        copier._in_flight.clear()
+        (again,) = await _rows(db_module, PendingPost)
+        assert await worker.release(again) is True
+        assert [r.target for r in client.sent] == [-1002]
+    finally:
+        await db_module.close_db()

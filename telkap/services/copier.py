@@ -967,6 +967,12 @@ class Copier:
 
         همه‌ی این‌ها یک Copier دارند، پس یک مجموعه در حافظه کافی است: دومی
         بی‌صدا کنار می‌رود و اولی کار را تمام می‌کند.
+
+        <b>صف‌ها اما پیش از صدا زدن می‌پرسند</b> (`in_flight`): برای آن‌ها
+        False یعنی «فیلترها گفتند نه» و آیتم را پاک می‌کنند. تلاشِ مجددی
+        که وسطِ ارسالِ اول برسد — مثلاً مقصدِ اول شکست خورده و مقصدِ دوم
+        هنوز در حال آپلود است — اگر False بشنود، آیتمش را دور می‌ریزد و
+        آن مقصد پست را برای همیشه از دست می‌دهد.
         """
         key = (int(task_id), int(messages[0].id)) if messages else None
         if key is not None and key in self._in_flight:
@@ -979,6 +985,10 @@ class Copier:
         finally:
             if key is not None:
                 self._in_flight.discard(key)
+
+    def in_flight(self, task_id: int, src_msg_id: int) -> bool:
+        """آیا همین حالا یک ارسال برای این پست در جریان است؟"""
+        return (int(task_id), int(src_msg_id)) in self._in_flight
 
     async def _process(
         self,

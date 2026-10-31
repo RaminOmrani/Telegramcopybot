@@ -97,6 +97,13 @@ class RetryWorker:
             )
             return False
 
+        if self.copier.in_flight(item.task_id, messages[0].id):
+            # <b>ارسالِ اول هنوز تمام نشده</b> (مثلاً مقصدِ دیگری در حال
+            # آپلود است). کمی بعد — بی‌آنکه تلاشی شمرده شود. صدا زدنِ
+            # process اینجا False می‌داد و آیتم پاک می‌شد.
+            await self._postpone(item.id)
+            return False
+
         try:
             # <b>retrying=True حیاتی است.</b> بدون آن، شکستِ ارسال یک
             # آیتمِ تازه در صف می‌ساخت (با شمارنده‌ی صفر) و همین آیتم
@@ -175,6 +182,13 @@ class RetryWorker:
             delay = RETRY_BACKOFF[min(row.attempts, len(RETRY_BACKOFF) - 1)]
             row.next_try_at = utcnow() + timedelta(seconds=delay)
             await db.commit()
+
+    async def _postpone(self, item_id: int) -> None:
+        async with get_session() as db:
+            row = await db.get(RetryItem, item_id)
+            if row is not None:
+                row.next_try_at = utcnow() + timedelta(seconds=RETRY_BACKOFF[0])
+                await db.commit()
 
     async def _drop(self, item_id: int) -> None:
         async with get_session() as db:

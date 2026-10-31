@@ -23,6 +23,7 @@ from telkap.services import abandoned, reader
 log = logging.getLogger(__name__)
 
 CHECK_INTERVAL = 60          # هر دقیقه صف بررسی می‌شود
+IN_FLIGHT_WAIT = 120          # ثانیه؛ بیشترین صبر برای ارسالِ همزمانِ همان پست
 STALE_APPROVAL_HOURS = 72    # تأییدنشده‌های خیلی قدیمی دور ریخته می‌شوند
 MAX_GAP_SECONDS = 24 * 3600  # سقف منطقی فاصله‌ی بین دو انتشار
 
@@ -333,6 +334,23 @@ class ReleaseWorker:
             return False
 
         await drop(item.id)
+        # <b>اگر همین پست همین حالا در حال ارسال است، صبر.</b> ردیف را
+        # برداشته‌ایم، و process در این حالت False می‌دهد — یعنی پستِ
+        # تأییدشده بی‌صدا گم می‌شد. ارسالِ دیگر معمولاً چند ثانیه است.
+        in_flight = getattr(self.copier, "in_flight", None)
+        if in_flight is not None:
+            for _ in range(IN_FLIGHT_WAIT):
+                if not in_flight(item.task_id, messages[0].id):
+                    break
+                await asyncio.sleep(1)
+            else:
+                await hold(
+                    task_id=item.task_id, user_id=item.user_id,
+                    src_chat_id=item.src_chat_id, message_ids=item.message_ids,
+                    reason=item.reason, text=item.preview or "",
+                    media_kind=item.media_kind, release_at=item.release_at,
+                )
+                return False
         sent = await self.copier.process(
             item.user_id, item.task_id, messages,
             released=item.reason, via=DeliveryTiming.VIA_QUEUE,
