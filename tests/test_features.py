@@ -145,7 +145,9 @@ async def test_out_of_hours_is_skipped(tmp_path, monkeypatch):
 
 # --------------------------------------------------------- صف تلاش مجدد
 class BrokenClient(FakeClient):
-    async def send_message(self, target, text, link_preview=True, buttons=None):
+    async def send_message(
+        self, target, text, link_preview=True, buttons=None, formatting_entities=None
+    ):
         raise RuntimeError("شبکه قطع است")
 
 

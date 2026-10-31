@@ -1,0 +1,594 @@
+<title>نقشه‌راه ربات کپی</title>
+<style>
+@import url('https://fonts.googleapis.com/css2?family=Noto+Kufi+Arabic:wght@400;600;800&family=Vazirmatn:wght@400;500;700&display=swap');
+
+/* رنگ‌های وضعیت جدا از لهجه‌اند و معنا دارند:
+   سبز = ساخته شد، کهربایی = منتظر چیزی، خاکستری = هنوز تصمیم نگرفته‌ایم */
+:root {
+  --paper:     #F8F9FB;
+  --surface:   #FFFFFF;
+  --surface-2: #EFF3F7;
+  --ink:       #0E1620;
+  --muted:     #5B6B7C;
+  --faint:     #8496A6;
+  --line:      #DCE3EA;
+  --line-soft: #E9EEF3;
+
+  --done:      #1F7A4D;
+  --done-bg:   #E6F4ED;
+  --wait:      #B8791F;
+  --wait-bg:   #FBF2E2;
+  --idea:      #56677A;
+  --idea-bg:   #EDF1F5;
+  --accent:    #1B7FBF;
+
+  --display: 'Noto Kufi Arabic', 'Vazirmatn', Tahoma, sans-serif;
+  --body:    'Vazirmatn', 'Segoe UI', Tahoma, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root:not([data-theme="light"]) {
+    --paper:     #0C1116;
+    --surface:   #141C24;
+    --surface-2: #1A242E;
+    --ink:       #E8EEF4;
+    --muted:     #93A5B6;
+    --faint:     #71879A;
+    --line:      #24323E;
+    --line-soft: #1C2731;
+    --done:      #48B383;
+    --done-bg:   #10281E;
+    --wait:      #E0A445;
+    --wait-bg:   #2A2115;
+    --idea:      #92A5B6;
+    --idea-bg:   #1B242D;
+    --accent:    #4FB3E8;
+  }
+}
+
+:root[data-theme="dark"] {
+  --paper:     #0C1116;
+  --surface:   #141C24;
+  --surface-2: #1A242E;
+  --ink:       #E8EEF4;
+  --muted:     #93A5B6;
+  --faint:     #71879A;
+  --line:      #24323E;
+  --line-soft: #1C2731;
+  --done:      #48B383;
+  --done-bg:   #10281E;
+  --wait:      #E0A445;
+  --wait-bg:   #2A2115;
+  --idea:      #92A5B6;
+  --idea-bg:   #1B242D;
+  --accent:    #4FB3E8;
+}
+
+* { box-sizing: border-box; }
+
+body {
+  direction: rtl;
+  margin: 0;
+  background: var(--paper);
+  color: var(--ink);
+  font: 400 15.5px/1.8 var(--body);
+  -webkit-font-smoothing: antialiased;
+}
+
+.wrap { max-width: 920px; margin-inline: auto; padding: 0 22px 80px; }
+
+h1, h2, h3 { font-family: var(--display); text-wrap: balance; }
+
+header {
+  padding: 56px 0 34px;
+  border-bottom: 1px solid var(--line);
+  margin-bottom: 38px;
+}
+h1 { margin: 0 0 12px; font-size: clamp(27px, 4.4vw, 38px); font-weight: 800; letter-spacing: -.02em; }
+.sub { margin: 0; color: var(--muted); font-size: 17px; max-width: 62ch; }
+
+.meta {
+  margin-top: 22px; display: flex; flex-wrap: wrap; gap: 8px 10px;
+  font-size: 13px;
+}
+.pill {
+  border: 1px solid var(--line); border-radius: 100px;
+  padding: 4px 12px; color: var(--muted);
+  font-variant-numeric: tabular-nums;
+}
+.pill b { color: var(--ink); font-weight: 600; }
+
+section { margin-bottom: 52px; }
+h2 {
+  margin: 0 0 6px; font-size: clamp(20px, 2.8vw, 26px);
+  font-weight: 800; letter-spacing: -.01em;
+  display: flex; align-items: center; gap: 11px;
+}
+.count {
+  font: 500 13px var(--body);
+  border-radius: 100px; padding: 2px 10px;
+}
+.lede { margin: 0 0 22px; color: var(--muted); max-width: 68ch; }
+
+.badge {
+  display: inline-block; flex: none;
+  font: 500 12px var(--body); letter-spacing: .02em;
+  border-radius: 5px; padding: 2px 9px; white-space: nowrap;
+}
+.b-done { background: var(--done-bg); color: var(--done); }
+.b-wait { background: var(--wait-bg); color: var(--wait); }
+.b-idea { background: var(--idea-bg); color: var(--idea); }
+
+/* مرحله‌های ساخته‌شده — شماره‌گذاری واقعی است، پس نگه داشته شده */
+.stages { display: flex; flex-direction: column; gap: 1px; background: var(--line-soft);
+  border: 1px solid var(--line-soft); border-radius: 12px; overflow: hidden; }
+.stage {
+  background: var(--surface); padding: 14px 18px;
+  display: grid; grid-template-columns: 30px 1fr auto; gap: 14px; align-items: center;
+}
+.stage .n {
+  width: 30px; height: 30px; border-radius: 8px;
+  display: grid; place-items: center;
+  font: 700 14px var(--display);
+  background: var(--done-bg); color: var(--done);
+}
+.stage .what b { display: block; font-weight: 600; font-size: 15px; }
+.stage .what span { font-size: 13.5px; color: var(--muted); }
+@media (max-width: 620px) {
+  .stage { grid-template-columns: 30px 1fr; }
+  .stage .badge { grid-column: 2; justify-self: start; }
+}
+
+/* کارها */
+.jobs { display: flex; flex-direction: column; gap: 12px; }
+.job {
+  background: var(--surface); border: 1px solid var(--line);
+  border-radius: 12px; padding: 17px 19px;
+}
+.job.blocked { border-inline-start: 3px solid var(--wait); }
+.job-head { display: flex; align-items: center; gap: 11px; flex-wrap: wrap; margin-bottom: 7px; }
+.job-head h3 { margin: 0; font-size: 16.5px; font-weight: 600; }
+.job p { margin: 0; color: var(--muted); font-size: 14.5px; }
+.job .why {
+  margin-top: 10px; padding-top: 10px;
+  border-top: 1px dashed var(--line);
+  font-size: 13.5px; color: var(--faint);
+}
+.job .why b { color: var(--muted); font-weight: 600; }
+.cost { margin-inline-start: auto; font-size: 13px; color: var(--faint);
+  font-variant-numeric: tabular-nums; white-space: nowrap; }
+@media (max-width: 620px) { .cost { margin-inline-start: 0; } }
+
+.note {
+  background: var(--surface-2); border: 1px solid var(--line-soft);
+  border-radius: 11px; padding: 16px 18px; margin: 0 0 24px;
+  font-size: 14.5px; color: var(--muted);
+}
+.note b { color: var(--ink); font-weight: 600; }
+
+footer {
+  margin-top: 60px; padding-top: 22px;
+  border-top: 1px solid var(--line);
+  font-size: 13.5px; color: var(--faint);
+}
+</style>
+
+<div class="wrap">
+
+<header>
+  <h1>نقشه‌راه ربات کپی</h1>
+  <p class="sub">
+    آنچه ساخته شد، آنچه مانده، و آنچه هنوز می‌شود ساخت — از روی متن کامل
+    گفتگو و خودِ کد، نه از حافظه.
+  </p>
+  <div class="meta">
+    <span class="pill"><b>۶۸۰</b> تست سبز</span>
+    <span class="pill"><b>۲۸٬۷۰۰+</b> خط کد</span>
+    <span class="pill">پایتون <b>۳٫۱۱</b> و <b>۳٫۱۳</b></span>
+    <span class="pill">مستقر روی <b>سوئد</b></span>
+  </div>
+</header>
+
+<section>
+  <h2>هشت مرحله‌ی نقشه‌راه <span class="count b-done">هر هشت تمام</span></h2>
+  <p class="lede">
+    این همان نقشه‌راهی است که در ابتدای کار تعریف شد. شماره‌ها ترتیبِ واقعی
+    ساخت‌اند، چون هر مرحله روی قبلی سوار بود.
+  </p>
+
+  <div class="stages">
+    <div class="stage">
+      <div class="n">۱</div>
+      <div class="what"><b>پایه‌ها و واترمارک</b>
+        <span>موتور کپی، اکانت کاربری، واترمارک متن/ایموجی/لوگو، جادوگر پیش‌نمایش</span></div>
+      <span class="badge b-done">ساخته شد</span>
+    </div>
+    <div class="stage">
+      <div class="n">۲</div>
+      <div class="what"><b>پول، کاملاً روان</b>
+        <span>طرح‌ها، پرداخت، کد تخفیف، ارتقا، کیف پول، دعوت دوستان، نمایندگی، صورتحساب</span></div>
+      <span class="badge b-done">ساخته شد</span>
+    </div>
+    <div class="stage">
+      <div class="n">۳</div>
+      <div class="what"><b>چشم و گوش</b>
+        <span>گزارش‌های کسب‌وکار، قیف تبدیل، ریزش، دیده‌بان خودکار، مراقبت از اکانت</span></div>
+      <span class="badge b-done">ساخته شد</span>
+    </div>
+    <div class="stage">
+      <div class="n">۴</div>
+      <div class="what"><b>مسیریابی و کنترل انتشار</b>
+        <span>مسیریابی کلیدواژه، صف تأیید دستی، زمان‌بندی، فاصله‌ی بین پست‌ها</span></div>
+      <span class="badge b-done">ساخته شد</span>
+    </div>
+    <div class="stage">
+      <div class="n">۵</div>
+      <div class="what"><b>کانفیگ پروکسی و فیلتر تعامل</b>
+        <span>بازنویسی تگ داخل vmess/vless و فایل‌های پیوست، فیلتر بازدید و واکنش</span></div>
+      <span class="badge b-done">ساخته شد</span>
+    </div>
+    <div class="stage">
+      <div class="n">۶</div>
+      <div class="what"><b>تکراری هوشمند و تجربه‌ی کاربر</b>
+        <span>تشخیص تکراری سه‌سطحی، قالب‌های آماده، منوی ساده، خلاصه‌ی روزانه، پیام هدفمند</span></div>
+      <span class="badge b-done">ساخته شد</span>
+    </div>
+    <div class="stage">
+      <div class="n">۷</div>
+      <div class="what"><b>چندزبانه، پنل وب، درگاه</b>
+        <span>۹ زبان، پنل مدیریت وب، سه راه پرداخت — و بعداً هوش مصنوعی که به نقشه اضافه شد</span></div>
+      <span class="badge b-done">ساخته شد</span>
+    </div>
+    <div class="stage">
+      <div class="n">۸</div>
+      <div class="what"><b>منابع غیرتلگرامی و شرایط استفاده</b>
+        <span>فید RSS و Atom به‌عنوان مبدا، شرایط استفاده با پذیرش ثبت‌شده، ایموجی پریمیوم در امضا</span></div>
+      <span class="badge b-done">ساخته شد</span>
+    </div>
+  </div>
+
+  <div class="note">
+    <b>دور هشتم چه چیزی اضافه کرد.</b> سه چیز که هر سه از گفتگوی خودتان
+    آمدند:
+    <br><br>
+    <b>۱) فید RSS به‌عنوان مبدا.</b> مبدا دیگر لزوماً کانال تلگرام نیست.
+    آدرس فید یک خبرگزاری یا وبلاگ را می‌دهید و مطالب تازه‌اش با همان
+    قواعد فعلی — امضا، فوتر، کلمات ممنوعه، مسیریابی، چند مقصد، ساعت فعال
+    — در کانالتان منتشر می‌شود. <b>اولین خواندن هیچ منتشر نمی‌کند</b>،
+    چون فید ده‌ها مطلب گذشته دارد و بدون این قاعده کانالتان یکجا پر
+    می‌شد و اکانتتان هم محدود.
+    <br><br>
+    <b>۲) شرایط استفاده.</b> با پذیرشِ نسخه‌دار و زمان‌دار، سرِ اتصال
+    اکانت. مسئولیت محتوا و ریسک اکانت به کاربر منتقل می‌شود و مسیر
+    رسیدگی برای صاحب محتوا مشخص است. <code>/terms</code> هر وقت
+    خواستید.
+    <br><br>
+    <b>۳) ایموجی پریمیوم در امضا.</b> پست‌های کپی‌شده از اول سالم
+    بودند؛ امضایی که خودتان می‌نوشتید ساده می‌شد، چون فقط متنش ذخیره
+    می‌شد. حالا قالب‌بندی امضا، هدر و فوتر هم نگه داشته می‌شود.
+  </div>
+</section>
+
+<section>
+  <h2>کارهای باقی‌مانده <span class="count b-wait">۴ مورد</span></h2>
+  <p class="lede">
+    هیچ‌کدام کدنویسی تازه لازم ندارند — هر چهار تا منتظر یک تصمیم یا یک
+    اقدام از سمت شما هستند.
+  </p>
+
+  <div class="jobs">
+    <div class="job blocked">
+      <div class="job-head">
+        <h3>پنل وب روی دامنه</h3>
+        <span class="badge b-wait">منتظر DNS</span>
+        <span class="cost">۲۰ دقیقه</span>
+      </div>
+      <p>کدش کامل و تست‌شده است، رکورد A هم نشسته. راه‌اندازی nginx و گواهی
+        SSL حالا یک دستور است:
+        <code>sudo bash deploy/web-setup.sh forwardbot.softmiliac.com you@email.com</code></p>
+      <div class="why"><b>چرا مهم است:</b> درگاه زرین‌پال هم به همین دامنه وابسته
+        است — نشانی بازگشتش روی همین پنل می‌نشیند.</div>
+    </div>
+
+    <div class="job blocked">
+      <div class="job-head">
+        <h3>اولین خرید واقعی از درگاه</h3>
+        <span class="badge b-wait">منتظر پنل وب</span>
+        <span class="cost">۵ دقیقه</span>
+      </div>
+      <p>زرین‌پال ساخته و تست شده، ولی هرگز با کد پذیرنده‌ی واقعی اجرا نشده.</p>
+      <div class="why"><b>یک ناشناخته‌ی واقعی:</b> نمی‌دانم زرین‌پال از IP سرور
+        سوئد درخواست می‌پذیرد یا نه. اگر نپذیرد، یک واسط کوچک روی هاست ایران
+        لازم می‌شود. اولین خرید آزمایشی جوابش را می‌دهد.</div>
+    </div>
+
+    <div class="job blocked">
+      <div class="job-head">
+        <h3>روشن کردن هوش مصنوعی</h3>
+        <span class="badge b-wait">منتظر کلید</span>
+        <span class="cost">۲ دقیقه</span>
+      </div>
+      <p>همه‌چیزش آماده است. تا <code>AI_API_KEY</code> روی سرور خالی باشد،
+        این قابلیت‌ها در منوی کاربران اصلاً ظاهر نمی‌شوند.</p>
+      <div class="why"><b>یادآوری:</b> کلید را مستقیم روی سرور بگذارید، نه در چت.</div>
+    </div>
+
+    <div class="job blocked">
+      <div class="job-head">
+        <h3>کانال پشتیبان</h3>
+        <span class="badge b-wait">منتظر شما</span>
+        <span class="cost">۵ دقیقه</span>
+      </div>
+      <p>پشتیبان‌گیری خودکار کار می‌کند، ولی نسخه‌ها روی همان سروری می‌مانند که
+        اگر از دست برود، با آن می‌روند.</p>
+      <div class="why"><b>مسیر:</b> ⚙️ سیستم ← 🆔 گرفتن شناسه‌ی کانال</div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>محافظت از اکانت در برابر بن <span class="count b-done">هر پنج ساخته شد</span></h2>
+  <p class="lede">
+    پرسیدید راهکارهای بن نشدن چه بودند و آیا اجرا شدند. هر پنج تا در کد
+    هستند. مسیر فایل‌ها را نوشته‌ام تا خودتان هم بتوانید ببینید.
+  </p>
+
+  <div class="jobs">
+    <div class="job">
+      <div class="job-head">
+        <h3>۱ — اثر انگشت اکانت شبیه یک کلاینت واقعی</h3>
+        <span class="badge b-done">ساخته شد</span>
+      </div>
+      <p>اکانت خودش را «Copy Bot» معرفی می‌کرد — یعنی هم در فهرست دستگاه‌های
+        متصلِ خودِ کاربر و هم برای تلگرام، خودش را ابزار خودکار اعلام
+        می‌کرد. حالا نام دستگاه، نسخه‌ی سیستم و نسخه‌ی برنامه از تنظیمات
+        می‌آیند و زبان روی <code>fa</code> است.</p>
+      <div class="why"><b>کجا:</b> <code>telkap/services/userbot.py</code> —
+        <code>device_model</code>، <code>system_version</code>،
+        <code>app_version</code>. <b>چرا مهم‌ترین است:</b> این تنها موردی است
+        که پیش از هر ارسالی اثر می‌گذارد؛ بقیه واکنش به مشکل‌اند.</div>
+    </div>
+
+    <div class="job">
+      <div class="job-head">
+        <h3>۲ — احترام به FloodWait به‌جای اصرار</h3>
+        <span class="badge b-done">ساخته شد</span>
+      </div>
+      <p>وقتی تلگرام می‌گوید «۳۰ ثانیه صبر کن»، ربات صبر می‌کند. ساده‌لوحانه‌ترین
+        اشتباهِ ممکن این است که همان لحظه دوباره تلاش شود — که مستقیم به
+        محدودیت سنگین‌تر می‌رسد.</p>
+      <div class="why"><b>کجا:</b> چهار جای مسیر ارسال در
+        <code>copier.py</code>، به‌علاوه‌ی خواندن تاریخچه در
+        <code>history.py</code>.</div>
+    </div>
+
+    <div class="job">
+      <div class="job-head">
+        <h3>۳ — فاصله‌ی نامنظم بین ارسال‌ها</h3>
+        <span class="badge b-done">ساخته شد</span>
+      </div>
+      <p>تأخیرِ کاملاً یکنواخت خودش یک الگوی ماشینی است. اگر کاربر تأخیر
+        گذاشته باشد، ±۱۵٪ پراکندگی به آن اضافه می‌شود تا الگو یکنواخت
+        نماند.</p>
+      <div class="why"><b>کجا:</b> <code>copier.py</code>. <b>نکته:</b> وقتی
+        کاربر تأخیری نخواسته، چیزی اضافه نمی‌شود — کپی باید لحظه‌ای بماند.
+        فاصله‌گذاری واقعی کار «حداکثر در ساعت» و «حداقل فاصله» است.</div>
+    </div>
+
+    <div class="job">
+      <div class="job-head">
+        <h3>۴ — سقف نرخ ارسال، دو لایه</h3>
+        <span class="badge b-done">ساخته شد</span>
+      </div>
+      <p><b>حداکثر پست در ساعت</b> و <b>حداقل فاصله بین دو انتشار</b>، هر دو
+        قابل تنظیم برای هر کار. پستی که از سقف بگذرد دور ریخته نمی‌شود؛ در
+        صف می‌ماند.</p>
+      <div class="why"><b>مسیر در ربات:</b> تنظیمات کار ← زمان‌بندی.
+        <b>پیشنهاد عملی:</b> برای کانال پرترافیک، «حداکثر در ساعت» را روی
+        ۲۰ تا ۳۰ بگذارید.</div>
+    </div>
+
+    <div class="job">
+      <div class="job-head">
+        <h3>۵ — توقف خودکار پیش از بدتر شدن</h3>
+        <span class="badge b-done">ساخته شد</span>
+      </div>
+      <p>خطاهای تلگرام سطح‌بندی می‌شوند: <code>FloodWait</code> عادی است و
+        خودبه‌خود رفع می‌شود، ولی <code>PeerFlood</code>، محدودیت، و بن یعنی
+        <b>همه‌ی کارهای آن کاربر متوقف می‌شوند</b> و یک پیام فارسی روشن
+        می‌گوید چه شده و چه باید کرد (از جمله پیام دادن به
+        <code>@SpamBot</code>).</p>
+      <div class="why"><b>کجا:</b> <code>telkap/services/health.py</code>.
+        <b>چرا این مهم است:</b> بیشتر بن‌های دائمی از اصرارِ بعد از اولین
+        هشدار می‌آیند، نه از خودِ اولین هشدار.</div>
+    </div>
+  </div>
+
+  <div class="note">
+    <b>کپی‌رایت — حالا پوشش دارد.</b> این تنها موردی بود که با کد حل
+    نمی‌شد و در دور هشتم نوشته شد: <b>شرایط استفاده</b>، با پذیرشِ
+    <b>نسخه‌دار و زمان‌دار</b> سرِ اتصال اکانت — یعنی تنها جایی که بدون
+    آن هیچ پستی کپی نمی‌شود.
+    <br><br>
+    سه چیزی که متن می‌گوید: مسئولیت محتوا با کاربر است، ریسک محدود شدن
+    اکانت با کاربر است، و وجه پرداختی بازگردانده نمی‌شود. به‌علاوه یک
+    مسیر روشن برای صاحب محتوایی که شکایت دارد.
+    <br><br>
+    <b>چرا پذیرش نسخه‌دار است:</b> پذیرشِ متنِ قدیمی، پذیرشِ متن تازه
+    نیست. با تغییر متن، همه دوباره پرسیده می‌شوند. و زمان ذخیره می‌شود،
+    وگرنه روزی که لازم شود نمی‌توان گفت «این کاربر، این متن را، این
+    تاریخ پذیرفت». خواندنش هر وقت: <code>/terms</code>.
+  </div>
+</section>
+
+<section>
+  <h2>مطرح شد، عمداً نساختیم <span class="count b-idea">۳ مورد</span></h2>
+  <p class="lede">
+    این‌ها در گفتگو آمدند و با هم تصمیم گرفتیم فعلاً ساخته نشوند. تصمیم‌ها
+    هنوز قابل بازبینی‌اند.
+  </p>
+
+  <div class="jobs">
+    <div class="job">
+      <div class="job-head">
+        <h3>چند اکانت برای یک کاربر</h3>
+        <span class="badge b-idea">به تعویق افتاد</span>
+        <span class="cost">۲ تا ۳ روز</span>
+      </div>
+      <p>یک کاربر بتواند چند اکانت تلگرام وصل کند و بار کپی بینشان پخش شود.</p>
+      <div class="why"><b>چرا نساختیم:</b> وقتی به درد می‌خورد که کاربری آن‌قدر
+        کانال داشته باشد که یک اکانت به سقف تلگرام بخورد. تا مشتری واقعی نداشته
+        باشید معلوم نیست لازم است یا نه — و ریسک بن شدن را هم چند برابر می‌کند.
+        <b>وقت بازبینی:</b> اولین باری که مشتری به سقف بخورد.</div>
+    </div>
+
+    <div class="job">
+      <div class="job-head">
+        <h3>میزبانی روی خودِ تلگرام</h3>
+        <span class="badge b-idea">مناسب نبود</span>
+        <span class="cost">—</span>
+      </div>
+      <p>شما پرسیدید «تلگرام یه جایی میده که رباتا روشن هستن». آن سرویس برای
+        ربات‌های ساده است و اکانت کاربری (MTProto) و دیتابیس پایدار را
+        پشتیبانی نمی‌کند — یعنی دقیقاً هسته‌ی این محصول را.</p>
+    </div>
+
+    <div class="job">
+      <div class="job-head">
+        <h3>نمونه‌ی فایل <code>.npv</code></h3>
+        <span class="badge b-idea">هرگز نرسید</span>
+        <span class="cost">۱ ساعت</span>
+      </div>
+      <p>برای اطمینان از اینکه بازنویسی تگ روی این قالب کار می‌کند یک نمونه
+        خواسته بودم که نرسید.</p>
+      <div class="why"><b>وضعیت فعلی:</b> قاعده‌ی «فایلی که قالبش شناخته نشود
+        دست‌نخورده می‌رود» جلوی خرابی را می‌گیرد، ولی این قالب هم بازنویسی
+        نمی‌شود. یک فایل نمونه کافی است تا اضافه‌اش کنم.</div>
+    </div>
+  </div>
+</section>
+
+<section>
+  <h2>مانده از نقشه‌ی راه قبلی <span class="count b-idea">۸ مورد</span></h2>
+
+  <div class="note">
+    <b>تصحیح:</b> نوشته بودم RSS هرگز مطرح نشده. اشتباه بود. در نقشه‌ی راه
+    قبلی، دور «گسترش بازار»، سطر <b>«منابع غیرتلگرامی — RSS و شبکه‌های
+    اجتماعی»</b> هست، کنار چندزبانه، پنل وب PHP، و انتشار به ایتا و بله و
+    روبیکا و واتساپ. من فقط گفتگوی همین جلسه را گشتم و آن نقشه جای دیگری
+    نوشته شده بود. حق با شماست: RSS از فهرست افتاده بود، نه اینکه در فهرست
+    نبوده.
+    <br><br>
+    از همان دور «گسترش بازار»، دو مورد در این فاصله ساخته شدند و دو مورد
+    نه: <b>چندزبانه</b> ساخته شد و حالا ۹ زبان دارد نه دو تا، و <b>پنل وب</b>
+    هم ساخته شد (با پایتون، نه PHP — دیگر cPanel در کار نیست) و فقط منتظر
+    رکورد DNS است. آنچه مانده همین دو مورد پایین است: منابع غیرتلگرامی و
+    انتشار به پلتفرم‌های دیگر.
+  </div>
+
+  <div class="jobs">
+    <div class="job">
+      <div class="job-head">
+        <h3>انتشار به ایتا، بله، روبیکا و واتساپ</h3>
+        <span class="badge b-idea">در نقشه‌ی قبلی بود</span>
+        <span class="cost">۲ روز برای هر پلتفرم</span>
+      </div>
+      <p>همان پستی که در کانال تلگرام شما منتشر می‌شود، در کانال ایتا یا
+        روبیکا هم برود. هر پلتفرم API خودش را دارد ولی خط لوله‌ی تبدیل متن و
+        رسانه مشترک است — یعنی کار هر پلتفرم فقط نوشتن «فرستنده»ی آن است.</p>
+      <div class="why"><b>واقعیت‌بینانه باشیم:</b> ایموجی پریمیوم، نظرسنجی و
+        دکمه‌های شیشه‌ای در هیچ‌کدام معادل ندارند. پست ساده می‌رود، نه
+        بی‌کم‌وکاست.</div>
+    </div>
+
+
+    <div class="job">
+      <div class="job-head">
+        <h3>تأیید خودکار پرداخت تتر</h3>
+        <span class="badge b-idea">ایده</span>
+        <span class="cost">۱ روز</span>
+      </div>
+      <p>الان کاربر هش می‌فرستد و شما در tronscan نگاه می‌کنید. با API زنجیره‌ی
+        ترون می‌شود خودکارش کرد: مبلغ و مقصد بررسی و اشتراک همان لحظه فعال شود.</p>
+      <div class="why"><b>چرا ارزش دارد:</b> پرداخت تتر را هم‌سطح درگاه می‌کند —
+        بدون دخالت شما، حتی نصف‌شب.</div>
+    </div>
+
+    <div class="job">
+      <div class="job-head">
+        <h3>مهاجرت به PostgreSQL</h3>
+        <span class="badge b-idea">وقتی لازم شد</span>
+        <span class="cost">۱ روز</span>
+      </div>
+      <p>SQLite تا چند صد کاربر کاملاً کافی است — این را زودتر بررسی کردیم. ولی
+        اگر روزی به سقف خورد، لایه‌ی دیتابیس از روز اول طوری نوشته شده که تعویضش
+        تغییرِ نشانی اتصال باشد نه بازنویسی.</p>
+      <div class="why"><b>نشانه‌ی وقتش:</b> کند شدن پنل یا خطای قفل دیتابیس در لاگ.</div>
+    </div>
+
+    <div class="job">
+      <div class="job-head">
+        <h3>پشتیبان بیرون از تلگرام</h3>
+        <span class="badge b-idea">ایده</span>
+        <span class="cost">نیم روز</span>
+      </div>
+      <p>علاوه بر کانال پشتیبان، نسخه‌ها به یک فضای ابری (S3 یا مشابهش) هم بروند.</p>
+      <div class="why"><b>چرا:</b> اگر روزی به اکانت تلگرام دسترسی نداشته باشید،
+        پشتیبان‌ها هم دور از دسترس‌اند.</div>
+    </div>
+
+    <div class="job">
+      <div class="job-head">
+        <h3>تقویم انتشار</h3>
+        <span class="badge b-idea">ایده</span>
+        <span class="cost">۱ تا ۲ روز</span>
+      </div>
+      <p>زمان‌بندی فعلی بازه‌ی ساعتی است. تقویم یعنی کاربر بتواند پستی را برای
+        ساعت و روز مشخصی بگذارد، و صف را ببیند و جابه‌جا کند.</p>
+    </div>
+
+    <div class="job">
+      <div class="job-head">
+        <h3>وبهوک به‌جای polling</h3>
+        <span class="badge b-idea">وقتی لازم شد</span>
+        <span class="cost">نیم روز</span>
+      </div>
+      <p>ربات الان هر لحظه از تلگرام می‌پرسد «چیزی هست؟». با وبهوک، تلگرام خودش
+        خبر می‌دهد — کمی سبک‌تر و سریع‌تر.</p>
+      <div class="why"><b>پیش‌نیاز:</b> همان دامنه‌ی HTTPS که برای پنل لازم است.
+        <b>نکته:</b> با تعداد کاربر فعلی، سود محسوسی ندارد.</div>
+    </div>
+
+    <div class="job">
+      <div class="job-head">
+        <h3>ترجمه‌ی پنل ادمین</h3>
+        <span class="badge b-idea">ایده</span>
+        <span class="cost">۲ روز</span>
+      </div>
+      <p>مسیر کاربر به ۹ زبان ترجمه شده، ولی پنل مدیریت و راهنمای کامل فارسی
+        مانده‌اند.</p>
+      <div class="why"><b>چرا عمداً عقب افتاد:</b> پنل را فقط شما و همکارانتان
+        می‌بینید. وقتی ارزش پیدا می‌کند که همکار غیرفارسی‌زبان داشته باشید.</div>
+    </div>
+
+    <div class="job">
+      <div class="job-head">
+        <h3>حالت آزمایشی برای هر قابلیت هوش مصنوعی</h3>
+        <span class="badge b-idea">ایده</span>
+        <span class="cost">نیم روز</span>
+      </div>
+      <p>کاربر بتواند پیش از روشن کردن بازنویسی یا ترجمه، روی یک پست نمونه
+        نتیجه‌اش را ببیند — با هزینه‌ی یک واحد اعتبار.</p>
+      <div class="why"><b>چرا ارزش دارد:</b> کسی که ندیده چه خروجی می‌گیرد،
+        اعتبار نمی‌خرد. این مستقیم روی فروش اثر می‌گذارد.</div>
+    </div>
+  </div>
+</section>
+
+<footer>
+  ساخته‌شده از روی متن کامل گفتگو و خودِ مخزن — ۱۰ شهریور ۱۴۰۵.
+  کارهای «باقی‌مانده» هیچ‌کدام کدنویسی لازم ندارند؛ ایده‌ها ترتیب اجرا ندارند
+  و هر کدام مستقل‌اند.
+</footer>
+
+</div>

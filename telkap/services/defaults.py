@@ -39,6 +39,12 @@ DEFAULT_SETTINGS: dict[str, Any] = {
     "header": "",               # متن ابتدای پست
     "footer": "",               # متن انتهای پست (مثلاً آیدی کانال شما)
     "signature": "",            # جایگزین امضای مبدا
+    # قالب‌بندی همان سه متن بالا — بولد، لینک و مهم‌تر از همه ایموجی
+    # پریمیوم. ایموجی پریمیوم متن نیست، یک entity کنار متن است؛ بدون
+    # این سه کلید، امضای پریمیوم ساده می‌شد. ساختارشان در richtext.py.
+    "header_entities": [],
+    "footer_entities": [],
+    "signature_entities": [],
 
     # --- رسانه ---
     "allowed_media": list(MEDIA_KINDS),
@@ -47,19 +53,36 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
     # --- واترمارک ---
     "watermark_enabled": False,
+    "watermark_kind": "text",   # text | logo
     "watermark_text": "",
+    "watermark_logo": "",       # مسیر فایل لوگوی آپلودشده
     "watermark_position": "bottom-right",   # 5 حالت: 4 گوشه + center
     "watermark_opacity": 60,    # 0..100
     "watermark_size": 4,        # درصدی از عرض تصویر (1..20)
 
     # --- فیلترها ---
     "block_ads": False,         # فیلتر هوشمند پیام‌های تبلیغاتی
+    "ad_sensitivity": "medium",  # low | medium | high
     "block_forwarded": False,   # پست‌هایی که خودشان فوروارد هستند کپی نشوند
     "block_with_links": False,  # هر پستی که لینک دارد رد شود
     "block_with_buttons": False,
     "min_length": 0,
     "max_length": 0,            # 0 = نامحدود
     "skip_duplicates": True,
+
+    # --- مخصوص گروه‌ها ---
+    "skip_bots": False,        # پیام‌های ربات‌ها کپی نشوند
+    "skip_replies": False,     # پیام‌های پاسخ (reply) کپی نشوند
+
+    # --- ترتیب انتشار ---
+    # strict = همیشه به ترتیب مبدا | fast = هرکدام زودتر آماده شد
+    # grace  = به ترتیب، ولی بیش از order_grace_seconds پشت یک پستِ کند
+    #          نایست و بقیه را رها کن جلو بروند
+    #
+    # پیش‌فرض grace است، نه strict: ترتیب برای اغلب پست‌ها حفظ می‌شود و
+    # یک ویدئوی سنگین هم کل کانال را قفل نمی‌کند.
+    "order_mode": "grace",
+    "order_grace_seconds": 300,
 
     # --- همگام‌سازی ---
     "sync_edits": True,
@@ -73,15 +96,75 @@ DEFAULT_SETTINGS: dict[str, Any] = {
 
     # --- دکمه‌های شیشه‌ای ---
     "copy_buttons": False,   # دکمه‌های زیر پست هم کپی شوند
+
+    # --- مسیریابی با کلمه‌ی کلیدی ---
+    # روی هر مقصد هم می‌شود جداگانه تنظیم کرد و همین‌ها را بازنویسی کند.
+    "route_words": [],       # خالی = همه‌چیز برود؛ وگرنه فقط پستِ دارای این کلمه‌ها
+    "route_skip": [],        # پستی که یکی از این کلمه‌ها را دارد نرود
+
+    # --- صف تأیید و زمان‌بندی پیشرفته ---
+    "approval": False,          # پیش از انتشار، خودتان تأیید کنید
+    "hold_outside_hours": False,  # خارج از ساعت فعال، به‌جای دور ریختن نگه دار
+    "min_gap_seconds": 0,       # حداقل فاصله بین دو انتشار (۰ = بدون فاصله)
+
+    # --- فیلتر تعامل ---
+    # پستِ تازه هنوز بازدید ندارد، پس تصمیم باید عقب بیفتد: پست نگه داشته
+    # می‌شود، بعد از این چند دقیقه دوباره خوانده و آن‌وقت سنجیده می‌شود.
+    "engagement_wait_minutes": 0,   # ۰ = فیلتر تعامل خاموش
+    "min_views": 0,
+    "min_reactions": 0,
+    "min_forwards": 0,
+
+    # --- تکراری بین چند مبدا ---
+    # «جلوگیری از پست تکراری» فقط داخل همان کار کار می‌کند. این یکی
+    # می‌پرسد «آیا همین محتوا قبلاً به همین کانال رفته؟» — حتی اگر از کار
+    # و مبدای دیگری آمده باشد.
+    "skip_cross_duplicates": False,
+    # چطور «تکراری» تشخیص داده شود: exact | normalized | similar
+    "duplicate_mode": "normalized",
+    # فقط در حالت similar. روی متن‌های فارسی واقعی، دو نسخه‌ی یک خبر
+    # فاصله‌ی ۱۰ تا ۱۳ بیت می‌گیرند و دو خبر متفاوت بالای ۲۰؛ پس ۸۰٪
+    # (یعنی سقف ۱۳ بیت) درست بین این دو می‌نشیند.
+    "similarity_percent": 80,
+
+    # --- کانفیگ‌های پروکسی ---
+    "rewrite_configs": False,   # نام کانفیگ‌های داخل متن را عوض کن
+    "rewrite_files": False,     # نام داخل فایل‌های پیوست را هم عوض کن
+    "config_tag": "",           # نام تازه؛ خالی = از امضا یا فوتر برداشته می‌شود
+    "file_rename": "{tag}",     # الگوی نام فایل تازه؛ {tag} و {name} پذیرفته است
+
+    # --- منبع غیرتلگرامی (RSS) ---
+    # فقط برای کارهایی که source_kind آن‌ها "rss" است. الگو دست کاربر
+    # است چون سلیقه‌ی کانال‌ها فرق دارد: یکی فقط تیتر می‌خواهد، یکی
+    # تیتر و خلاصه و لینک.
+    "feed_template": "",        # خالی = الگوی پیش‌فرض feedworker
+    "feed_summary_chars": 400,  # ۰ = بدون کوتاه‌سازی
+    "feed_preview": True,       # پیش‌نمایش لینک زیر پست
+
+    # --- هوش مصنوعی ---
+    # هر سه پیش‌فرض خاموش‌اند و هرکدام روی هر پست یک واحد اعتبار می‌برند،
+    # پس روشن شدنشان باید تصمیم خودِ کاربر باشد نه پیش‌فرض ما.
+    "ai_summarize": False,
+    "ai_rewrite": False,
+    "ai_translate": False,
+    "ai_style": "same",         # لحن بازنویسی؛ کلیدهای aiskills.STYLES
+    "ai_language": "en",        # زبان ترجمه؛ کلیدهای aiskills.LANGUAGES
+    "ai_sentences": 2,          # خلاصه در چند جمله
 }
 
 
 def merged_settings(stored: dict[str, Any] | None) -> dict[str, Any]:
-    """تنظیمات ذخیره‌شده را روی پیش‌فرض‌ها سوار می‌کند."""
-    data = dict(DEFAULT_SETTINGS)
-    data["allowed_media"] = list(DEFAULT_SETTINGS["allowed_media"])
+    """تنظیمات ذخیره‌شده را روی پیش‌فرض‌ها سوار می‌کند.
+
+    فهرست‌ها کپی می‌شوند، وگرنه همه‌ی کارها یک شیء مشترک می‌گرفتند و
+    ویرایش تنظیمات یک کار روی بقیه هم اثر می‌گذاشت.
+    """
+    data = {
+        key: list(value) if isinstance(value, list) else value
+        for key, value in DEFAULT_SETTINGS.items()
+    }
     if stored:
         for key, value in stored.items():
             if key in DEFAULT_SETTINGS:
-                data[key] = value
+                data[key] = list(value) if isinstance(value, list) else value
     return data

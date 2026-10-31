@@ -1,0 +1,16 @@
+# پیش‌فرض: گیت پایان‌خط را خودش تشخیص دهد و در مخزن LF نگه دارد
+* text=auto eol=lf
+
+# ⚠️ فایل‌های ویندوزی باید CRLF باشند.
+# cmd.exe فایل .bat با پایان‌خط یونیکسی را درست نمی‌خواند و خطاهایی
+# می‌دهد که هیچ ربطی به محتوای فایل ندارند — مثل «not recognized».
+*.bat text eol=crlf
+*.cmd text eol=crlf
+*.ps1 text eol=crlf
+
+# باینری‌ها دست نخورند
+*.png binary
+*.jpg binary
+*.ico binary
+*.zip binary
+*.db binary

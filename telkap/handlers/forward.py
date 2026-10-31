@@ -13,15 +13,15 @@ from sqlalchemy import select
 
 from telkap.config import get_settings
 from telkap.db import get_session, log_activity
+from telkap.handlers.common import Flow
 from telkap.keyboards import (
-    BTN_FORWARD,
     forward_menu,
     fwd_clean_menu,
     fwd_text_menu,
     main_menu,
+    menu_texts,
 )
 from telkap.models import ForwardProfile
-from telkap.handlers.common import Flow
 from telkap.services.defaults import merged_settings
 from telkap.services.subscription import active_plan_for
 from telkap.services.transform import apply_transforms
@@ -87,7 +87,7 @@ def _profile_text(profile: ForwardProfile | None) -> str:
 
 
 @router.message(Command("forward"))
-@router.message(F.text == BTN_FORWARD)
+@router.message(F.text.in_(menu_texts("menu.forward")))
 async def show_forward(message: Message) -> None:
     profile = await _profile(message.from_user.id)
     await message.answer(_profile_text(profile), reply_markup=forward_menu(profile))

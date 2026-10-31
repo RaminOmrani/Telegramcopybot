@@ -12,7 +12,7 @@ from dataclasses import dataclass, field
 from telethon.errors import FloodWaitError
 
 from telkap.db import get_session, log_activity
-from telkap.models import Task
+from telkap.models import DeliveryTiming, Task
 
 log = logging.getLogger(__name__)
 
@@ -117,7 +117,14 @@ class HistoryCopier:
             if job.cancelled:
                 break
             try:
-                sent = await self.copier.process(job.user_id, job.task_id, group)
+                # کپیِ آرشیو گذشته. تأخیرش «چند ماه» است چون پست چند
+                # ماه پیش منتشر شده — اگر برچسب نخورد، همین چند ردیف
+                # «بدترین تأخیر» را به ۵۸ ساعت می‌برد و آمار را
+                # بی‌معنا می‌کند.
+                sent = await self.copier.process(
+                    job.user_id, job.task_id, group,
+                    via=DeliveryTiming.VIA_HISTORY,
+                )
                 if sent:
                     job.copied += 1
                 else:
