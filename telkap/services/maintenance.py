@@ -104,6 +104,10 @@ async def run_once() -> None:
 
     await timings.prune()
 
+    from telkap.services import abandoned
+
+    await abandoned.prune()
+
 
 async def run_forever() -> None:
     while True:

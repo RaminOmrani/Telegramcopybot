@@ -14,8 +14,8 @@ from datetime import timedelta
 from sqlalchemy import select
 
 from telkap.db import get_session, log_activity
-from telkap.models import DeliveryTiming, RetryItem, Task, utcnow
-from telkap.services import reader
+from telkap.models import AbandonedPost, DeliveryTiming, RetryItem, Task, utcnow
+from telkap.services import abandoned, reader
 from telkap.services.copier import RETRY_BACKOFF, SendFailed
 
 log = logging.getLogger(__name__)
@@ -145,8 +145,15 @@ class RetryWorker:
             row.last_error = error[:400]
             if row.attempts >= MAX_ATTEMPTS:
                 user_id, task_id, attempts = row.user_id, row.task_id, row.attempts
+                first = row.message_ids[0] if row.message_ids else None
                 await db.delete(row)
                 await db.commit()
+                if first is not None:
+                    # <b>و جارو باید بداند.</b> پستِ رهاشده نه در نگاشت است
+                    # و نه در صف؛ بدون این ثبت، جارو سه دقیقه بعد دوباره
+                    # پیدایش می‌کرد و همه‌ی چهار تلاش از نو شروع می‌شد —
+                    # هر ۸۰ دقیقه یک دور، با یک پیامِ «ارسال نشد» در هر دور.
+                    await abandoned.mark(task_id, first, AbandonedPost.REASON_EXHAUSTED)
                 await log_activity(
                     user_id=user_id,
                     task_id=task_id,

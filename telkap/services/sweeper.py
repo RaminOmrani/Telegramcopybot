@@ -30,8 +30,8 @@ import logging
 from sqlalchemy import func, or_, select
 
 from telkap.db import get_session
-from telkap.models import DeliveryTiming, MessageMap, RetryItem, Task
-from telkap.services import alerts
+from telkap.models import DeliveryTiming, MessageMap, PendingPost, RetryItem, Task
+from telkap.services import abandoned, alerts
 
 log = logging.getLogger(__name__)
 
@@ -90,6 +90,28 @@ async def _waiting_retry(task_id: int, src_msg_id: int) -> bool:
                 or_(
                     RetryItem.src_msg_ids == first,
                     RetryItem.src_msg_ids.startswith(first + ","),
+                ),
+            ).limit(1)
+        )
+    return found is not None
+
+
+async def _held(task_id: int, src_msg_id: int) -> bool:
+    """آیا این پست در صفِ تأیید یا زمان‌بندی منتظر است؟
+
+    <b>بدون این، تأیید دستی سه دقیقه بیشتر دوام نمی‌آورد.</b> پستِ
+    منتظرِ تأیید هم «نرفته» است؛ جارو پیدایش می‌کرد، `process` می‌خواست
+    دوباره در صف بگذاردش، صف «از قبل هست» می‌گفت — و پست بی‌تأیید منتشر
+    می‌شد.
+    """
+    first = str(int(src_msg_id))
+    async with get_session() as db:
+        found = await db.scalar(
+            select(PendingPost.id).where(
+                PendingPost.task_id == task_id,
+                or_(
+                    PendingPost.src_msg_ids == first,
+                    PendingPost.src_msg_ids.startswith(first + ","),
                 ),
             ).limit(1)
         )
@@ -256,8 +278,9 @@ class Sweeper:
                 # در صف است، یا قطعاً نمی‌رود: جارو کاری با آن ندارد
                 if await _waiting_retry(task_id, group[0].id):
                     continue
-                gave_up = getattr(self.copier, "gave_up", None)
-                if gave_up is not None and gave_up(task_id, group[0].id):
+                if await _held(task_id, group[0].id):
+                    continue
+                if await abandoned.is_marked(task_id, group[0].id):
                     continue
                 try:
                     # برچسبِ «با جارو آمد» — همین یک کلمه فرقِ بین

@@ -150,7 +150,7 @@ async def cb_reject(call: CallbackQuery) -> None:
         await call.answer("این پست دیگر در صف نیست", show_alert=True)
         return
     task_id = item.task_id
-    await pending.drop(item.id)
+    await pending.reject(item)
     await log_activity(
         user_id=call.from_user.id,
         task_id=task_id,

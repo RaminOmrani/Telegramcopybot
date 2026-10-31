@@ -48,6 +48,12 @@ def _video():
     ))
 
 
+def _restricted():
+    from telethon.errors import ChatForwardsRestrictedError
+
+    return ChatForwardsRestrictedError(request=None)
+
+
 def _unsupported():
     from telethon.tl.types import MessageMediaUnsupported
 
@@ -161,17 +167,29 @@ class Telethonish(FakeClient):
         return [record.kind for record in self.sent]
 
 
-def _forwarding(monkeypatch, *, error: Exception | None = None) -> list:
-    """فورواردِ بی‌نام و بی‌کپشن — جایی که درخواستِ خامِ Telethon ساخته می‌شود."""
+def _forwarding(
+    monkeypatch, *, error: Exception | None = None, missing: set[int] | None = None,
+    flags: list | None = None,
+) -> list:
+    """فورواردِ بی‌نام — جایی که درخواستِ خامِ Telethon ساخته می‌شود.
+
+    `missing`: آیدی‌هایی که مثل جوابِ واقعیِ Telethon جایشان None است
+    (آلبومی که نصفه رسید). `flags`: مقدارِ drop_captions در هر صدا زدن.
+    """
     from telkap.services import copier as copier_module
 
     calls: list = []
 
-    async def fake(client, target, messages):
+    async def fake(client, target, messages, *, drop_captions=True):
         calls.append((target, [m.id for m in messages]))
+        if flags is not None:
+            flags.append(drop_captions)
         if error is not None:
             raise error
-        return [FakeSent(9000 + i) for i, _ in enumerate(messages)]
+        return [
+            None if m.id in (missing or ()) else FakeSent(9000 + i)
+            for i, m in enumerate(messages)
+        ]
 
     # raising=False: روی کدِ قدیمی که این متد را ندارد هم تست اجرا می‌شود و
     # رفتارِ واقعی‌اش را نشان می‌دهد، نه AttributeError
@@ -249,7 +267,7 @@ async def test_a_post_that_cannot_even_be_forwarded_is_dropped_once_not_retried(
         from telkap.models import DailyStat, RetryItem
         from telkap.services.copier import Copier
 
-        _forwarding(monkeypatch, error=RuntimeError("CHAT_FORWARDS_RESTRICTED"))
+        _forwarding(monkeypatch, error=_restricted())
         copier = Copier(FakeManager(Telethonish()))
 
         post = FakeMessage(id=1, message="خبر", media=_unsupported())
@@ -271,7 +289,7 @@ async def test_the_owner_hears_about_it_once_a_day_not_once_a_post(tmp_path, mon
     try:
         from telkap.services.copier import Copier
 
-        _forwarding(monkeypatch, error=RuntimeError("CHAT_FORWARDS_RESTRICTED"))
+        _forwarding(monkeypatch, error=_restricted())
         notes = Notes()
         copier = Copier(FakeManager(Telethonish()), notifier=notes)
 
@@ -498,17 +516,16 @@ async def test_the_sweeper_does_not_queue_a_waiting_post_again(tmp_path, monkeyp
 async def test_the_sweeper_leaves_alone_a_post_known_to_be_unsendable(tmp_path, monkeypatch):
     db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
     try:
+        from telkap.services import abandoned
         from telkap.services.sweeper import Sweeper
         from tests.test_sweeper import _FakeClient, _FakeManager, _mark_sent, _RecordingCopier
 
         await _mark_sent(db_module, task_id, 100)
-
-        class _GaveUp(_RecordingCopier):
-            def gave_up(self, task, msg_id):
-                return msg_id == 101
+        # در دیتابیس، نه حافظه‌ی پروسه — هر آپدیت یک ری‌استارت است
+        await abandoned.mark(task_id, 101, "unsendable")
 
         client = _FakeClient([FakeMessage(id=100), FakeMessage(id=101), FakeMessage(id=102)])
-        copier = _GaveUp()
+        copier = _RecordingCopier()
         await Sweeper(_FakeManager(client, 7, -1001, [task_id]), copier).run_once()
 
         assert [ids for _task, ids in copier.seen] == [[102]]
@@ -675,7 +692,7 @@ async def test_the_quota_comes_back_when_a_post_went_nowhere(tmp_path, monkeypat
         from telkap.services import copier as copier_module
         from telkap.services.copier import Copier
 
-        _forwarding(monkeypatch, error=RuntimeError("CHAT_FORWARDS_RESTRICTED"))
+        _forwarding(monkeypatch, error=_restricted())
         returned: list = []
         real_release = copier_module.entitlement.release
 

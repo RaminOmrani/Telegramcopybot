@@ -13,12 +13,12 @@ import asyncio
 import logging
 from datetime import timedelta
 
-from sqlalchemy import delete, func, select
+from sqlalchemy import delete, func, or_, select
 from sqlalchemy.exc import IntegrityError
 
 from telkap.db import get_session, log_activity
-from telkap.models import DeliveryTiming, PendingPost, Task, utcnow
-from telkap.services import reader
+from telkap.models import AbandonedPost, DeliveryTiming, PendingPost, Task, utcnow
+from telkap.services import abandoned, reader
 
 log = logging.getLogger(__name__)
 
@@ -87,6 +87,25 @@ async def hold(
     return row
 
 
+async def is_waiting(task_id: int, message_ids) -> bool:
+    """آیا همین پست (با اولین آیدی‌اش) همین حالا در صف است؟"""
+    ids = [str(int(mid)) for mid in message_ids]
+    if not ids:
+        return False
+    first = ids[0]
+    async with get_session() as db:
+        found = await db.scalar(
+            select(PendingPost.id).where(
+                PendingPost.task_id == task_id,
+                or_(
+                    PendingPost.src_msg_ids == first,
+                    PendingPost.src_msg_ids.startswith(first + ","),
+                ),
+            ).limit(1)
+        )
+    return found is not None
+
+
 async def get(item_id: int, user_id: int) -> PendingPost | None:
     """یک آیتم، فقط اگر مال همین کاربر باشد."""
     async with get_session() as db:
@@ -136,13 +155,35 @@ async def drop_task(task_id: int, *, reason: str | None = None) -> int:
     `reason` را بدهید تا فقط همان دسته پاک شود؛ وگرنه خاموش کردن تأیید
     دستی، پست‌های زمان‌بندی‌شده را هم با خودش می‌برد.
     """
-    stmt = delete(PendingPost).where(PendingPost.task_id == task_id)
+    where = [PendingPost.task_id == task_id]
     if reason is not None:
-        stmt = stmt.where(PendingPost.reason == reason)
+        where.append(PendingPost.reason == reason)
     async with get_session() as db:
-        result = await db.execute(stmt)
+        firsts = [
+            ids.split(",")[0]
+            for ids in (await db.execute(select(PendingPost.src_msg_ids).where(*where))).scalars()
+        ]
+        result = await db.execute(delete(PendingPost).where(*where))
         await db.commit()
+    # پاک شده یعنی «منتشر نکن» — جارو نباید از ته کانال برش دارد
+    for first in firsts:
+        if first.strip().isdigit():
+            await abandoned.mark(task_id, int(first), AbandonedPost.REASON_REJECTED)
     return int(result.rowcount or 0)
+
+
+async def reject(item: PendingPost) -> bool:
+    """کاربر گفت «نه». پاک می‌شود و جارو هم دیگر سراغش نمی‌رود.
+
+    <b>چرا فقط پاک کردن کافی نبود.</b> پستِ ردشده هم «نرفته» است؛ جارو
+    سه دقیقه بعد پیدایش می‌کرد و دوباره در صفِ تأیید می‌نشاندش — یعنی
+    «رد» عملاً «بعداً دوباره بپرس» بود.
+    """
+    if item.message_ids:
+        await abandoned.mark(
+            item.task_id, item.message_ids[0], AbandonedPost.REASON_REJECTED
+        )
+    return await drop(item.id)
 
 
 async def due(limit: int = 50) -> list[PendingPost]:
