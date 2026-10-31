@@ -97,7 +97,8 @@ class RetryWorker:
             )
             return False
 
-        if self.copier.in_flight(item.task_id, messages[0].id):
+        in_flight = getattr(self.copier, "in_flight", None)
+        if in_flight is not None and in_flight(item.task_id, messages[0].id):
             # <b>ارسالِ اول هنوز تمام نشده</b> (مثلاً مقصدِ دیگری در حال
             # آپلود است). کمی بعد — بی‌آنکه تلاشی شمرده شود. صدا زدنِ
             # process اینجا False می‌داد و آیتم پاک می‌شد.
