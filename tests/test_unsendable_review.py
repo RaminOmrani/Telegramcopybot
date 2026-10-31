@@ -556,3 +556,209 @@ def test_cleanup_takes_a_single_path_as_a_path_not_as_letters(tmp_path):
     _discard(None)
     _discard([str(tmp_path / "missing")])
     assert not one.exists()
+
+
+# ------------------------------------------------- بازبینیِ سوم
+
+
+@pytest.mark.asyncio
+async def test_a_captionless_post_that_can_take_a_caption_still_gets_our_footer(
+    tmp_path, monkeypatch
+):
+    """«مبدأ کپشن نداشت» با «این پست کپشن نمی‌گیرد» یکی نیست. عکسی که
+    دانلود نشد و فوروارد شد، فوترِ صاحب کانال را می‌گیرد — تبلیغِ او همین
+    فوتر است."""
+    db_module, task_id = await _setup(
+        tmp_path, monkeypatch, settings={"footer": "@mine"}
+    )
+    try:
+        from telkap.services.copier import Copier
+
+        flags: list = []
+        _forwarding(monkeypatch, flags=flags)
+        client = Telethonish()
+        post = FakeMessage(id=1, message="", media=_unsupported())
+        assert await Copier(FakeManager(client)).process(7, task_id, [post]) is True
+
+        assert flags == [False]
+        assert len(client.edits) == 1 and "@mine" in client.edits[0][2]
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_if_our_footer_will_not_sit_on_a_captionless_post_the_post_stays(
+    tmp_path, monkeypatch
+):
+    """(نگهبان، برای تستِ بالایی.) پست عیناً همان است که در مبدأ بود؛ فقط
+    امضای ما ننشست. پاک کردنش یعنی از دست دادنِ پستی که درست رسیده."""
+    db_module, task_id = await _setup(
+        tmp_path, monkeypatch, settings={"footer": "@mine"}
+    )
+    try:
+        from telkap.services.copier import Copier
+
+        _forwarding(monkeypatch)
+        client = Telethonish()
+        client.edit_error = RuntimeError("MEDIA_CAPTION_NOT_ALLOWED")
+        post = FakeMessage(id=1, message="", media=_unsupported())
+        assert await Copier(FakeManager(client)).process(7, task_id, [post]) is True
+        assert client.deleted == []
+    finally:
+        await db_module.close_db()
+
+
+class _NoPremium(Telethonish):
+    """اکانتی که پریمیوم نیست: ایموجیِ پریمیوم در کپشن رد می‌شود."""
+
+    async def edit_message(self, target, msg_id, text, formatting_entities=None):
+        from telethon.errors import PremiumAccountRequiredError
+
+        if any(type(e).__name__ == "MessageEntityCustomEmoji" for e in formatting_entities or []):
+            raise PremiumAccountRequiredError(request=None)
+        self.edits.append((target, msg_id, text))
+
+
+@pytest.mark.asyncio
+async def test_no_premium_drops_the_emoji_not_the_post(tmp_path, monkeypatch):
+    """خطای «پریمیوم لازم است» روی ویرایش بالا می‌رفت و لایه‌ی بالاتر کلِ
+    ارسال را تکرار می‌کرد: فورواردِ دوم، و پستِ اول که آمد و پاک شد."""
+    from telkap.services import richtext
+
+    db_module, task_id = await _setup(
+        tmp_path, monkeypatch,
+        settings={
+            "footer": "X @mine",
+            richtext.entities_key("footer"): [
+                {"type": "custom_emoji", "offset": 0, "length": 1, "id": "123"}
+            ],
+        },
+    )
+    try:
+        from telkap.services.copier import Copier
+
+        forwards = _forwarding(monkeypatch)
+        client = _NoPremium()
+        post = FakeMessage(id=1, message="خبر", media=_unsupported())
+        assert await Copier(FakeManager(client)).process(7, task_id, [post]) is True
+
+        assert len(forwards) == 1, "دو بار فوروارد شد"
+        assert client.deleted == []
+        assert len(client.edits) == 1
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_a_flood_wait_on_the_caption_goes_to_the_queue_not_round_the_sweeper(
+    tmp_path, monkeypatch
+):
+    """FloodWait روی ویرایش بالا می‌رفت؛ ردیفی در صف نبود، و جارو هر سه
+    دقیقه پست را فوروارد و پاک می‌کرد — جلوی چشمِ مشترک‌ها."""
+    db_module, task_id = await _setup(
+        tmp_path, monkeypatch, settings={"footer": "@mine"}
+    )
+    try:
+        from telethon.errors import FloodWaitError
+
+        from telkap.models import RetryItem
+        from telkap.services.copier import Copier
+
+        _forwarding(monkeypatch)
+        client = Telethonish()
+        client.edit_error = FloodWaitError(request=None, capture=900)
+        post = FakeMessage(id=1, message="خبر", media=_unsupported())
+        assert await Copier(FakeManager(client)).process(7, task_id, [post]) is False
+
+        assert client.deleted == [(-1002, [9000])]
+        assert len(await _rows(db_module, RetryItem)) == 1
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_losing_the_race_to_queue_a_post_still_counts_as_held(tmp_path, monkeypatch):
+    """دو فراخوانی هر دو «در صف نیست» شنیدند؛ یکی نوشت، دیگری به قیدِ یکتا
+    خورد و — تا امروز — پست را بی‌تأیید منتشر کرد."""
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={"approval": True})
+    try:
+        from telkap.models import PendingPost
+        from telkap.services import cache, pending
+        from telkap.services.copier import Copier
+
+        async with db_module.get_session() as db:
+            db.add(PendingPost(
+                task_id=task_id, user_id=7, src_chat_id=-1001, src_msg_ids="1",
+            ))
+            await db.commit()
+
+        real = pending.is_waiting
+        asked: list = []
+
+        async def late(task, ids):
+            asked.append(1)
+            # بارِ اول: هنوز ردیفِ آن یکی را نمی‌بیند
+            return False if len(asked) == 1 else await real(task, ids)
+
+        monkeypatch.setattr(pending, "is_waiting", late)
+        snapshot = await cache.get_task(task_id)
+        held = await Copier(FakeManager(Telethonish()))._hold(
+            snapshot, [FakeMessage(id=1, message="خبر")],
+            reason=PendingPost.REASON_APPROVAL,
+        )
+        assert held is True
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_an_approval_that_expired_does_not_come_back(tmp_path, monkeypatch):
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from datetime import timedelta
+
+        from telkap.models import PendingPost, utcnow
+        from telkap.services import abandoned, pending
+
+        async with db_module.get_session() as db:
+            db.add(PendingPost(
+                task_id=task_id, user_id=7, src_chat_id=-1001, src_msg_ids="31,32",
+                created_at=utcnow() - timedelta(hours=pending.STALE_APPROVAL_HOURS + 1),
+            ))
+            await db.commit()
+
+        assert await pending.prune() == 1
+        assert await abandoned.is_marked(task_id, 31)
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_one_post_is_never_sent_twice_at_the_same_time(tmp_path, monkeypatch):
+    """صفِ انتشار ردیف را برمی‌دارد و شروع به فرستادن می‌کند؛ جارو در همان
+    فاصله پست را «نه رفته، نه در صف» می‌دید و دوباره می‌فرستادش."""
+    import asyncio
+
+    db_module, task_id = await _setup(
+        tmp_path, monkeypatch, settings={"skip_duplicates": False}
+    )
+    try:
+        from telkap.services.copier import Copier
+
+        class Slow(Telethonish):
+            async def send_message(self, *args, **kwargs):
+                await asyncio.sleep(0.05)
+                return await super().send_message(*args, **kwargs)
+
+        client = Slow()
+        copier = Copier(FakeManager(client))
+        post = FakeMessage(id=1, message="خبر")
+        results = await asyncio.gather(
+            copier.process(7, task_id, [post]),
+            copier.process(7, task_id, [post]),
+        )
+        assert sorted(results) == [False, True]
+        assert len(client.sent) == 1, "یک پست دو بار همزمان رفت"
+        assert copier._in_flight == set()
+    finally:
+        await db_module.close_db()

@@ -246,9 +246,16 @@ async def prune(hours: int = STALE_APPROVAL_HOURS) -> int:
         stale = list(rows.scalars())
         if not stale:
             return 0
+        expired = [(row.task_id, row.message_ids) for row in stale]
         for row in stale:
             await db.delete(row)
         await db.commit()
+    # <b>و جارو نباید برش گرداند.</b> در حالت تأیید، نشانه‌ی جارو فقط با
+    # تأیید جلو می‌رود؛ صاحبِ کانالی که سه روز سر نزد، همین پست‌ها را
+    # سه دقیقه بعد دوباره در صف می‌دید — با یک اعلانِ تازه برای هرکدام.
+    for task_id, ids in expired:
+        if ids:
+            await abandoned.mark(task_id, ids[0], AbandonedPost.REASON_EXPIRED)
     log.info("%s پست تأییدنشده‌ی قدیمی از صف پاک شد", len(stale))
     return len(stale)
 

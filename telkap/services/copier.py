@@ -266,6 +266,22 @@ class PartialForward(RuntimeError):
     """آلبومِ فورواردشده ناقص رسید. دائمی نیست؛ دوباره امتحان می‌شود."""
 
 
+class CaptionNotSet(RuntimeError):
+    """فوروارد رسید ولی کپشنِ ما ننشست و پاکش کردیم. دوباره امتحان می‌شود."""
+
+
+# این‌ها اصلاً کپشن ندارند؛ امتحانِ ویرایش فقط یک درخواستِ ردشده است
+_NO_CAPTION_MEDIA = frozenset({
+    "MessageMediaDice",
+    "MessageMediaGame",
+    "MessageMediaGeoLive",
+    "MessageMediaGiveaway",
+    "MessageMediaGiveawayResults",
+    "MessageMediaStory",
+    "MessageMediaInvoice",
+})
+
+
 # فوروارد را تلگرام به خاطرِ <b>خودِ پست</b> نپذیرفت: کانالِ محافظت‌شده،
 # پیامِ حذف‌شده. تکرار فرقی نمی‌کند.
 _FORWARD_REFUSALS = frozenset({
@@ -559,6 +575,8 @@ class Copier:
         self._workers: dict[tuple, asyncio.Task] = {}
         # کدام مسیر برای آخرین ارسال به کار رفت — برای اندازه‌گیری تأخیر
         self._last_path: str = ""
+        # (کار، اولین آیدیِ پست) هایی که همین حالا در حال پردازش‌اند
+        self._in_flight: set[tuple[int, int]] = set()
         # (کار، نوع) ← زمانِ آخرین هشدار؛ برای هر نوع روزی یک پیام کافی است
         self._unsendable_warned: dict[tuple[int, str], float] = {}
 
@@ -912,7 +930,9 @@ class Copier:
             release_at=release_at,
         )
         if item is None:
-            return False
+            # همزمان یک فراخوانیِ دیگر همین پست را در صف گذاشت (بازه‌ی بین
+            # پرسیدن و نوشتن) — یعنی نگه داشته شده
+            return await pending.is_waiting(snapshot.id, [m.id for m in messages])
 
         await log_activity(
             user_id=snapshot.user_id,
@@ -935,7 +955,32 @@ class Copier:
                 log.debug("اطلاع صف تأیید به کاربر نرسید", exc_info=True)
         return True
 
-    async def process(
+    async def process(self, user_id: int, task_id: int, messages: Sequence, **kwargs) -> bool:
+        """`_process` — ولی هیچ پستی دو بار <b>همزمان</b>.
+
+        <b>چرا.</b> آپدیتِ لحظه‌ای، جارو، صفِ انتشار و صفِ تلاش مجدد همه
+        می‌توانند یک پست را بدهند. هرکدام پیش از ارسال می‌پرسند «رفته؟» و
+        جوابِ همه «نه» است تا وقتی یکی‌شان ارسال را تمام کند — که برای یک
+        ویدیو چند دقیقه است. مثلاً صفِ انتشار ردیفِ پست را برمی‌دارد و
+        شروع به فرستادن می‌کند؛ جارو در همین فاصله پست را «نه رفته، نه در
+        صف» می‌بیند و دوباره می‌فرستدش، یا دوباره به صفِ تأیید می‌بردش.
+
+        همه‌ی این‌ها یک Copier دارند، پس یک مجموعه در حافظه کافی است: دومی
+        بی‌صدا کنار می‌رود و اولی کار را تمام می‌کند.
+        """
+        key = (int(task_id), int(messages[0].id)) if messages else None
+        if key is not None and key in self._in_flight:
+            log.info("پستِ %s کار %s همین حالا در حال ارسال است؛ رد شد", key[1], task_id)
+            return False
+        if key is not None:
+            self._in_flight.add(key)
+        try:
+            return await self._process(user_id, task_id, messages, **kwargs)
+        finally:
+            if key is not None:
+                self._in_flight.discard(key)
+
+    async def _process(
         self,
         user_id: int,
         task_id: int,
@@ -1764,18 +1809,22 @@ class Copier:
 
         - متنِ ما همان متنِ مبدأ است → کپشنِ مبدأ همراهش می‌آید و ویرایشی
           لازم نیست.
-        - مبدأ کپشن نداشت (تاس، استوری، بازی، موقعیت زنده — اصلاً کپشن
-          نمی‌گیرند) → بی‌ویرایش. ویرایش اینجا همیشه رد می‌شد و پست را
-          بعد از انتشار پاک می‌کردیم؛ یعنی هر کاری که امضا یا فوتر داشت،
-          هیچ‌کدام از این پست‌ها را نمی‌فرستاد. امضای ما روی این‌ها
-          نمی‌نشیند — و پستی بی‌امضا بهتر از پستی است که نیامده.
+        - مبدأ کپشن نداشت و متنِ ما فقط امضا/فوتر است → امضا <b>اگر
+          بنشیند</b>. تاس، استوری، بازی و موقعیت زنده اصلاً کپشن نمی‌گیرند
+          و امتحان هم نمی‌شوند؛ بقیه (عکسی که دانلود نشد، نوعِ ناشناخته)
+          امتحان می‌شوند و اگر نشد، پست همان‌طور می‌ماند — چیزی از مبدأ
+          کم ندارد، پس «نصفه» نیست. تا قبل از این، ویرایشِ ردشده پستِ
+          رسیده را پاک می‌کرد: کاری که امضا داشت هیچ تاسی نمی‌فرستاد.
         - کپشن عوض شده → بی‌کپشن فوروارد و کپشنِ <b>خودمان</b> جایش. کپشنِ
           مبدأ لینک و امضای کانالِ دیگری را دارد؛ همان که تبدیل‌ها پاک
           کرده‌اند.
 
-        <b>نه نصفه.</b> اگر گذاشتنِ کپشن نشد، یا آلبوم ناقص رسید، پستِ
-        فورواردشده پاک می‌شود. پستی که متنش جا مانده یا یکی از عکس‌هایش
-        نیست، از پستی که نیامده بدتر است: آن یکی را مشتری می‌بیند.
+        <b>نه نصفه.</b> اگر کپشنِ مبدأ را انداختیم و کپشنِ ما ننشست، یا
+        آلبوم ناقص رسید، پستِ فورواردشده پاک می‌شود. پستی که متنش جا
+        مانده یا یکی از عکس‌هایش نیست، از پستی که نیامده بدتر است: آن یکی
+        را مشتری می‌بیند. و بعدش <b>در صفِ تلاش مجدد</b> می‌رود — حتی برای
+        FloodWait — نه اینکه خطا بالا برود: آن‌وقت ردیفی در صف نبود و جارو
+        هر سه دقیقه دوباره فورواردش می‌کرد و پاکش می‌کرد.
 
         <b>فقط ایرادِ محتوا «نرفتنی» است.</b> کانالِ «محافظت‌شده» یا پیامِ
         حذف‌شده با تکرار درست نمی‌شود. ولی محدودیتِ سرعت، قطعی شبکه، یا بن
@@ -1788,12 +1837,17 @@ class Copier:
             (i for i, m in enumerate(messages) if (m.message or "").strip()), None
         )
         original = messages[holder].message if holder is not None else ""
-        if text == original or (holder is None and not text.strip()):
-            drop_captions, caption = False, ""
+        takes_caption = not any(
+            type(m.media).__name__ in _NO_CAPTION_MEDIA for m in messages
+        )
+        if text == original or not text.strip():
+            # همان کپشن، یا ما کپشنی نمی‌خواهیم (مبدأ کپشن داشت → انداخته می‌شود)
+            drop_captions, caption = bool(holder is not None and text != original), ""
         elif holder is None:
             # مبدأ کپشن نداشت؛ متنِ ما فقط امضا/فوتر است
-            log.info("پستِ %s (%s) کپشن نمی‌گیرد؛ بی‌امضا فوروارد شد", messages[0].id, kind)
-            drop_captions, caption = False, ""
+            drop_captions, caption = False, (text if takes_caption else "")
+            if not takes_caption:
+                log.info("پستِ %s (%s) کپشن نمی‌گیرد؛ بی‌امضا فوروارد شد", messages[0].id, kind)
         else:
             drop_captions, caption = True, text
 
@@ -1825,21 +1879,57 @@ class Copier:
 
         if caption.strip():
             try:
-                await client.edit_message(
-                    target, ids[holder], caption, formatting_entities=entities,
+                await self._set_caption(
+                    client, target, ids[holder or 0], caption, entities
                 )
-            except MessageNotModifiedError:
-                pass     # همان متن از قبل رویش بود
             except Exception as exc:
+                if not drop_captions:
+                    # مبدأ کپشن نداشت و پست عیناً همان است که بود؛ فقط
+                    # امضای ما رویش ننشست. پاک کردنش یعنی از دست دادنِ پستی
+                    # که درست رسیده.
+                    log.warning(
+                        "امضا روی پستِ %s (%s) ننشست (%s)؛ بی‌امضا ماند",
+                        messages[0].id, kind, type(exc).__name__,
+                    )
+                    return ids
                 await self._delete_quietly(client, target, ids)
+                if isinstance(exc, ChatWriteForbiddenError) or health.classify(exc).fatal:
+                    raise
                 if is_permanent(exc):
                     raise Unsendable(
                         f"این نوع پست ({kind}) فوروارد شد ولی کپشن رویش ننشست "
                         f"({type(exc).__name__}); پاکش کردیم تا نصفه نماند",
                         kind=kind,
                     ) from exc
-                raise
+                # گذرا — حتی FloodWait. به صف می‌رود، نه بالا.
+                raise CaptionNotSet(
+                    f"کپشن روی پستِ فورواردشده ننشست ({type(exc).__name__}: {exc}); "
+                    "پاکش کردیم و دوباره امتحان می‌شود"
+                ) from exc
         return ids
+
+    @staticmethod
+    async def _set_caption(client, target, msg_id: int, caption: str, entities) -> None:
+        """کپشن را می‌گذارد؛ «همان متن بود» موفقیت است.
+
+        <b>اکانتِ غیرپریمیوم فقط ایموجی پریمیوم را از دست می‌دهد.</b> اگر
+        این خطا بالا می‌رفت، لایه‌ی بالاتر کلِ ارسال را بی‌ایموجی تکرار
+        می‌کرد: یک فورواردِ دیگر، و پستی که برای مشترک‌ها آمد و رفت.
+        """
+        try:
+            await client.edit_message(target, msg_id, caption, formatting_entities=entities)
+        except MessageNotModifiedError:
+            return
+        except PremiumAccountRequiredError:
+            plain = drop_custom_emoji(entities)
+            if plain is None:
+                raise
+            try:
+                await client.edit_message(
+                    target, msg_id, caption, formatting_entities=plain or None
+                )
+            except MessageNotModifiedError:
+                return
 
     @staticmethod
     async def _delete_quietly(client, target, ids: Sequence[int]) -> None:

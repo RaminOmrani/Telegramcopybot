@@ -383,6 +383,7 @@ class AbandonedPost(Base):
     REASON_UNSENDABLE = "unsendable"   # با تکرار درست نمی‌شود
     REASON_EXHAUSTED = "exhausted"     # صفِ تلاش مجدد رهایش کرد
     REASON_REJECTED = "rejected"       # کاربر در صفِ تأیید ردش کرد
+    REASON_EXPIRED = "expired"         # سه روز در صفِ تأیید ماند و کسی تأیید نکرد
 
     id: Mapped[int] = mapped_column(Integer, primary_key=True)
     task_id: Mapped[int] = mapped_column(ForeignKey("tasks.id", ondelete="CASCADE"), index=True)
