@@ -44,6 +44,23 @@ os.chdir(Path(__file__).resolve().parent.parent)
 IRAN = timezone(timedelta(hours=3, minutes=30))
 
 
+# رویدادهایی که یعنی «پست باید می‌رفت و نرفت». skip اینجا نیست: آن
+# یعنی فیلتر کارش را کرده.
+FAIL_EVENTS = ("retry_queued", "retry_failed", "retry_dropped", "error", "pause")
+
+
+def _shape(text: str | None) -> str:
+    """متنِ خطا، بدون عددهایی که هر بار فرق می‌کنند.
+
+    «A wait of 31 seconds» و «A wait of 287 seconds» یک خرابی‌اند، ولی
+    اگر عینِ متن شمرده شوند هر کدام یک ردیف می‌شود و هیچ‌کدام به چشم
+    نمی‌آید. عددها یک‌شکل می‌شوند تا خودِ الگو شمرده شود.
+    """
+    import re
+
+    return re.sub(r"-?\d+", "#", (text or "(no reason recorded)").strip())
+
+
 def _bar(part: int, whole: int, width: int = 24) -> str:
     """نوارِ متنی. <b>درصدِ تنها دروغ نمی‌گوید ولی دیده نمی‌شود.</b>"""
     if whole <= 0:
@@ -233,12 +250,34 @@ async def main() -> int:
     out(f"  copied   : {copied}")
     out(f"  failed   : {failed}   {_bar(failed, attempted)}  {_pct(failed, attempted)} of attempts")
     out(f"  skipped  : {skipped}  (filters, duplicates, quiet hours -- not errors)")
+    # <b>هفته‌ی اخیر جدا از کلِ بازه.</b>
+    #
+    # اولین اجرای واقعی این گزارش «۵۶٪ موفقیت» نشان داد — در حالی که
+    # ۹۷٪ همه‌ی شکست‌ها مالِ پنج روزِ اول سپتامبر بود، همان حلقه‌ی
+    # بی‌پایانِ صف تلاش مجدد که هر تلاشِ دوباره‌ی یک پستِ گیرکرده را یک
+    # «شکست» تازه می‌شمرد. از روز بعد از اصلاحش نرخ ۹۸٪ بود. عددی که
+    # یک حادثه‌ی رفع‌شده را با وضعِ امروز قاطی کند، تصمیمِ اشتباه می‌سازد.
+    recent_cutoff = f"{(datetime.now(UTC) - timedelta(days=7)).date():%Y-%m-%d}"
+    async with get_session() as db:
+        week = (
+            await db.execute(
+                select(func.sum(DailyStat.copied), func.sum(DailyStat.failed))
+                .where(DailyStat.day >= recent_cutoff)
+            )
+        ).one()
+    week_copied, week_failed = int(week[0] or 0), int(week[1] or 0)
+    week_attempted = week_copied + week_failed
+
     out()
     if attempted:
         # <b>این تنها عددی است که مشتری حس می‌کند.</b> بقیه برای ماست.
-        out(f"  SUCCESS RATE: {_pct(copied, attempted)}")
+        out(f"  SUCCESS RATE, whole window : {_pct(copied, attempted)}")
+        if week_attempted:
+            out(f"  SUCCESS RATE, last 7 days  : {_pct(week_copied, week_attempted)}"
+                f"   <- how it is NOW")
         if failed and copied / attempted < 0.98:
-            out("    -> below 98%. see section 5 for what is failing.")
+            out("    -> whole-window rate below 98%. check section 4 for a spike:")
+            out("       one old, fixed incident can drag this down for months.")
     else:
         out("  no delivery attempts recorded in this window.")
 
@@ -394,17 +433,46 @@ async def main() -> int:
                 )
             ).all()
         )
+        # <b>شکست و ردشدن دو چیزِ متفاوت‌اند و جدا شمرده می‌شوند.</b>
+        #
+        # نسخه‌ی اول فقط skip/error/pause را می‌خواند — در حالی که شکستِ
+        # ارسال با نام‌های retry_* ثبت می‌شود. یعنی روزی که ۸۶ پست
+        # نرفت، بخشِ «چه خراب شد» فقط «پست تکراری» و «کلمه‌ی ممنوعه»
+        # نشان داد: دلیلِ واقعی دقیقاً همان‌جا که لازمش داشتیم غایب بود.
+        failures = list(
+            (
+                await db.execute(
+                    select(
+                        ActivityLog.task_id,
+                        ActivityLog.event,
+                        ActivityLog.detail,
+                        ActivityLog.created_at,
+                    ).where(
+                        ActivityLog.created_at >= since,
+                        ActivityLog.event.in_(FAIL_EVENTS),
+                    )
+                )
+            ).all()
+        )
         skips = list(
             (
                 await db.execute(
                     select(ActivityLog.detail, func.count(ActivityLog.id))
                     .where(
                         ActivityLog.created_at >= since,
-                        ActivityLog.event.in_(["skip", "error", "pause"]),
+                        ActivityLog.event == "skip",
                     )
                     .group_by(ActivityLog.detail)
                     .order_by(func.count(ActivityLog.id).desc())
-                    .limit(12)
+                    .limit(8)
+                )
+            ).all()
+        )
+        # علتِ <b>همین حالا</b>ی صف — نه تاریخچه، بلکه چیزی که الان گیر است
+        stuck = list(
+            (
+                await db.execute(
+                    select(RetryItem.task_id, RetryItem.last_error, RetryItem.attempts)
                 )
             ).all()
         )
@@ -420,8 +488,39 @@ async def main() -> int:
         state = "ON " if enabled else "OFF"
         out(f"    [{state}] task {task_id} ({title}): {error}")
 
+    if stuck:
+        out()
+        out("  why the retry queue is stuck RIGHT NOW:")
+        for (task_id, reason), count in Counter(
+            (task_id, _shape(error)) for task_id, error, _ in stuck
+        ).most_common(6):
+            out(f"    {count:>4}x  task {task_id}: {reason[:70]}")
+
     out()
-    out("  most common reasons a post did not go (from the activity log):")
+    out("  why posts FAILED to send (errors -- these are our problem):")
+    if not failures:
+        out("    none recorded.")
+    else:
+        recent_cut = datetime.now(UTC) - timedelta(hours=48)
+        recent = [
+            row for row in failures
+            if row.created_at is not None
+            and row.created_at.replace(tzinfo=UTC) >= recent_cut
+        ]
+        # <b>اخیر جدا از کل.</b> یک حادثه‌ی قدیمی در بازه‌ی ۹۰ روزه هزاران
+        # ردیف دارد و خرابیِ امروز را زیر خودش دفن می‌کند.
+        for label, rows in (("last 48 hours", recent), (f"whole {days} days", failures)):
+            if not rows:
+                continue
+            out(f"    {label}: {len(rows)} event(s)")
+            grouped = Counter(
+                (row.task_id, row.event, _shape(row.detail)) for row in rows
+            )
+            for (task_id, event, reason), count in grouped.most_common(6):
+                out(f"      {count:>5}x  task {task_id} {event:<13} {reason[:58]}")
+
+    out()
+    out("  why posts were SKIPPED (filters doing their job -- not errors):")
     if not skips:
         out("    none recorded.")
     for detail, count in skips:
@@ -496,9 +595,16 @@ async def main() -> int:
     # ------------------------------------------------------ ۸. سرنخ‌ها
     head("8. WHAT I WOULD LOOK AT")
     notes: list[str] = []
-    if attempted and copied / attempted < 0.98:
+    # قضاوت روی هفته‌ی اخیر است، نه کلِ بازه — دلیلش بالای بخش ۲ آمده
+    if week_attempted and week_copied / week_attempted < 0.98:
         notes.append(
-            f"success rate is {_pct(copied, attempted)} -- {failed} posts never arrived."
+            f"last 7 days success rate is {_pct(week_copied, week_attempted)}"
+            f" -- {week_failed} posts did not arrive this week."
+        )
+    elif attempted and copied / attempted < 0.98:
+        notes.append(
+            f"whole-window success rate is {_pct(copied, attempted)}, but the last"
+            " 7 days are fine -- an old incident, see section 4."
         )
     if queued > 20:
         notes.append(f"retry queue is {queued} deep; something is refusing to accept posts.")

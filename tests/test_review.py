@@ -133,7 +133,7 @@ async def test_the_success_rate_counts_attempts_not_days(tmp_path, monkeypatch, 
         await review.main()
 
         printed = capsys.readouterr().out
-        assert "SUCCESS RATE: 90.0%" in printed, (
+        assert "SUCCESS RATE, whole window : 90.0%" in printed, (
             "ردشده‌ها در مخرج آمدند و نرخ را به تنظیماتِ مشتری وصل کردند"
         )
     finally:
@@ -156,5 +156,91 @@ async def test_an_empty_database_still_produces_a_report(tmp_path, monkeypatch, 
         printed = capsys.readouterr().out
         assert "performance review" in printed
         assert "no delivery attempts recorded" in printed
+    finally:
+        await db_module.close_db()
+
+
+def test_error_text_is_grouped_by_shape_not_by_its_numbers():
+    """«A wait of 31 seconds» و «A wait of 287 seconds» یک خرابی‌اند.
+
+    اگر عینِ متن شمرده شود، هر کدام یک ردیفِ «۱x» می‌شود و الگویی که
+    هزار بار تکرار شده هیچ‌جا به چشم نمی‌آید.
+    """
+    review = _load()
+    assert review._shape("-1001234: A wait of 31 seconds") == review._shape(
+        "-1009999: A wait of 287 seconds"
+    )
+    assert review._shape(None) == "(no reason recorded)"
+
+
+@pytest.mark.asyncio
+async def test_send_failures_show_up_with_their_reason(tmp_path, monkeypatch, capsys):
+    """<b>اشکالی که اولین اجرای واقعی نشانش داد.</b>
+
+    شکستِ ارسال با نام‌های retry_* در لاگ ثبت می‌شود، ولی گزارش فقط
+    skip/error/pause را می‌خواند. روزی که ۸۶ پست نرفت، بخشِ «چه خراب
+    شد» فقط «پست تکراری» نشان داد — دلیلِ واقعی دقیقاً همان‌جا که
+    لازمش داشتیم غایب بود.
+    """
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.models import ActivityLog
+
+        async with db_module.get_session() as db:
+            for seconds in (31, 45, 287):
+                db.add(ActivityLog(
+                    user_id=7, task_id=task_id, event="retry_queued",
+                    detail=f"-1002: A wait of {seconds} seconds is required",
+                ))
+            db.add(ActivityLog(
+                user_id=7, task_id=task_id, event="skip", detail="پست تکراری",
+            ))
+            await db.commit()
+
+        review = _load()
+        monkeypatch.setattr(review.sys, "argv", ["review.py"])
+        await review.main()
+
+        printed = capsys.readouterr().out
+        assert "A wait of # seconds" in printed, "دلیلِ شکست در گزارش نیامد"
+        assert "3x" in printed, "سه شکستِ هم‌شکل جدا جدا شمرده شدند"
+        failed_part = printed.split("why posts FAILED")[1].split("why posts were SKIPPED")[0]
+        assert "تکراری" not in failed_part, "ردشده در فهرستِ شکست‌ها آمد"
+    finally:
+        await db_module.close_db()
+
+
+@pytest.mark.asyncio
+async def test_an_old_fixed_incident_does_not_bury_how_it_is_now(
+    tmp_path, monkeypatch, capsys
+):
+    """<b>«۵۶٪ موفقیت» که در واقع ۹۸٪ بود.</b>
+
+    ۹۷٪ همه‌ی شکست‌های اولین گزارشِ واقعی مالِ پنج روز در اول سپتامبر
+    بود — حلقه‌ای که بعداً بسته شد. عددِ کلِ بازه آن را با امروز قاطی
+    می‌کرد و نتیجه، تصویری بود که هیچ ربطی به وضع فعلی نداشت.
+    """
+    db_module, task_id = await _setup(tmp_path, monkeypatch, settings={})
+    try:
+        from telkap.models import DailyStat
+
+        today = datetime.now(UTC).date()
+        async with db_module.get_session() as db:
+            old = today - timedelta(days=40)
+            db.add(DailyStat(task_id=task_id, user_id=7, day=f"{old:%Y-%m-%d}",
+                             copied=50, skipped=0, failed=5000))
+            for back in range(0, 5):
+                day = today - timedelta(days=back)
+                db.add(DailyStat(task_id=task_id, user_id=7, day=f"{day:%Y-%m-%d}",
+                                 copied=200, skipped=0, failed=1))
+            await db.commit()
+
+        review = _load()
+        monkeypatch.setattr(review.sys, "argv", ["review.py", "--days", "90"])
+        await review.main()
+
+        printed = capsys.readouterr().out
+        assert "last 7 days  : 99.5%" in printed, "وضعِ فعلی جدا نشان داده نشد"
+        assert "old incident" in printed, "بخش ۸ حادثه‌ی قدیمی را خرابیِ امروز خواند"
     finally:
         await db_module.close_db()
