@@ -96,7 +96,7 @@
 ### `services/payments.py`
 
 - Methods: `METHOD_CARD="card"`, `METHOD_USDT="usdt"`, `METHOD_TRX="trx"`, `METHOD_GATEWAY="gate"` (ZarinPal). `CRYPTO_METHODS = (usdt, trx)`.
-- **Zibal is not implemented** (it was discussed with the owner; the only online gateway in code is ZarinPal).
+- **Zibal is not implemented**; ZarinPal is the only online gateway in code (`services/zarinpal.py`).
 - The model is `PaymentRequest`:
   - `kind` is `KIND_PLAN`, `KIND_CREDIT` or `KIND_TOPUP`.
   - `status` is pending, approved or rejected.
@@ -142,7 +142,7 @@
   - A gift code is itself a plan, no payment needed. Codes are 10 characters from an alphabet without confusable characters; at most `MAX_BATCH = 200` per batch.
   - `redeem` is single-use, locked with `UPDATE … WHERE used_by IS NULL`. If the grant fails, the code is freed again.
 - **`services/referral.py`**:
-  - Settings are in `AppSetting` key `referral`. Defaults: enabled, 15%, minimum purchase 100k, no reward on credit purchases, plus caps per referral and per month.
+  - Settings are in `AppSetting` key `referral`. Defaults: enabled, percent mode, 15%, minimum purchase 100,000, no reward on credit purchases, not limited to the first purchase, no invitee discount. A per-referral cap and a 30-day cap exist but default to 0 (no cap).
   - `bind` happens once and cannot be changed; self-referral and two-way loops are refused.
   - The reward is paid **only on an approved purchase**, never at sign-up. `ReferralReward.payment_id` is unique, so one receipt pays at most once. Every non-payment is recorded as `STATUS_VOID` with a note.
 - **`services/reseller.py`**:

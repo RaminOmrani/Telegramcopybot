@@ -24,7 +24,7 @@ file and the code disagree, trust the code, then fix this file in the same commi
 channels to the customer's destination channels, live. Along the way it can apply text rules,
 filters, signature/header/footer, watermark, de-duplication, edit and delete sync, approval
 queues and scheduling. Customers buy subscriptions inside the bot (card-to-card, ZarinPal, USDT/TRX).
-The owner uses it for their own channels and sells it to others. Production bot: `@AdvancedForwardBot`.
+It is sold to customers as a subscription. Production bot: `@AdvancedForwardBot`.
 
 **Stack:** Python 3.11+ (server runs 3.13) · aiogram 3.31 (bot UI, `parse_mode=HTML`) ·
 Telethon 1.38.1 (MTProto user accounts, API layer 193) · SQLAlchemy 2 async + SQLite (WAL) ·
@@ -50,17 +50,24 @@ aiohttp (web panel, Mini App API, AI) · systemd on a Linux VPS. No Alembic, no 
    backups, or personal data about the owner or customers. `.gitignore` covers these; keep it so.
 3. **Never copy `.env.example` over `.env`.** That wipes `FERNET_KEY`, which makes every stored
    Telegram login undecryptable, so every customer must log in again. Use `tools/envsync.py`.
-   `tests/test_deploy.py` enforces this.
+   `tests/test_deploy.py` checks `deploy/update.sh` for this; other scripts are not checked
+   (`setup.bat` copies it only when no `.env` exists).
 4. **No refunds, ever.** The business only *receives* money. It never pays customers, and no text
-   may promise a refund or a payout (`عودت وجه`, `واریز به حساب`, …).
-   `tests/test_terms.py` enforces this for the bot texts and `site/index.html`.
-5. **Never log into the owner's Telegram account** through third-party tools or connectors.
-   That account owns their income channels.
+   may promise a refund or a payout (`عودت وجه`, `واریز به حساب`, …). `tests/test_terms.py`
+   checks this only for the terms text (`services/terms.py:text`), refund phrases across
+   `site/index.html` and payout phrases in its reseller section (`#agents`). Other bot texts are
+   not tested, so check them by hand.
+5. **Never log into the owner's Telegram account** through any third-party tool, connector or
+   MCP server. An outside login can kill sessions this project depends on.
 6. **Never run two programs on the same Telegram session at once.** The result is
-   `AUTH_KEY_DUPLICATED` and a dead session. Server tools that open a session (`tools/stuck.py`,
-   and `tools/tryopen.py`, which has no guard) must run only while `telkap` is stopped.
+   `AUTH_KEY_DUPLICATED` and a dead session. Server tools that open a session must run only
+   while `telkap` is stopped: `tools/stuck.py` refuses otherwise (never use its
+   `--i-know-the-bot-is-running` override), and `tools/tryopen.py` has no guard at all.
 7. **Don't promise what Telegram can't do.** Example: Premium emoji in simple mode. Bot API
-   custom emoji require a Fragment-username bot and don't work in channels anyway.
+   custom emoji work only if the bot has a Fragment collectible username. The other route (the
+   bot owner has Premium) does not apply to channels. Our bot has no Fragment username, so
+   premium emoji are impossible in simple mode today. `botsend` keeps the branch for the day one
+   is attached.
 8. **Git:** never force-push. Never push unreviewed or failing work to `main`. The server deploys
    `main` directly, so `main` must always be green.
 9. **HTML everywhere.** The bot uses `parse_mode=HTML`, so `html.escape()` every user- or
@@ -69,11 +76,10 @@ aiohttp (web panel, Mini App API, AI) · systemd on a Linux VPS. No Alembic, no 
 
 ## 3. Working with the owner
 
-- **Talk to the owner in plain, non-technical Persian (فارسی).** They do not read English: an
-  English report was answered with «فارسی بگو نمیفهمم چی میگی». Code comments and commit messages
-  in this repo are Persian too. Keep that style: comments explain the *why*, often with the
+- **Talk to the owner in plain, non-technical Persian (فارسی).** They do not read English.
+  Code comments and commit messages in this repo are Persian too. Keep that style: comments explain the *why*, often with the
   incident behind it.
-- The owner is on **Windows**. They connect with `ssh root@<server>` from PowerShell
+- The owner is on **Windows**. They connect to the server over SSH from PowerShell
   (`deploy/UPDATE.md` has the walkthrough). The hosting panel's VNC console is the fallback and
   **cannot display Persian**, so server tools print ASCII and take `--send`, which delivers the
   report to the admins in Telegram.
@@ -82,8 +88,10 @@ aiohttp (web panel, Mini App API, AI) · systemd on a Linux VPS. No Alembic, no 
   sudo bash /opt/telkap/deploy/update.sh
   ```
   It compiles first, stops the service, backs up the DB, fast-forwards to `origin/main`,
-  installs packages only if requirements changed, restarts, and rolls back automatically on
-  failure. Do not use `/opt/telkap/update.sh`: that path does not exist.
+  installs packages only if requirements changed, reports new `.env` keys (`envsync.py`),
+  restarts, and rolls back if the new version doesn't stay up. If the merge or pip step itself
+  fails, the bot stays stopped: run `sudo systemctl start telkap`. `/opt/telkap/update.sh` does
+  not exist; the script is `deploy/update.sh`.
 - **Diagnostics on the server** (read-only, safe while running):
   ```
   cd /opt/telkap && sudo -u telkap /opt/telkap/.venv/bin/python tools/review.py --days 7 --send   # performance review
@@ -142,12 +150,12 @@ telkap/keyboards.py         menus; button colours: GO (max one per screen), DANG
 telkap/texts.py, i18n.py    Persian texts, fa_num(); 9 languages for the main user path
 telkap/services/copier.py   THE copy engine (process → gates → _deliver → _send paths)
 telkap/services/userbot.py  full-mode Telethon clients, login, live event handlers, catch_up, heal
-telkap/services/sweeper.py  polls sources every 180s because live updates are unreliable (~92% of deliveries)
-telkap/services/retry.py    retry queue worker (backoff 60/300/900/3600s, 4 attempts, then abandoned)
+telkap/services/sweeper.py  polls sources every 180s because live updates are unreliable (most deliveries come this way)
+telkap/services/retry.py    retry queue worker (backoff 60/300/900/3600s; 4 retries after the first send, then abandoned)
 telkap/services/pending.py  approval + schedule queue (hold / release / reject / prune)
 telkap/services/abandoned.py posts that must never be sent again (sweeper checks this)
-telkap/services/pubpoll.py, pool.py, botsend.py, reader.py   simple mode
-telkap/services/entitlement.py, subscription.py, payments.py, plans.py   money and quotas
+telkap/services/pubpoll.py, pool.py, botsend.py   simple mode; reader.py picks the reading client for both modes
+telkap/services/entitlement.py, subscription.py, payments.py + telkap/plans.py   money and quotas
 telkap/web/                 aiohttp admin panel (/panel) and Mini App API (/app/api)
 site/                       static sales page + Mini App frontend (served by nginx)
 deploy/                     update.sh, systemd unit, Linux/Windows setup guides (Persian)
@@ -158,8 +166,8 @@ tests/                      ~60 files, pytest-asyncio strict mode
 ## 6. Things that will bite you
 
 - **Telegram doesn't send live updates for big public channels the account doesn't own**
-  (Telethon #4345). That's why `sweeper.py` exists. Delivery latency is about half the sweep
-  interval (p50 ≈ 80s). Detection, not sending, is the bottleneck.
+  (Telethon #4345). That's why `sweeper.py` exists. Delivery latency is roughly half the sweep
+  interval. Detection, not sending, is the bottleneck.
 - **`StringSession` stores no entity cache.** After a restart, any call with a raw numeric chat
   ID fails with "Could not find the input entity". Use `services/reader.py:entity_for`.
 - **Telethon is pinned at layer 193.** Newer post types arrive as `MessageMediaUnsupported` and
@@ -170,8 +178,8 @@ tests/                      ~60 files, pytest-asyncio strict mode
   `pubpoll.py`.
 - **The sweeper re-sends anything that isn't in `MessageMap`, the retry queue, the pending queue
   or `abandoned_posts`.** Any new "don't send this" outcome must be recorded in one of those, or
-  the post comes back every 3 minutes. This caused the 2026-10-31 incident: one post retried
-  86 times.
+  the post comes back every 3 minutes. This caused the 2026-10-31 incident: one post was put in
+  the retry queue dozens of times.
 - `Copier._dispatch` sleeps on FloodWait and does not queue the post. Filter-skipped posts above
   the sweep watermark are re-evaluated every sweep, which inflates the skip counters. Both
   issues are known and still open (see HISTORY.md §5).
@@ -180,13 +188,16 @@ tests/                      ~60 files, pytest-asyncio strict mode
 
 ## 7. Open work (as of 2026-11-08)
 
-Details and context: `docs/handoff/HISTORY.md` §5 and `docs/roadmap.html`.
+Details and context: `docs/handoff/HISTORY.md` §5, `docs/handoff/ENGINE.md` §9 and `docs/roadmap.html`.
 - **Code issues:** FloodWait in `_dispatch` loses the post; filter-skipped posts are
-  re-processed by the sweeper; escape titles in old handlers (`tasks.py:show_task`,
-  `simple_task.py`); a possible approval + `min_gap_seconds` double-approval
-  (ENGINE.md §9); `pool.revive` has no callers (flooded service accounts never come back).
-- **Owner to-dos (they do these themselves):** a dedicated number for the service account; the
-  ZarinPal merchant code; `AI_API_KEY` to enable AI features; the bot avatar in BotFather.
+  re-processed by the sweeper; escape titles in old handlers (`tasks.py:task_detail_text`, used
+  by `show_task`; the source/destination/title confirmations in `simple_task.py`); a possible
+  approval + `min_gap_seconds` double-approval (ENGINE.md §9); `pool.revive` has no callers, so
+  a flooded service account comes back only after an admin re-adds it via `/pool`; after
+  accepting the terms, login skips the QR option (`account.py:cb_accept_terms`).
+- **Owner to-dos (they do these themselves):** add more service accounts to the simple-mode
+  pool (`/pool`); the ZarinPal merchant code; `AI_API_KEY` to enable AI features; the bot avatar
+  in BotFather; routine server maintenance.
 - **Roadmap ideas, not built:** publishing to Bale, Eitaa and Rubika (Bale is Telegram-API
   compatible); detection under 10s by polling hot sources with `getChannelDifference`;
   scheduled ad posts with pin, auto-delete and stats; telling buyers on the sales page that

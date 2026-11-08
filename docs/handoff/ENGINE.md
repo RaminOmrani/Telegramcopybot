@@ -25,7 +25,7 @@ Client selection lives in one place: `reader.for_task(task, manager)`. FULL retu
 - **`UserRuntime`** holds `client`, `handlers`, and `source_map: chat_id → [task_id]`. `tasks_for_chat()` reads from it.
 - **`reload_user`** removes the old handlers, resolves `source_id` (writing it back to the DB if it was missing), and registers `NewMessage`/`Album`/`MessageEdited`/`MessageDeleted` with `chats=chat_ids`. It then calls `_catch_up`, which runs `client.catch_up()` *after* the handlers exist (Telethon docs require this order) with a 45 s timeout. Before this was added, posts published during a restart were lost.
 - **`ensure_client`** runs under a per-user lock. If authorization is lost, it records `health` and calls `logout(revoked=True)`.
-- **`restore_all`** runs at startup with `Semaphore(5)` and a 90 s timeout per user. `main.py` then compares `listening_summary()` and alerts if `armed < enabled`.
+- **`restore_all`** runs at startup with `Semaphore(5)` and a 90 s timeout per user. `main.py` then compares `listening_summary()` and alerts if any user failed to restore or `armed < enabled`.
 - **`heal_forever`** runs every 300 s and re-runs `reload_user` for any user with enabled tasks but no connected runtime or an empty `source_map`.
 
 ## 3. How a new post flows (FULL)
@@ -38,7 +38,7 @@ Client selection lives in one place: `reader.for_task(task, manager)`. FULL retu
    - `grace` (default) waits up to `order_grace_seconds` (default 300, minimum 5), then lets the slow post continue in the background.
 
    `_spawn` keeps a reference to each running dispatch so it is not garbage-collected. Once a queue reaches `BUSY_QUEUE=20`, every further enqueue logs a warning and calls `alerts.send` (1800 s cooldown). Nothing is ever dropped.
-4. **`_dispatch`** loops over `tasks_for_chat` and calls `process`. On `FloodWaitError` it records the error and health state, then sleeps `min(seconds, 300)`; this blocks that source's worker. For fatal health states (`health.FATAL_STATES`: peer_flood, banned, revoked) it calls `_handle_account_error` → `_pause_all_tasks` and stops.
+4. **`_dispatch`** loops over `tasks_for_chat` and calls `process`. On `FloodWaitError` it records the error and health state, then sleeps `min(seconds, 300)` inside that dispatch. This blocks the source's worker fully in `strict`, for up to `order_grace_seconds` in `grace`, and not at all in `fast`. **The post itself is not queued for retry** (open issue). For fatal health states (`health.FATAL_STATES`: peer_flood, banned, revoked) it calls `_handle_account_error`, which pauses all of the user's tasks only when the health state changed, then stops.
 5. **`process`** is an in-memory dedupe on `(task_id, first_msg_id)` (`_in_flight`). A duplicate concurrent call returns `False`. Queue workers call `in_flight()` *before* calling `process`, because `False` means "filtered → delete item" to them.
 6. **Gates in `_process`, in order.** `admitted = retrying`, and retries skip every gate marked † to avoid burning quota or silently dropping the post.
    1. The snapshot is enabled (`cache.get_task`, in-memory, invalidated with `cache.invalidate_task`).
@@ -54,7 +54,7 @@ Client selection lives in one place: `reader.for_task(task, manager)`. FULL retu
 7. **`_deliver`.** FULL mode requires `ensure_client`; if there is none, the task is paused. Then:
    - `aipass.enhance` runs once for all destinations.
    - `apply_transforms` (rules → signature → config rewrite → removals → header/footer → `tidy`), `remap_entities` (UTF-16, `difflib`) and `with_own_entities` (the user's own formatted header/footer/signature).
-   - The `delay_seconds` setting with ±15 % jitter.
+   - The `delay_seconds` setting with ±15 % jitter (skipped on retry).
 
    For each destination (`snapshot.targets[0]` is the primary; the others are `Destination` rows with `overrides`):
    - `only_target` filter.
@@ -84,7 +84,7 @@ Client selection lives in one place: `reader.for_task(task, manager)`. FULL retu
 | `cfg.mode=="forward"` | Plain `forward_messages`; the "forwarded from" label is kept. |
 | Poll | `_send_poll` rebuilds an `InputMediaPoll`. A quiz without a visible correct answer raises `Unsendable("quiz-hidden-answer")`. |
 | `caption_only` or text | `send_message(link_preview=False)` (link previews are always disabled). |
-| Opaque media (`opaque_media`/`_OPAQUE_MEDIA`: Unsupported, PaidMedia, Story, Giveaway, Invoice, Game, GeoLive, Dice, or empty photo/document) | `_forward_opaque`: a raw `ForwardMessagesRequest(drop_author=True, drop_media_captions=…)` (`_forward_without_caption`), then `_set_caption`. An incomplete album is deleted and raises `PartialForward`. A caption that fails to apply is deleted and raises `CaptionNotSet` (transient) or `Unsendable`. If the source had no caption, a missing signature is tolerated. The `_NO_CAPTION_MEDIA` types skip the caption step. |
+| Opaque media (`opaque_media`/`_OPAQUE_MEDIA`: Unsupported, PaidMedia, Story, Giveaway, GiveawayResults, Invoice, Game, GeoLive, Dice, or empty photo/document) | `_forward_opaque`: a raw `ForwardMessagesRequest(drop_author=True, drop_media_captions=…)` (`_forward_without_caption`), then `_set_caption`. An incomplete album is deleted and raises `PartialForward`. A caption that fails to apply is deleted and raises `CaptionNotSet` (transient) or `Unsendable`. If the source had no caption, a missing signature is tolerated. The `_NO_CAPTION_MEDIA` types skip the caption step. |
 | `rewrite_files` on a document | `_rewritten_files` (`docedit.rewrite_file`, run in a thread), sent with `force_document`. Falls back to the next path if nothing changed or a file is missing. |
 | Watermark | `_watermarked_files` → `send_file`. An incomplete set raises `Unsendable`. |
 | Direct (default) | `send_file(m.media …)`. A single item is sent singly, because a 1-item list becomes an album and albums cannot carry buttons. On failure (for example a protected channel): `_download_all` → re-upload (`PATH_REUPLOAD`); if the download is incomplete → `_forward_opaque`. |
@@ -95,7 +95,7 @@ Client selection lives in one place: `reader.for_task(task, manager)`. FULL retu
 
 `is_permanent` returns true for `Unsendable`, `TypeError`, and the names in `_PERMANENT_ERRORS` (matched by name so other Telethon versions don't break imports). `ValueError` is deliberately **transient**, because "Could not find the input entity" goes away once the entity cache warms up.
 
-`_give_up` writes `log_activity("unsendable")`, a daily `failed` count, and `abandoned.mark(REASON_UNSENDABLE)`. It notifies the customer at most once per `(task, kind)` per 24 h. The 31 October incident was one unsupported post: 86 retry items, about 430 sends, and 77 notifications.
+`_give_up` always writes `log_activity("unsendable")` per destination. It bumps the daily `failed` count (one per destination) only on the first attempt, not on retry, and calls `abandoned.mark(REASON_UNSENDABLE)` only if no destination received the post. It notifies the customer at most once per `(task, kind)` per 24 h. The 31 October incident was one unsupported post that produced dozens of retry items, hundreds of wasted sends and dozens of notifications.
 
 ## 6. Background workers (started in `telkap/main.py`)
 
@@ -106,11 +106,11 @@ Client selection lives in one place: `reader.for_task(task, manager)`. FULL retu
   - Otherwise calls `process(retrying=True, via=retry, only_target=dest_chat)`.
   - `SendFailed`/exception → `_reschedule` with backoff `RETRY_BACKOFF=(60,300,900,3600)`. After `MAX_ATTEMPTS=4` it calls `abandoned.mark(EXHAUSTED)` and notifies.
   - `False` → drop the item (meaning a filter rejected it).
-  - `retrying=True` matters: without it, each failure created a fresh item with 0 attempts, which looped forever (66 copies vs 2029 "failed" in one day).
+  - `retrying=True` matters: without it, each failure created a fresh item with 0 attempts, which looped forever (failure counts grew into the thousands).
   - `_enqueue_retry` pauses the task at `MAX_RETRY_QUEUE=60` pending items.
 - **`ReleaseWorker`** (`pending.py`, every 60 s):
   - `due()` returns SCHEDULE items whose time has come.
-  - `release()` deletes the row *before* calling `process(released=reason, via=queue)`. It waits up to 120 s if the post is in flight, otherwise re-holds it.
+  - `release()` deletes the row first. If the post is in flight, it waits up to `IN_FLIGHT_WAIT=120` s; if it is still in flight after that, it re-holds the row (same reason and `release_at`) and returns False. Otherwise it calls `process(released=reason, via=queue)`.
   - Approvals are released through `handlers/approvals.py` → `release_worker.release`.
   - `prune()` expires approvals after 72 h and marks them `EXPIRED`.
   - `reject`/`drop_task` mark posts `REJECTED` so the sweeper does not re-add them.
@@ -135,7 +135,7 @@ Client selection lives in one place: `reader.for_task(task, manager)`. FULL retu
 
 ## 7. Edit and delete sync
 
-`sync_edit` requires `sync_edits` and existing `MessageMap` rows. It compares `fingerprint_of(...).exact` against the stored `content_hash`, not `edit_date`, because view-count changes also mark a post as edited. It calls `_restamp` (updates all 3 hash levels) **only if every edit succeeded**, so transient failures are retried in a later round.
+`sync_edit` requires `sync_edits` and existing `MessageMap` rows. It compares `fingerprint_of(...).exact` against the stored `content_hash`, not `edit_date`, because view-count changes also mark a post as edited. It calls `_restamp` (updates all 3 hash levels) only if no destination edit failed transiently, so transient failures are retried in a later round. A missing or invalid destination message (`MessageIdInvalidError`/`ValueError`) is skipped and still counts as done.
 
 `_sync_delete` is FULL-only, requires `sync_deletes`, and deletes per destination.
 
@@ -154,7 +154,7 @@ Client selection lives in one place: `reader.for_task(task, manager)`. FULL retu
   - All media goes through a full download and re-upload (`file_id` is bot-scoped).
   - `botsend.trim` cuts by Python `len`, not UTF-16 length, and entities are not clipped (UNSURE whether this can cause `EntityBoundsInvalid`).
   - `pool.client_for` passes no `proxy=` and no device fingerprint.
-- **`pool.revive` has no callers.** A service account marked `STATE_FLOOD` never returns to `_usable()` on its own (UNSURE whether admin handlers reset it some other way).
+- **`pool.revive` has no callers.** A service account marked `STATE_FLOOD` never returns to `_usable()` on its own (only re-adding the account via `/pool` → add, i.e. `svclogin._finish`, resets it; toggling it in the pool screen does not).
 - **`Copier._last_path` is shared across concurrent sends,** and the text, poll and forward-mode branches of `_send` never set it. The path labels in `DeliveryTiming` can therefore be stale.
 - **`sync_edit` does not apply per-destination `overrides`, `with_own_entities` or `aipass`.** Edited destinations get the task-level transform only.
 - **Likely bug (untested): approval combined with `min_gap_seconds`.** After approval the post is re-held as SCHEDULE. When that releases with `released="schedule"`, the approval gate fires again.

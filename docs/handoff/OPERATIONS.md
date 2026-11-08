@@ -7,7 +7,7 @@
 
 ## 1. Git branches
 - **`main`** is what the server deploys (`deploy/update.sh` defaults to `BRANCH=main`, `update.bat` resets to `origin/main`, `deploy/SETUP-LINUX.md` clones `-b main`).
-- **`claude/telkap-bot-clone-5ct7ru`** is a former AI dev branch with a different (older) history; its tree was identical to `main` on 2026-11-08. Do not merge it into `main`; treat `main` as the truth and branch new work from `main`.
+- **`claude/telkap-bot-clone-5ct7ru`** is the AI dev branch. It contains `main`'s history up to `00f22bd`, the two original 2026-08-02 commits (`a90b917`, `9f18859`) merged in at `2fbe5cb`, and WIP commits. Do not merge it into `main`; treat `main` as the truth and branch new work from `main`.
 - CI is `.github/workflows/tests.yml`. It runs on push to `main`, on PRs and on manual dispatch, with Python 3.11 and 3.13 (the comment says the server runs 3.13). Steps: `pyflakes telkap/ tests/ tools/`, then `ruff check telkap/ tests/ tools/`, then `pytest -q` with dummy env vars and a FERNET_KEY generated inside the job.
 
 ## 2. Configuration: `telkap/config.py`
@@ -26,7 +26,7 @@
 | DATABASE_URL | SQLAlchemy URL | `sqlite+aiosqlite:///data/telkap.db` (relative to the repo root; this is intentional, see test_deploy) |
 | BOT_USERNAME / SUPPORT_USERNAME | used for links and the support handle (`@` stripped) | "" |
 | FORCE_JOIN_CHANNEL | initial forced-join channel; moved into the `force_join_channels` table on first run | "" |
-| TRIAL_DAYS | free trial days at signup | 1 |
+| TRIAL_DAYS | on/off switch for the automatic signup trial (0 = off, >0 = on). The trial *length* is the `trial` plan's `days` (default 1, editable in the admin panel), not this value | 1 |
 | RATE_PER_MINUTE | max messages per minute per destination | 20 |
 | DOWNLOAD_DIR | temporary media directory (relative paths resolve from BASE_DIR) | `data/downloads` |
 | LOG_LEVEL | logging level | INFO |
@@ -117,7 +117,7 @@ There is no Alembic. To change the schema safely:
 2. Records `OLD_COMMIT`. Aborts if `git diff` shows uncommitted changes on the server. Runs `git fetch origin $BRANCH`.
 3. Exits early only if HEAD equals `origin/$BRANCH` **and** `data/.deployed` holds that same commit. `data/.deployed` records the commit that actually started successfully, so a manual `git pull` still forces a restart.
 4. Before stopping the bot: extracts the new commit with `git archive` into a temp dir and runs `compileall`. On a syntax error it aborts and leaves the bot running. It also checks whether `requirements.txt` changed.
-5. Runs `systemctl stop`. Then `_backup_db` copies `data/telkap.db` plus `-wal`/`-shm` to `data/backups/telkap-<stamp>.db` and keeps the newest 10. Then `git merge --ff-only`. Then `pip install -r requirements.txt`, only if requirements changed.
+5. Runs `systemctl stop`. Then `_backup_db` copies `data/telkap.db` plus `-wal`/`-shm` to `data/backups/telkap-<stamp>.db` and keeps the newest `KEEP_BACKUPS` (10) `.db` files (old `-wal`/`-shm` copies are not pruned). Then `git merge --ff-only`. Then `pip install -r requirements.txt`, only if requirements changed.
 6. Runs `tools/envsync.py` to report missing keys. Never writes `.env`.
 7. Runs `reset-failed`, then `start`, then waits up to 12 s for the service to be active with `NRestarts=0`. On success it writes `.deployed` and prints the downtime.
 8. On failure it prints 25 journal lines, runs `git reset --hard OLD_COMMIT`, reinstalls packages and restarts.
@@ -131,7 +131,7 @@ There is no Alembic. To change the schema safely:
 - **Docker** (`Dockerfile`, `docker-compose.yml`): python:3.11-slim plus fonts-dejavu; copies only `telkap/`; runs `python -m telkap.main`; mounts `./data:/app/data` and reads `env_file: .env`. Production does not appear to use it; production uses systemd (UNSURE whether Docker is maintained). Because only `telkap/` is copied, `site/` and `tools/` are not inside the image.
 
 **Windows `.bat` helpers** (all run `cd /d %~dp0` and use `.venv\Scripts\python.exe`):
-- `setup.bat`: creates the venv and installs requirements.
+- `setup.bat`: creates the venv (`py -3 -m venv`), installs requirements, and copies `.env.example` to `.env` **only if `.env` does not exist yet**. The tool wrappers fall back to `py -3` when the venv is missing.
 - `run.bat`: runs `python -m telkap.main`; requires `.env`.
 - `update.bat`: `git fetch origin main`, then `git reset --hard origin/main`, then pip install, then tells you to run `nssm restart TelkapBot`.
 - `backup.bat`: zips `data` and `.env` into `telkap-backup-<stamp>.zip`. The zip contains secrets and is in `.gitignore`.
@@ -144,7 +144,7 @@ Run them on the server as `sudo -u telkap /opt/telkap/.venv/bin/python /opt/telk
 - `why.py [--send] [--speed] [--clear-retries]`: reads only the DB and explains why tasks are not copying. `--clear-retries` deletes the retry queue.
 - `review.py [--days N] [--send]`: reads only the DB and produces a performance review (default 30 days).
 - `simplecheck.py [--send]`: simple-mode status (service accounts, leases, destinations). Reads the DB and calls Bot API `getMe`/`getChatMember`. Does not start Telethon.
-- `stuck.py <task_id> [--send]`: reads the last 40 source posts through Telethon using the **same user session as the bot**. **It refuses to run while the `telkap` service is active** (`bot_is_running()`, which assumes "running" if unsure). Usage: `systemctl stop telkap`, then run the tool, then `systemctl start telkap`.
+- `stuck.py <task_id> [--send]`: reads the last 40 source posts through Telethon using the **same user session as the bot**. **It refuses to run while the `telkap` service is active** (`bot_is_running()`, which assumes "running" if unsure). An override flag `--i-know-the-bot-is-running` exists; never use it. Usage: `systemctl stop telkap`, then run the tool, then `systemctl start telkap`.
 - `tryopen.py [@ch …] [--send]`: tests whether public channels can be read without joining, through `manager.ensure_client` using the first user who has `session_enc`. **It has no service-active guard.** It uses a live user session concurrently with the bot, which risks Telegram invalidating that session. Stop the service first (UNSURE that it is harmful, but treat it like `stuck.py`).
 - `botcheck.py`: shows which bot the `.env` token belongs to, printing a fingerprint and never the token.
 - `nettest.py`: checks Telegram reachability and the proxy. Standard library only.
